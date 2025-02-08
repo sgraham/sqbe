@@ -72,7 +72,7 @@ def namespace_static_funcs(ns, file, contents):
 
 
 def rename_asserts(contents):
-    return contents.replace('assert(', 'SQ_ASSERT(')
+    return contents.replace("assert(", "SQ_ASSERT(")
 
 
 def emit_renames(ns, contents):
@@ -86,8 +86,18 @@ def emit_renames(ns, contents):
 
 def abi_renames(ns, contents):
     ns_up = ns.upper()
-    for x in ["Cstk", "Cptr", "Cstk1", "Cstk2", "Cfpint",
-              "Class", "AClass", "RAlloc", "Insl", "Params"]:
+    for x in [
+        "Cstk",
+        "Cptr",
+        "Cstk1",
+        "Cstk2",
+        "Cfpint",
+        "Class",
+        "AClass",
+        "RAlloc",
+        "Insl",
+        "Params",
+    ]:
         contents = re.sub(r"\b" + x + r"\b", ns_up + x, contents)
     for x in ["gpreg", "fpreg"]:
         contents = re.sub(r"\b" + x + r"\b", ns + x, contents)
@@ -128,7 +138,16 @@ def amd64_reg_rename(contents):
             "RSP",
         ]
         + ["XMM%d" % i for i in range(16)]
-        + ["NFPR", "NGPR", "NGPS", "NFPS", "NCLR", "RGLOB"]
+        + [
+            "NFPR",
+            "NGPR",
+            "NGPS_SYSV",
+            "NGPS_WIN",
+            "NFPS",
+            "NCLR_SYSV",
+            "NCLR_WIN",
+            "RGLOB",
+        ]
     )
     for i in regs:
         contents = re.sub(r"\b%s\b" % i, "QBE_AMD64_%s" % i, contents)
@@ -176,20 +195,21 @@ def make_instr_prototypes(ops_h_contents):
         return op == "vastart" or op.startswith("store") or op.startswith("dbgloc")
 
     def is_single_arg_op(type_string_arg_1):
-        return type_string_arg_1.count('x') + type_string_arg_1.count('e') == 4
+        return type_string_arg_1.count("x") + type_string_arg_1.count("e") == 4
 
     class_order = [
-        'sq_type_word',
-        'sq_type_long',
-        'sq_type_single',
-        'sq_type_double',
+        "sq_type_word",
+        "sq_type_long",
+        "sq_type_single",
+        "sq_type_double",
     ]
+
     def only_single_size_class(arg0):
-        is_single = arg0.count('e') == 3
+        is_single = arg0.count("e") == 3
         if is_single:
             index_of_non_e = -1
             for i in range(4):
-                if arg0[i] != 'e':
+                if arg0[i] != "e":
                     index_of_non_e = i
                     break
             return (True, class_order[index_of_non_e])
@@ -210,22 +230,43 @@ def make_instr_prototypes(ops_h_contents):
             is_single_size_class, size_class0 = only_single_size_class(arg0)
             if is_single_size_class:
                 proto = "SqRef sq_i_%s(SqRef arg0 /*%s*/)" % (op, "".join(arg0))
-                defns += proto + " { return _normal_one_op_instr(O%s, %s, arg0); }\n" % (
-                        op, size_class0)
+                defns += (
+                    proto
+                    + " { return _normal_one_op_instr(O%s, %s, arg0); }\n"
+                    % (op, size_class0)
+                )
             else:
-                proto = "SqRef sq_i_%s(SqType size_class, SqRef arg0 /*%s*/)" % (op, "".join(arg0))
-                defns += proto + " { return _normal_one_op_instr(O%s, size_class, arg0); }\n" % (op)
+                proto = "SqRef sq_i_%s(SqType size_class, SqRef arg0 /*%s*/)" % (
+                    op,
+                    "".join(arg0),
+                )
+                defns += (
+                    proto
+                    + " { return _normal_one_op_instr(O%s, size_class, arg0); }\n"
+                    % (op)
+                )
         else:
             if is_no_return(op):
                 proto = "void sq_i_%s(SqRef arg0 /*%s*/, SqRef arg1 /*%s*/)" % (
-                        op, "".join(arg0), "".join(arg1))
-                defns += proto + " { _normal_two_op_void_instr(O%s, arg0, arg1); }\n" % op
+                    op,
+                    "".join(arg0),
+                    "".join(arg1),
+                )
+                defns += (
+                    proto + " { _normal_two_op_void_instr(O%s, arg0, arg1); }\n" % op
+                )
             else:
                 # None of these have trivial size classes, only the single op
                 # ones have that case.
-                proto = "SqRef sq_i_%s(SqType size_class, SqRef arg0 /*%s*/, SqRef arg1 /*%s*/)" % (
-                        op, "".join(arg0), "".join(arg1))
-                defns += proto + " { return _normal_two_op_instr(O%s, size_class, arg0, arg1); }\n" % op
+                proto = (
+                    "SqRef sq_i_%s(SqType size_class, SqRef arg0 /*%s*/, SqRef arg1 /*%s*/)"
+                    % (op, "".join(arg0), "".join(arg1))
+                )
+                defns += (
+                    proto
+                    + " { return _normal_two_op_instr(O%s, size_class, arg0, arg1); }\n"
+                    % op
+                )
         decls += proto + ";\n"
 
     return (decls, defns)
@@ -376,7 +417,9 @@ def main():
     if not os.path.exists(QBE_ROOT):
         subprocess.check_call(["git", "clone", "git://c9x.me/qbe.git"])
         for patch in glob.glob("patches/*.patch"):
-            subprocess.check_call(["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT)
+            subprocess.check_call(
+                ["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT
+            )
 
     with open(os.path.join(QBE_ROOT, "ops.h"), "r") as f:
         ops_h_contents = f.read()
@@ -513,10 +556,12 @@ def main():
                     "extern int amd64_sysv_rclob[];", "static int amd64_sysv_rclob[6];"
                 )
                 contents = contents.replace(
-                    "extern int amd64_winabi_rsave[];", "static int amd64_winabi_rsave[23];"
+                    "extern int amd64_winabi_rsave[];",
+                    "static int amd64_winabi_rsave[23];",
                 )
                 contents = contents.replace(
-                    "extern int amd64_winabi_rclob[];", "static int amd64_winabi_rclob[8];"
+                    "extern int amd64_winabi_rclob[];",
+                    "static int amd64_winabi_rclob[8];",
                 )
                 contents = contents.replace(
                     "extern int arm64_rsave[];", "static int arm64_rsave[44];"
@@ -534,9 +579,11 @@ def main():
                     "extern int rv64_rclob[];", "static int rv64_rclob[24];"
                 )
 
-            if (file.endswith("/abi.c") or
-                file.endswith("amd64/sysv.c") or
-                file.endswith("amd64/winabi.c")):
+            if (
+                file.endswith("/abi.c")
+                or file.endswith("amd64/sysv.c")
+                or file.endswith("amd64/winabi.c")
+            ):
                 contents = abi_renames(ns, contents)
 
             if file == "main.c":
@@ -551,9 +598,7 @@ def main():
                 contents = remove_function(
                     contents, "static void", "qbe_parse_parsedat"
                 )
-                contents = remove_function(
-                    contents, "static Ref", "qbe_parse_tmpref"
-                )
+                contents = remove_function(contents, "static Ref", "qbe_parse_tmpref")
                 contents = remove_function(
                     contents, "static void", "qbe_parse_parsetyp"
                 )
