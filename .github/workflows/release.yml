@@ -1,0 +1,32 @@
+name: Release nightly
+
+on:
+  push:
+    branches: [ trunk ]
+
+jobs:
+  build:
+    permissions: write-all
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    - run: git config --global user.name "Patcher"
+    - run: git config --global user.email "git@example.com"
+    - run: |
+        cd src
+        python build_amalg.py
+    - uses: pyTooling/Actions/releaser@r0
+      with:
+        runs-on: ubuntu-latest
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: nightly
+        files: |
+          src/sqbe.c
+          src/sqbe.h

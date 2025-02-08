@@ -1,0 +1,1387 @@
+From 7848d8ef8cfcec5140c11ea692dd0f0ca44a0c3c Mon Sep 17 00:00:00 2001
+From: Scott Graham <sgraham@gmail.com>
+Date: Fri, 7 Feb 2025 17:03:52 -0800
+Subject: [PATCH] Implementation of Windows amd64_win target
+
+This is an implementation of the Windows ABI. It supports most features
+(struct passing/returning, varargs, env). TLS is not yet supported.
+
+This patch does not actually port QBE to Windows, it only allows QBE to
+generate correct asm to target Windows. As a result, testing is
+accomplished on a Linux host, by using a cross-compiling toolchain, and
+running the resulting binaries by using wine. See:
+
+	TARGET=amd64_win tools/test.sh all
+
+A few cross-platform tests were changed from 'long' to 'long long' in
+driver code because long in C does not match the size of a QBE 'l' on
+Windows.
+---
+ Makefile           |   5 +-
+ all.h              |   2 +
+ amd64/all.h        |  34 +-
+ amd64/emit.c       | 136 +++++++-
+ amd64/sysv.c       |   4 +-
+ amd64/targ.c       |  32 +-
+ amd64/winabi.c     | 754 +++++++++++++++++++++++++++++++++++++++++++++
+ doc/il.txt         |   1 +
+ doc/native_win.txt |  15 +
+ emit.c             |   8 +
+ main.c             |   2 +
+ test/abi3.ssa      |   2 +-
+ test/abi5.ssa      |   2 +-
+ test/abi8.ssa      |  14 +-
+ test/conaddr.ssa   |   1 +
+ test/dark.ssa      |   2 +-
+ test/tls.ssa       |   1 +
+ tools/test.sh      |  25 +-
+ 18 files changed, 1000 insertions(+), 40 deletions(-)
+ create mode 100755 amd64/winabi.c
+ create mode 100644 doc/native_win.txt
+
+diff --git a/Makefile b/Makefile
+index 2482eb1..5637fcb 100644
+--- a/Makefile
++++ b/Makefile
+@@ -6,7 +6,7 @@ BINDIR = $(PREFIX)/bin
+ 
+ COMMOBJ  = main.o util.o parse.o abi.o cfg.o mem.o ssa.o alias.o load.o \
+            copy.o fold.o simpl.o live.o spill.o rega.o emit.o
+-AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o
++AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o amd64/winabi.o
+ ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o
+ RV64OBJ  = rv64/targ.o rv64/abi.o rv64/isel.o rv64/emit.o
+ OBJ      = $(COMMOBJ) $(AMD64OBJ) $(ARM64OBJ) $(RV64OBJ)
+@@ -77,6 +77,9 @@ check-arm64: qbe
+ check-rv64: qbe
+ 	TARGET=rv64 tools/test.sh all
+ 
++check-amd64_win: qbe
++	TARGET=amd64_win tools/test.sh all
++
+ src:
+ 	@echo $(SRCALL)
+ 
+diff --git a/all.h b/all.h
+index 97cc41c..062780e 100644
+--- a/all.h
++++ b/all.h
+@@ -44,6 +44,7 @@ enum {
+ struct Target {
+ 	char name[16];
+ 	char apple;
++	char windows;
+ 	int gpr0;   /* first general purpose reg */
+ 	int ngpr;
+ 	int fpr0;   /* first floating point reg */
+@@ -585,3 +586,4 @@ int stashbits(void *, int);
+ void elf_emitfnfin(char *, FILE *);
+ void elf_emitfin(FILE *);
+ void macho_emitfin(FILE *);
++void pe_emitfin(FILE *);
+diff --git a/amd64/all.h b/amd64/all.h
+index 3a2db0e..8946dbb 100644
+--- a/amd64/all.h
++++ b/amd64/all.h
+@@ -4,14 +4,14 @@ typedef struct Amd64Op Amd64Op;
+ 
+ enum Amd64Reg {
+ 	RAX = RXX+1, /* caller-save */
+-	RCX,
+-	RDX,
+-	RSI,
+-	RDI,
+-	R8,
+-	R9,
+-	R10,
+-	R11,
++	RCX,  /* caller-save */
++	RDX,  /* caller-save */
++	RSI,  /* caller-save on sysv, callee-save on win */
++	RDI,  /* caller-save on sysv, callee-save on win */
++	R8,  /* caller-save */
++	R9,  /* caller-save */
++	R10,  /* caller-save */
++	R11,  /* caller-save */
+ 
+ 	RBX, /* callee-save */
+ 	R12,
+@@ -41,9 +41,13 @@ enum Amd64Reg {
+ 
+ 	NFPR = XMM14 - XMM0 + 1, /* reserve XMM15 */
+ 	NGPR = RSP - RAX + 1,
+-	NGPS = R11 - RAX + 1,
+ 	NFPS = NFPR,
+-	NCLR = R15 - RBX + 1,
++
++	NGPS_SYSV = R11 - RAX + 1,
++	NCLR_SYSV = R15 - RBX + 1,
++
++	NGPS_WIN = R11 - RAX + 1 - 2,  /* -2 for RDI/RDI */
++	NCLR_WIN = R15 - RBX + 1 + 2,  /* +2 for RDI/RDI */
+ };
+ MAKESURE(reg_not_tmp, XMM15 < (int)Tmp0);
+ 
+@@ -63,8 +67,16 @@ bits amd64_sysv_retregs(Ref, int[2]);
+ bits amd64_sysv_argregs(Ref, int[2]);
+ void amd64_sysv_abi(Fn *);
+ 
++/* winabi.c */
++extern int amd64_winabi_rsave[];
++extern int amd64_winabi_rclob[];
++bits amd64_winabi_retregs(Ref, int[2]);
++bits amd64_winabi_argregs(Ref, int[2]);
++void amd64_winabi_abi(Fn *);
++
+ /* isel.c */
+ void amd64_isel(Fn *);
+ 
+ /* emit.c */
+-void amd64_emitfn(Fn *, FILE *);
++void amd64_sysv_emitfn(Fn *, FILE *);
++void amd64_winabi_emitfn(Fn *, FILE *);
+diff --git a/amd64/emit.c b/amd64/emit.c
+index 8f36188..2f5be61 100644
+--- a/amd64/emit.c
++++ b/amd64/emit.c
+@@ -167,9 +167,12 @@ slot(Ref r, E *e)
+ 	}
+ 	else if (e->fp == RSP)
+ 		return 4*s + e->nclob*8;
+-	else if (e->fn->vararg)
+-		return -176 + -4 * (e->fn->slot - s);
+-	else
++	else if (e->fn->vararg) {
++		if (T.windows)
++			return -4 * (e->fn->slot - s);
++		else
++			return -176 + -4 * (e->fn->slot - s);
++	} else
+ 		return -4 * (e->fn->slot - s);
+ }
+ 
+@@ -580,14 +583,14 @@ emitins(Ins i, E *e)
+ }
+ 
+ static void
+-framesz(E *e)
++sysv_framesz(E *e)
+ {
+ 	uint64_t i, o, f;
+ 
+ 	/* specific to NAlign == 3 */
+ 	o = 0;
+ 	if (!e->fn->leaf) {
+-		for (i=0, o=0; i<NCLR; i++)
++		for (i=0, o=0; i<NCLR_SYSV; i++)
+ 			o ^= e->fn->reg >> amd64_sysv_rclob[i];
+ 		o &= 1;
+ 	}
+@@ -601,7 +604,7 @@ framesz(E *e)
+ }
+ 
+ void
+-amd64_emitfn(Fn *fn, FILE *f)
++amd64_sysv_emitfn(Fn *fn, FILE *f)
+ {
+ 	static char *ctoa[] = {
+ 	#define X(c, s) [c] = s,
+@@ -622,7 +625,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+ 		fputs("\tpushq %rbp\n\tmovq %rsp, %rbp\n", f);
+ 	} else
+ 		e->fp = RSP;
+-	framesz(e);
++	sysv_framesz(e);
+ 	if (e->fsz)
+ 		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
+ 	if (fn->vararg) {
+@@ -632,7 +635,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+ 		for (n=0; n<8; ++n, o+=16)
+ 			fprintf(f, "\tmovaps %%xmm%d, %d(%%rbp)\n", n, o);
+ 	}
+-	for (r=amd64_sysv_rclob; r<&amd64_sysv_rclob[NCLR]; r++)
++	for (r=amd64_sysv_rclob; r<&amd64_sysv_rclob[NCLR_SYSV]; r++)
+ 		if (fn->reg & BIT(*r)) {
+ 			itmp.arg[0] = TMP(*r);
+ 			emitf("pushq %L0", &itmp, e);
+@@ -655,7 +658,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+ 					"\tmovq %%rbp, %%rsp\n"
+ 					"\tsubq $%"PRIu64", %%rsp\n",
+ 					e->fsz + e->nclob * 8);
+-			for (r=&amd64_sysv_rclob[NCLR]; r>amd64_sysv_rclob;)
++			for (r=&amd64_sysv_rclob[NCLR_SYSV]; r>amd64_sysv_rclob;)
+ 				if (fn->reg & BIT(*--r)) {
+ 					itmp.arg[0] = TMP(*r);
+ 					emitf("popq %L0", &itmp, e);
+@@ -696,3 +699,118 @@ amd64_emitfn(Fn *fn, FILE *f)
+ 	if (!T.apple)
+ 		elf_emitfnfin(fn->name, f);
+ }
++
++static void
++winabi_framesz(E *e)
++{
++	uint64_t i, o, f;
++
++	/* specific to NAlign == 3 */
++	o = 0;
++	if (!e->fn->leaf) {
++		for (i=0, o=0; i<NCLR_WIN; i++)
++			o ^= e->fn->reg >> amd64_winabi_rclob[i];
++		o &= 1;
++	}
++	f = e->fn->slot;
++	f = (f + 3) & -4;
++	if (f > 0
++	&& e->fp == RSP
++	&& e->fn->salign == 4)
++		f += 2;
++	e->fsz = 4*f + 8*o;
++}
++
++void
++amd64_winabi_emitfn(Fn *fn, FILE *f)
++{
++	static char *ctoa[] = {
++	#define X(c, s) [c] = s,
++		CMP(X)
++	#undef X
++	};
++	static int id0;
++	Blk *b, *s;
++	Ins *i, itmp;
++	int *r, c, lbl;
++	E *e;
++
++	e = &(E){.f = f, .fn = fn};
++	emitfnlnk(fn->name, &fn->lnk, f);
++	fputs("\tendbr64\n", f);
++	if (fn->vararg) {
++		fprintf(f, "\tmovq %%rcx, 0x8(%%rsp)\n");
++		fprintf(f, "\tmovq %%rdx, 0x10(%%rsp)\n");
++		fprintf(f, "\tmovq %%r8, 0x18(%%rsp)\n");
++		fprintf(f, "\tmovq %%r9, 0x20(%%rsp)\n");
++	}
++	if (!fn->leaf || fn->vararg || fn->dynalloc) {
++		e->fp = RBP;
++		fputs("\tpushq %rbp\n\tmovq %rsp, %rbp\n", f);
++	} else
++		e->fp = RSP;
++	winabi_framesz(e);
++	if (e->fsz)
++		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
++	for (r=amd64_winabi_rclob; r<&amd64_winabi_rclob[NCLR_WIN]; r++)
++		if (fn->reg & BIT(*r)) {
++			itmp.arg[0] = TMP(*r);
++			emitf("pushq %L0", &itmp, e);
++			e->nclob++;
++		}
++
++	for (lbl=0, b=fn->start; b; b=b->link) {
++		if (lbl || b->npred > 1)
++			fprintf(f, "%sbb%d:\n", T.asloc, id0+b->id);
++		for (i=b->ins; i!=&b->ins[b->nins]; i++)
++			emitins(*i, e);
++		lbl = 1;
++		switch (b->jmp.type) {
++		case Jhlt:
++			fprintf(f, "\tud2\n");
++			break;
++		case Jret0:
++			if (fn->dynalloc)
++				fprintf(f,
++					"\tmovq %%rbp, %%rsp\n"
++					"\tsubq $%"PRIu64", %%rsp\n",
++					e->fsz + e->nclob * 8);
++			for (r=&amd64_winabi_rclob[NCLR_WIN]; r>amd64_winabi_rclob;)
++				if (fn->reg & BIT(*--r)) {
++					itmp.arg[0] = TMP(*r);
++					emitf("popq %L0", &itmp, e);
++				}
++			if (e->fp == RBP)
++				fputs("\tleave\n", f);
++			else if (e->fsz)
++				fprintf(f,
++					"\taddq $%"PRIu64", %%rsp\n",
++					e->fsz);
++			fputs("\tret\n", f);
++			break;
++		case Jjmp:
++		Jmp:
++			if (b->s1 != b->link)
++				fprintf(f, "\tjmp %sbb%d\n",
++					T.asloc, id0+b->s1->id);
++			else
++				lbl = 0;
++			break;
++		default:
++			c = b->jmp.type - Jjf;
++			if (0 <= c && c <= NCmp) {
++				if (b->link == b->s2) {
++					s = b->s1;
++					b->s1 = b->s2;
++					b->s2 = s;
++				} else
++					c = cmpneg(c);
++				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
++					T.asloc, id0+b->s2->id);
++				goto Jmp;
++			}
++			die("unhandled jump %d", b->jmp.type);
++		}
++	}
++	id0 += fn->nblk;
++}
+diff --git a/amd64/sysv.c b/amd64/sysv.c
+index 5b559c1..49b125f 100644
+--- a/amd64/sysv.c
++++ b/amd64/sysv.c
+@@ -228,8 +228,8 @@ int amd64_sysv_rsave[] = {
+ int amd64_sysv_rclob[] = {RBX, R12, R13, R14, R15, -1};
+ 
+ MAKESURE(sysv_arrays_ok,
+-	sizeof amd64_sysv_rsave == (NGPS+NFPS+1) * sizeof(int) &&
+-	sizeof amd64_sysv_rclob == (NCLR+1) * sizeof(int)
++	sizeof amd64_sysv_rsave == (NGPS_SYSV+NFPS+1) * sizeof(int) &&
++	sizeof amd64_sysv_rclob == (NCLR_SYSV+1) * sizeof(int)
+ );
+ 
+ /* layout of call's second argument (RCall)
+diff --git a/amd64/targ.c b/amd64/targ.c
+index fba9144..00949b2 100644
+--- a/amd64/targ.c
++++ b/amd64/targ.c
+@@ -19,20 +19,20 @@ amd64_memargs(int op)
+ 	.nfpr = NFPR, \
+ 	.rglob = BIT(RBP) | BIT(RSP), \
+ 	.nrglob = 2, \
+-	.rsave = amd64_sysv_rsave, \
+-	.nrsave = {NGPS, NFPS}, \
+-	.retregs = amd64_sysv_retregs, \
+-	.argregs = amd64_sysv_argregs, \
+ 	.memargs = amd64_memargs, \
+ 	.abi0 = elimsb, \
+-	.abi1 = amd64_sysv_abi, \
+ 	.isel = amd64_isel, \
+-	.emitfn = amd64_emitfn, \
+ 
+ Target T_amd64_sysv = {
+ 	.name = "amd64_sysv",
+ 	.emitfin = elf_emitfin,
+ 	.asloc = ".L",
++	.abi1 = amd64_sysv_abi,
++	.rsave = amd64_sysv_rsave,
++	.nrsave = {NGPS_SYSV, NFPS},
++	.retregs = amd64_sysv_retregs,
++	.argregs = amd64_sysv_argregs,
++	.emitfn = amd64_sysv_emitfn,
+ 	AMD64_COMMON
+ };
+ 
+@@ -42,5 +42,25 @@ Target T_amd64_apple = {
+ 	.emitfin = macho_emitfin,
+ 	.asloc = "L",
+ 	.assym = "_",
++	.abi1 = amd64_sysv_abi,
++	.rsave = amd64_sysv_rsave,
++	.nrsave = {NGPS_SYSV, NFPS},
++	.retregs = amd64_sysv_retregs,
++	.argregs = amd64_sysv_argregs,
++	.emitfn = amd64_sysv_emitfn,
++	AMD64_COMMON
++};
++
++Target T_amd64_win = {
++	.name = "amd64_win",
++	.windows = 1,
++	.emitfin = pe_emitfin,
++	.asloc = "L",
++	.abi1 = amd64_winabi_abi,
++	.rsave = amd64_winabi_rsave,
++	.nrsave = {NGPS_WIN, NFPS},
++	.retregs = amd64_winabi_retregs,
++	.argregs = amd64_winabi_argregs,
++	.emitfn = amd64_winabi_emitfn,
+ 	AMD64_COMMON
+ };
+diff --git a/amd64/winabi.c b/amd64/winabi.c
+new file mode 100755
+index 0000000..2482705
+--- /dev/null
++++ b/amd64/winabi.c
+@@ -0,0 +1,754 @@
++#include "all.h"
++
++#include <stdbool.h>
++
++typedef enum ArgPassStyle {
++  APS_Invalid = 0,
++  APS_Register,
++  APS_InlineOnStack,
++  APS_CopyAndPointerInRegister,
++  APS_CopyAndPointerOnStack,
++  APS_VarargsTag,
++  APS_EnvTag,
++} ArgPassStyle;
++
++typedef struct ArgClass {
++  Typ* type;
++  ArgPassStyle style;
++  int align;
++  uint size;
++  int cls;
++  Ref ref;
++} ArgClass;
++
++typedef struct ExtraAlloc ExtraAlloc;
++struct ExtraAlloc {
++  Ins instr;
++  ExtraAlloc* link;
++};
++
++#define ALIGN_DOWN(n, a) ((n) & ~((a)-1))
++#define ALIGN_UP(n, a) ALIGN_DOWN((n) + (a)-1, (a))
++
++// Number of stack bytes required be reserved for the callee.
++#define SHADOW_SPACE_SIZE 32
++
++int amd64_winabi_rsave[] = {RCX,  RDX,   R8,    R9,    R10,   R11,   RAX,  XMM0,
++                            XMM1, XMM2,  XMM3,  XMM4,  XMM5,  XMM6,  XMM7, XMM8,
++                            XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, -1};
++int amd64_winabi_rclob[] = {RBX, R12, R13, R14, R15, RSI, RDI, -1};
++
++MAKESURE(winabi_arrays_ok,
++         sizeof amd64_winabi_rsave == (NGPS_WIN + NFPS + 1) * sizeof(int) &&
++             sizeof amd64_winabi_rclob == (NCLR_WIN + 1) * sizeof(int));
++
++// layout of call's second argument (RCall)
++//
++// bit 0: rax returned
++// bit 1: xmm0 returned
++// bits 23: 0
++// bits 4567: rcx, rdx, r8, r9 passed
++// bits 89ab: xmm0,1,2,3 passed
++// bit c: env call (rax passed)
++// bits d..1f: 0
++
++bits amd64_winabi_retregs(Ref r, int p[2]) {
++  assert(rtype(r) == RCall);
++
++  bits b = 0;
++  int num_int_returns = r.val & 1;
++  int num_float_returns = r.val & 2;
++  if (num_int_returns == 1) {
++    b |= BIT(RAX);
++  } else {
++    b |= BIT(XMM0);
++  }
++  if (p) {
++    p[0] = num_int_returns;
++    p[1] = num_float_returns;
++  }
++  return b;
++}
++
++bits amd64_winabi_argregs(Ref r, int p[2]) {
++  assert(rtype(r) == RCall);
++
++  // On SysV, these are counts. Here, a count isn't sufficient, we actually need
++  // to know which ones are in use because they're not necessarily contiguous.
++  int int_passed = (r.val >> 4) & 15;
++  int float_passed = (r.val >> 8) & 15;
++  bool env_param = (r.val >> 12) & 1;
++
++  bits b = 0;
++  int num_int = 0;
++  int num_float = 0;
++  b |= (int_passed & 1) ? (++num_int, BIT(RCX)) : 0;
++  b |= (int_passed & 2) ? (++num_int, BIT(RDX)) : 0;
++  b |= (int_passed & 4) ? (++num_int, BIT(R8)) : 0;
++  b |= (int_passed & 8) ? (++num_int, BIT(R9)) : 0;
++  b |= (float_passed & 1) ? (++num_float, BIT(XMM0)) : 0;
++  b |= (float_passed & 2) ? (++num_float, BIT(XMM1)) : 0;
++  b |= (float_passed & 4) ? (++num_float, BIT(XMM2)) : 0;
++  b |= (float_passed & 8) ? (++num_float, BIT(XMM3)) : 0;
++  b |= env_param ? BIT(RAX) : 0;
++  if (p) {
++    // TODO: The only place this is used is live.c. I'm not sure what should be
++    // returned here wrt to using the same counter for int/float regs on win.
++    // For now, try the number of registers in use even though they're not
++    // contiguous.
++    p[0] = num_int;
++    p[1] = num_float;
++  }
++  return b;
++}
++
++typedef struct RegisterUsage {
++  // Counter for both int/float as they're counted together. Only if the bool's
++  // set in regs_passed is the given register *actually* needed for a value
++  // (i.e. needs to be saved, etc.).
++  int num_regs_passed;
++
++  // Indexed first by 0=int, 1=float, use KBASE(cls).
++  // Indexed second by register index in calling convention, so for integer,
++  // 0=RCX, 1=RDX, 2=R8, 3=R9, and for float XMM0, XMM1, XMM2, XMM3.
++  bool regs_passed[2][4];
++
++  bool rax_returned;
++  bool xmm0_returned;
++
++  // This is also used as where the va_start will start for varargs functions
++  // (there's no 'Oparv', so we need to keep track of a count here.)
++  int num_named_args_passed;
++
++  // This is set when classifying the arguments for a call (but not when
++  // classifying the parameters of a function definition).
++  bool is_varargs_call;
++
++  bool has_env;
++} RegisterUsage;
++
++static int register_usage_to_call_arg_value(RegisterUsage reg_usage) {
++  return (reg_usage.rax_returned << 0) |        //
++         (reg_usage.xmm0_returned << 1) |       //
++         (reg_usage.regs_passed[0][0] << 4) |   //
++         (reg_usage.regs_passed[0][1] << 5) |   //
++         (reg_usage.regs_passed[0][2] << 6) |   //
++         (reg_usage.regs_passed[0][3] << 7) |   //
++         (reg_usage.regs_passed[1][0] << 8) |   //
++         (reg_usage.regs_passed[1][1] << 9) |   //
++         (reg_usage.regs_passed[1][2] << 10) |  //
++         (reg_usage.regs_passed[1][3] << 11) |  //
++         (reg_usage.has_env << 12);
++}
++
++// Assigns the argument to a register if there's any left according to the
++// calling convention, and updates the regs_passed bools. Otherwise marks the
++// value as needing stack space to be passed.
++static void assign_register_or_stack(RegisterUsage* reg_usage,
++                                     ArgClass* arg,
++                                     bool is_float,
++                                     bool by_copy) {
++  if (reg_usage->num_regs_passed == 4) {
++    arg->style = by_copy ? APS_CopyAndPointerOnStack : APS_InlineOnStack;
++  } else {
++    reg_usage->regs_passed[is_float][reg_usage->num_regs_passed] = true;
++    ++reg_usage->num_regs_passed;
++    arg->style = by_copy ? APS_CopyAndPointerInRegister : APS_Register;
++  }
++  ++reg_usage->num_named_args_passed;
++}
++
++static bool type_is_by_copy(Typ* type) {
++  // Note that only these sizes are passed by register, even though e.g. a
++  // 5 byte struct would "fit", it still is passed by copy-and-pointer.
++  return type->isdark || (type->size != 1 && type->size != 2 &&
++                          type->size != 4 && type->size != 8);
++}
++
++// This function is used for both arguments and parameters.
++// begin_instr should either point at the first Oarg or Opar, and end_instr
++// should point past the last one (so to the Ocall for arguments, or to the
++// first 'real' instruction of the function for parameters).
++static void classify_arguments(RegisterUsage* reg_usage,
++                               Ins* begin_instr,
++                               Ins* end_instr,
++                               ArgClass* arg_classes,
++                               Ref* env) {
++  ArgClass* arg = arg_classes;
++  // For each argument, determine how it will be passed (int, float, stack)
++  // and update the `reg_usage` counts. Additionally, fill out arg_classes for
++  // each argument.
++  for (Ins* instr = begin_instr; instr < end_instr; ++instr, ++arg) {
++    switch (instr->op) {
++      case Oarg:
++      case Opar:
++        assign_register_or_stack(reg_usage, arg, KBASE(instr->cls),
++                                 /*by_copy=*/false);
++        arg->cls = instr->cls;
++        arg->align = 3;
++        arg->size = 8;
++        break;
++      case Oargc:
++      case Oparc: {
++        int typ_index = instr->arg[0].val;
++        Typ* type = &typ[typ_index];
++        bool by_copy = type_is_by_copy(type);
++        assign_register_or_stack(reg_usage, arg, /*is_float=*/false, by_copy);
++        arg->cls = Kl;
++        if (!by_copy && type->size <= 4) {
++          arg->cls = Kw;
++        }
++        arg->align = 3;
++        arg->size = type->size;
++        break;
++      }
++      case Oarge:
++        *env = instr->arg[0];
++        arg->style = APS_EnvTag;
++        reg_usage->has_env = true;
++        break;
++      case Opare:
++        *env = instr->to;
++        arg->style = APS_EnvTag;
++        reg_usage->has_env = true;
++        break;
++      case Oargv:
++        reg_usage->is_varargs_call = true;
++        arg->style = APS_VarargsTag;
++        break;
++    }
++  }
++
++  if (reg_usage->has_env && reg_usage->is_varargs_call) {
++    die("can't use env with varargs");
++  }
++
++  // During a varargs call, float arguments have to be duplicated to their
++  // associated integer register, so mark them as in-use too.
++  if (reg_usage->is_varargs_call) {
++    for (int i = 0; i < 4; ++i) {
++      if (reg_usage->regs_passed[/*float*/ 1][i]) {
++        reg_usage->regs_passed[/*int*/ 0][i] = true;
++      }
++    }
++  }
++}
++
++static bool is_integer_type(int ty) {
++  assert(ty >= 0 && ty < 4 && "expecting Kw Kl Ks Kd");
++  return KBASE(ty) == 0;
++}
++
++static Ref register_for_arg(int cls, int counter) {
++  assert(counter < 4);
++  if (is_integer_type(cls)) {
++    return TMP(amd64_winabi_rsave[counter]);
++  } else {
++    return TMP(XMM0 + counter);
++  }
++}
++
++static Ins* lower_call(Fn* func,
++                       Blk* block,
++                       Ins* call_instr,
++                       ExtraAlloc** pextra_alloc) {
++  // Call arguments are instructions. Walk through them to find the end of the
++  // call+args that we need to process (and return the instruction past the body
++  // of the instruction for continuing processing).
++  Ins* instr_past_args = call_instr - 1;
++  for (; instr_past_args >= block->ins; --instr_past_args) {
++    if (!isarg(instr_past_args->op)) {
++      break;
++    }
++  }
++  Ins* earliest_arg_instr = instr_past_args + 1;
++
++  // Don't need an ArgClass for the call itself, so one less than the total
++  // number of instructions we're dealing with.
++  uint num_args = call_instr - earliest_arg_instr;
++  ArgClass* arg_classes = alloc(num_args * sizeof(ArgClass));
++
++  RegisterUsage reg_usage = {0};
++  ArgClass ret_arg_class = {0};
++
++  // Ocall's two arguments are the the function to be called in 0, and, if the
++  // the function returns a non-basic type, then arg[1] is a reference to the
++  // type of the return. req checks if Refs are equal; `R` is 0.
++  bool il_has_struct_return = !req(call_instr->arg[1], R);
++  bool is_struct_return = false;
++  if (il_has_struct_return) {
++    Typ* ret_type = &typ[call_instr->arg[1].val];
++    is_struct_return = type_is_by_copy(ret_type);
++    if (is_struct_return) {
++      assign_register_or_stack(&reg_usage, &ret_arg_class, /*is_float=*/false,
++                               /*by_copy=*/true);
++    }
++    ret_arg_class.size = ret_type->size;
++  }
++  Ref env = R;
++  classify_arguments(&reg_usage, earliest_arg_instr, call_instr, arg_classes,
++                     &env);
++
++  // We now know which arguments are on the stack and which are in registers, so
++  // we can allocate the correct amount of space to stash the stack-located ones
++  // into.
++  uint stack_usage = 0;
++  for (uint i = 0; i < num_args; ++i) {
++    ArgClass* arg = &arg_classes[i];
++    // stack_usage only accounts for pushes that are for values that don't have
++    // enough registers. Large struct copies are alloca'd separately, and then
++    // only have (potentially) 8 bytes to add to stack_usage here.
++    if (arg->style == APS_InlineOnStack) {
++      if (arg->align > 4) {
++        err("win abi cannot pass alignments > 16");
++      }
++      stack_usage += arg->size;
++    } else if (arg->style == APS_CopyAndPointerOnStack) {
++      stack_usage += 8;
++    }
++  }
++  stack_usage = ALIGN_UP(stack_usage, 16);
++
++  // Note that here we're logically 'after' the call (due to emitting
++  // instructions in reverse order), so we're doing a negative stack
++  // allocation to clean up after the call.
++  Ref stack_size_ref =
++      getcon(-(int64_t)(stack_usage + SHADOW_SPACE_SIZE), func);
++  emit(Osalloc, Kl, R, stack_size_ref, R);
++
++  ExtraAlloc* return_pad = NULL;
++  if (is_struct_return) {
++    return_pad = alloc(sizeof(ExtraAlloc));
++    Ref ret_pad_ref = newtmp("abi.ret_pad", Kl, func);
++    return_pad->instr =
++        (Ins){Oalloc8, Kl, ret_pad_ref, {getcon(ret_arg_class.size, func)}};
++    return_pad->link = (*pextra_alloc);
++    *pextra_alloc = return_pad;
++    reg_usage.rax_returned = true;
++    emit(Ocopy, call_instr->cls, call_instr->to, TMP(RAX), R);
++  } else {
++    if (il_has_struct_return) {
++      // In the case that at the IL level, a struct return was specified, but as
++      // far as the calling convention is concerned it's not actually by
++      // pointer, we need to store the return value into an alloca because
++      // subsequent IL will still be treating the function return as a pointer.
++      ExtraAlloc* return_copy = alloc(sizeof(ExtraAlloc));
++      return_copy->instr =
++          (Ins){Oalloc8, Kl, call_instr->to, {getcon(8, func)}};
++      return_copy->link = (*pextra_alloc);
++      *pextra_alloc = return_copy;
++      Ref copy = newtmp("abi.copy", Kl, func);
++      emit(Ostorel, Kl, R, copy, call_instr->to);
++      emit(Ocopy, Kl, copy, TMP(RAX), R);
++      reg_usage.rax_returned = true;
++    } else if (is_integer_type(call_instr->cls)) {
++      // Only a basic type returned from the call, integer.
++      emit(Ocopy, call_instr->cls, call_instr->to, TMP(RAX), R);
++      reg_usage.rax_returned = true;
++    } else {
++      // Basic type, floating point.
++      emit(Ocopy, call_instr->cls, call_instr->to, TMP(XMM0), R);
++      reg_usage.xmm0_returned = true;
++    }
++  }
++
++  // Emit the actual call instruction. There's no 'to' value by this point
++  // because we've lowered it into register manipulation (that's the `R`),
++  // arg[0] of the call is the function, and arg[1] is register usage is
++  // documented as above (copied from SysV).
++  emit(Ocall, call_instr->cls, R, call_instr->arg[0],
++       CALL(register_usage_to_call_arg_value(reg_usage)));
++
++  if (!req(R, env)) {
++    // If there's an env arg to be passed, it gets stashed in RAX.
++    emit(Ocopy, Kl, TMP(RAX), env, R);
++  }
++
++  if (reg_usage.is_varargs_call) {
++    // Any float arguments need to be duplicated to integer registers. This is
++    // required by the calling convention so that dumping to shadow space can be
++    // done without a prototype and for varargs.
++#define DUP_IF_USED(index, floatreg, intreg)        \
++  if (reg_usage.regs_passed[/*float*/ 1][index]) {  \
++    emit(Ocast, Kl, TMP(intreg), TMP(floatreg), R); \
++  }
++    DUP_IF_USED(0, XMM0, RCX);
++    DUP_IF_USED(1, XMM1, RDX);
++    DUP_IF_USED(2, XMM2, R8);
++    DUP_IF_USED(3, XMM3, R9);
++#undef DUP_IF_USED
++  }
++
++  int reg_counter = 0;
++  if (is_struct_return) {
++    Ref first_reg = register_for_arg(Kl, reg_counter++);
++    emit(Ocopy, Kl, first_reg, return_pad->instr.to, R);
++  }
++
++  // This is where we actually do the load of values into registers or into
++  // stack slots.
++  Ref arg_stack_slots = newtmp("abi.args", Kl, func);
++  uint slot_offset = SHADOW_SPACE_SIZE;
++  ArgClass* arg = arg_classes;
++  for (Ins* instr = earliest_arg_instr; instr != call_instr; ++instr, ++arg) {
++    switch (arg->style) {
++      case APS_Register: {
++        Ref into = register_for_arg(arg->cls, reg_counter++);
++        if (instr->op == Oargc) {
++          // If this is a small struct being passed by value. The value in the
++          // instruction in this case is a pointer, but it needs to be loaded
++          // into the register.
++          emit(Oload, arg->cls, into, instr->arg[1], R);
++        } else {
++          // Otherwise, a normal value passed in a register.
++          emit(Ocopy, instr->cls, into, instr->arg[0], R);
++        }
++        break;
++      }
++      case APS_InlineOnStack: {
++        Ref slot = newtmp("abi.off", Kl, func);
++        if (instr->op == Oargc) {
++          // This is a small struct, so it's not passed by copy, but the
++          // instruction is a pointer. So we need to copy it into the stack
++          // slot. (And, remember that these are emitted backwards, so store,
++          // then load.)
++          Ref smalltmp = newtmp("abi.smalltmp", arg->cls, func);
++          emit(Ostorel, Kl, R, smalltmp, slot);
++          emit(Oload, arg->cls, smalltmp, instr->arg[1], R);
++        } else {
++          // Stash the value into the stack slot.
++          emit(Ostorel, Kl, R, instr->arg[0], slot);
++        }
++        emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
++        slot_offset += arg->size;
++        break;
++      }
++      case APS_CopyAndPointerInRegister:
++      case APS_CopyAndPointerOnStack: {
++        // Alloca a space to copy into, and blit the value from the instr to the
++        // copied location.
++        ExtraAlloc* arg_copy = alloc(sizeof(ExtraAlloc));
++        Ref copy_ref = newtmp("abi.copy", Kl, func);
++        arg_copy->instr =
++            (Ins){Oalloc8, Kl, copy_ref, {getcon(arg->size, func)}};
++        arg_copy->link = (*pextra_alloc);
++        *pextra_alloc = arg_copy;
++        emit(Oblit1, 0, R, INT(arg->size), R);
++        emit(Oblit0, 0, R, instr->arg[1], copy_ref);
++
++        // Now load the pointer into the correct register or stack slot.
++        if (arg->style == APS_CopyAndPointerInRegister) {
++          Ref into = register_for_arg(arg->cls, reg_counter++);
++          emit(Ocopy, Kl, into, copy_ref, R);
++        } else {
++          assert(arg->style == APS_CopyAndPointerOnStack);
++          Ref slot = newtmp("abi.off", Kl, func);
++          emit(Ostorel, Kl, R, copy_ref, slot);
++          emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
++          slot_offset += 8;
++        }
++        break;
++      }
++      case APS_EnvTag:
++      case APS_VarargsTag:
++        // Nothing to do here, see right before the call for reg dupe.
++        break;
++      case APS_Invalid:
++        die("unreachable");
++    }
++  }
++
++  if (stack_usage) {
++    // The last (first in call order) thing we do is allocate the the stack
++    // space we're going to fill with temporaries.
++    emit(Osalloc, Kl, arg_stack_slots,
++         getcon(stack_usage + SHADOW_SPACE_SIZE, func), R);
++  } else {
++    // When there's no usage for temporaries, we can add this into the other
++    // alloca, but otherwise emit it separately (not storing into a reference)
++    // so that it doesn't get removed later for being useless.
++    emit(Osalloc, Kl, R, getcon(SHADOW_SPACE_SIZE, func), R);
++  }
++
++  return instr_past_args;
++}
++
++static void lower_block_return(Fn* func, Blk* block) {
++  int jmp_type = block->jmp.type;
++
++  if (!isret(jmp_type) || jmp_type == Jret0) {
++    return;
++  }
++
++  // Save the argument, and set the block to be a void return because once it's
++  // lowered it's handled by the the register/stack manipulation.
++  Ref ret_arg = block->jmp.arg;
++  block->jmp.type = Jret0;
++
++  RegisterUsage reg_usage = {0};
++
++  if (jmp_type == Jretc) {
++    Typ* type = &typ[func->retty];
++    if (type_is_by_copy(type)) {
++      assert(rtype(func->retr) == RTmp);
++      emit(Ocopy, Kl, TMP(RAX), func->retr, R);
++      emit(Oblit1, 0, R, INT(type->size), R);
++      emit(Oblit0, 0, R, ret_arg, func->retr);
++    } else {
++      emit(Oload, Kl, TMP(RAX), ret_arg, R);
++    }
++    reg_usage.rax_returned = true;
++  } else {
++    int k = jmp_type - Jretw;
++    if (is_integer_type(k)) {
++      emit(Ocopy, k, TMP(RAX), ret_arg, R);
++      reg_usage.rax_returned = true;
++    } else {
++      emit(Ocopy, k, TMP(XMM0), ret_arg, R);
++      reg_usage.xmm0_returned = true;
++    }
++  }
++  block->jmp.arg = CALL(register_usage_to_call_arg_value(reg_usage));
++}
++
++static void lower_vastart(Fn* func,
++                          RegisterUsage* param_reg_usage,
++                          Ref valist) {
++  assert(func->vararg);
++  // In varargs functions:
++  // 1. the int registers are already dumped to the shadow stack space;
++  // 2. any parameters passed in floating point registers have
++  //    been duplicated to the integer registers
++  // 3. we ensure (later) that for varargs functions we're always using an rbp
++  //    frame pointer.
++  // So, the ... argument is just indexed past rbp by the number of named values
++  // that were actually passed.
++
++  Ref offset = newtmp("abi.vastart", Kl, func);
++  emit(Ostorel, Kl, R, offset, valist);
++
++  // *8 for sizeof(u64), +16 because the return address and rbp have been pushed
++  // by the time we get to the body of the function.
++  emit(Oadd, Kl, offset, TMP(RBP),
++       getcon(param_reg_usage->num_named_args_passed * 8 + 16, func));
++}
++
++static void lower_vaarg(Fn* func, Ins* vaarg_instr) {
++  // va_list is just a void** on winx64, so load the pointer, then load the
++  // argument from that pointer, then increment the pointer to the next arg.
++  // (All emitted backwards as usual.)
++  Ref inc = newtmp("abi.vaarg.inc", Kl, func);
++  Ref ptr = newtmp("abi.vaarg.ptr", Kl, func);
++  emit(Ostorel, Kl, R, inc, vaarg_instr->arg[0]);
++  emit(Oadd, Kl, inc, ptr, getcon(8, func));
++  emit(Oload, vaarg_instr->cls, vaarg_instr->to, ptr, R);
++  emit(Oload, Kl, ptr, vaarg_instr->arg[0], R);
++}
++
++static void lower_args_for_block(Fn* func,
++                                 Blk* block,
++                                 RegisterUsage* param_reg_usage,
++                                 ExtraAlloc** pextra_alloc) {
++  // global temporary buffer used by emit. Reset to the end, and predecremented
++  // when adding to it.
++  curi = &insb[NIns];
++
++  lower_block_return(func, block);
++
++  if (block->ins) {
++    // Work backwards through the instructions, either copying them unchanged,
++    // or modifying as necessary.
++    for (Ins* instr = &block->ins[block->nins - 1]; instr >= block->ins;) {
++      switch (instr->op) {
++        case Ocall:
++          instr = lower_call(func, block, instr, pextra_alloc);
++          break;
++        case Ovastart:
++          lower_vastart(func, param_reg_usage, instr->arg[0]);
++          --instr;
++          break;
++        case Ovaarg:
++          lower_vaarg(func, instr);
++          --instr;
++          break;
++        case Oarg:
++        case Oargc:
++          die("unreachable");
++        default:
++          emiti(*instr);
++          --instr;
++          break;
++      }
++    }
++  }
++
++  // This it the start block, which is processed last. Add any allocas that
++  // other blocks needed.
++  bool is_start_block = block == func->start;
++  if (is_start_block) {
++    for (ExtraAlloc* ea = *pextra_alloc; ea; ea = ea->link) {
++      emiti(ea->instr);
++    }
++  }
++
++  // emit/emiti add instructions from the end to the beginning of the temporary
++  // global buffer. dup the final version into the final block storage.
++  block->nins = &insb[NIns] - curi;
++  idup(&block->ins, curi, block->nins);
++}
++
++static Ins* find_end_of_func_parameters(Blk* start_block) {
++  Ins* i;
++  for (i = start_block->ins; i < &start_block->ins[start_block->nins]; ++i) {
++    if (!ispar(i->op)) {
++      break;
++    }
++  }
++  return i;
++}
++
++// Copy from registers/stack into values.
++static RegisterUsage lower_func_parameters(Fn* func) {
++  // This is half-open, so end points after the last Opar.
++  Blk* start_block = func->start;
++  Ins* start_of_params = start_block->ins;
++  Ins* end_of_params = find_end_of_func_parameters(start_block);
++
++  size_t num_params = end_of_params - start_of_params;
++  ArgClass* arg_classes = alloc(num_params * sizeof(ArgClass));
++  ArgClass arg_ret = {0};
++
++  // global temporary buffer used by emit. Reset to the end, and predecremented
++  // when adding to it.
++  curi = &insb[NIns];
++
++  RegisterUsage reg_usage = {0};
++  if (func->retty >= 0) {
++    bool by_copy = type_is_by_copy(&typ[func->retty]);
++    if (by_copy) {
++      assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false,
++                               by_copy);
++      Ref ret_ref = newtmp("abi.ret", Kl, func);
++      emit(Ocopy, Kl, ret_ref, TMP(RCX), R);
++      func->retr = ret_ref;
++    }
++  }
++  Ref env = R;
++  classify_arguments(&reg_usage, start_of_params, end_of_params, arg_classes,
++                     &env);
++  func->reg = amd64_winabi_argregs(
++      CALL(register_usage_to_call_arg_value(reg_usage)), NULL);
++
++  // Copy from the registers or stack slots into the named parameters. Depending
++  // on how they're passed, they either need to be copied or loaded.
++  ArgClass* arg = arg_classes;
++  int reg_counter = 0;
++  uint slot_offset = SHADOW_SPACE_SIZE / 4 + 4;
++  for (Ins* instr = start_of_params; instr < end_of_params; ++instr, ++arg) {
++    switch (arg->style) {
++      case APS_Register: {
++        Ref from = register_for_arg(arg->cls, reg_counter++);
++        // If it's a struct at the IL level, we need to copy the register into
++        // an alloca so we have something to point at (same for InlineOnStack).
++        if (instr->op == Oparc) {
++          arg->ref = newtmp("abi", Kl, func);
++          emit(Ostorel, Kl, R, arg->ref, instr->to);
++          emit(Ocopy, instr->cls, arg->ref, from, R);
++          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), R);
++        } else {
++          emit(Ocopy, instr->cls, instr->to, from, R);
++        }
++        break;
++      }
++      case APS_InlineOnStack:
++        if (instr->op == Oparc) {
++          arg->ref = newtmp("abi", Kl, func);
++          emit(Ostorel, Kl, R, arg->ref, instr->to);
++          emit(Ocopy, instr->cls, arg->ref, SLOT(-slot_offset), R);
++          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), R);
++        } else {
++          emit(Ocopy, Kl, instr->to, SLOT(-slot_offset), R);
++        }
++        slot_offset += 2;
++        break;
++      case APS_CopyAndPointerOnStack:
++        emit(Oload, Kl, instr->to, SLOT(-slot_offset), R);
++        slot_offset += 2;
++        break;
++      case APS_CopyAndPointerInRegister: {
++        // Because this has to be a copy (that we own), it is sufficient to just
++        // copy the register to the target.
++        Ref from = register_for_arg(Kl, reg_counter++);
++        emit(Ocopy, Kl, instr->to, from, R);
++        break;
++      }
++      case APS_EnvTag:
++        break;
++      case APS_VarargsTag:
++      case APS_Invalid:
++        die("unreachable");
++    }
++  }
++
++  // If there was an `env`, it was passed in RAX, so copy it into the env ref.
++  if (!req(R, env)) {
++    emit(Ocopy, Kl, env, TMP(RAX), R);
++  }
++
++  int num_created_instrs = &insb[NIns] - curi;
++  int num_other_after_instrs = (int)(start_block->nins - num_params);
++  int new_total_instrs = num_other_after_instrs + num_created_instrs;
++  Ins* new_instrs = alloc(new_total_instrs * sizeof(Ins));
++  Ins* instr_p = icpy(new_instrs, curi, num_created_instrs);
++  icpy(instr_p, end_of_params, num_other_after_instrs);
++  start_block->nins = new_total_instrs;
++  start_block->ins = new_instrs;
++
++  return reg_usage;
++}
++
++// The main job of this function is to lower generic instructions into the
++// specific details of how arguments are passed, and parameters are
++// interpreted for win x64. A useful reference is
++// https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention .
++//
++// Some of the major differences from SysV if you're comparing the code
++// (non-exhaustive):
++// - only 4 int and 4 float regs are used
++// - when an int register is assigned a value, its associated float register is
++//   left unused (and vice versa). i.e. there's only one counter as you assign
++//   arguments to registers.
++// - any structs that aren't 1/2/4/8 bytes in size are passed by pointer, not
++//   by copying them into the stack. So e.g. if you pass something like
++//   `struct { void*, int64_t }` by value, it first needs to be copied to
++//   another alloca (in order to maintain value semantics at the language
++//   level), then the pointer to that copy is treated as a regular integer
++//   argument (which then itself may *also* be copied to the stack in the case
++//   there's no integer register remaining.)
++// - when calling a varargs functions, floating point values must be duplicated
++//   integer registers. Along with the above restrictions, this makes varargs
++//   handling simpler for the callee than SysV.
++void amd64_winabi_abi(Fn* func) {
++  // The first thing to do is lower incoming parameters to this function.
++  RegisterUsage param_reg_usage = lower_func_parameters(func);
++
++  // This is the second larger part of the job. We walk all blocks, and rewrite
++  // instructions returns, calls, and handling of varargs into their win x64
++  // specific versions. Any other instructions are just passed through unchanged
++  // by using `emiti`.
++
++  // Skip over the entry block, and do it at the end so that our later
++  // modifications can add allocations to the start block. In particular, we
++  // need to add stack allocas for copies when structs are passed or returned by
++  // value.
++  ExtraAlloc* extra_alloc = NULL;
++  for (Blk* block = func->start->link; block; block = block->link) {
++    lower_args_for_block(func, block, &param_reg_usage, &extra_alloc);
++  }
++  lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
++
++  if (debug['A']) {
++    fprintf(stderr, "\n> After ABI lowering:\n");
++    printfn(func, stderr);
++  }
++}
+diff --git a/doc/il.txt b/doc/il.txt
+index 7ec5fd0..746a7d2 100644
+--- a/doc/il.txt
++++ b/doc/il.txt
+@@ -976,6 +976,7 @@ is possible to conservatively use the maximum size and
+ alignment required by all the targets.
+ 
+     type :valist = align 8 { 24 }  # For amd64_sysv
++    type :valist = align 8 { 8 }   # For amd64_win
+     type :valist = align 8 { 32 }  # For arm64
+     type :valist = align 8 { 8 }   # For rv64
+ 
+diff --git a/doc/native_win.txt b/doc/native_win.txt
+new file mode 100644
+index 0000000..bc88f05
+--- /dev/null
++++ b/doc/native_win.txt
+@@ -0,0 +1,15 @@
++There is an experimental amd64_win (native Windows ABI and calling
++convention).
++
++In tree, this is currently only tested via cross-compilation from a
++Linux host, and using wine to run the tests.
++
++You'll need something like:
++
++	sudo apt install mingw64-w64 dos2unix wine
++
++and then
++
++	make check-amd64_win
++
++should pass.
+diff --git a/emit.c b/emit.c
+index ba0174b..2f1a715 100644
+--- a/emit.c
++++ b/emit.c
+@@ -218,6 +218,14 @@ macho_emitfin(FILE *f)
+ 	emitfin(f, sec);
+ }
+ 
++void
++pe_emitfin(FILE *f)
++{
++	static char *sec[3] = { ".rodata", ".rodata", ".rodata" };
++
++	emitfin(f ,sec);
++}
++
+ static uint32_t *file;
+ static uint nfile;
+ static uint curfile;
+diff --git a/main.c b/main.c
+index 5ecb4d0..c21320b 100644
+--- a/main.c
++++ b/main.c
+@@ -20,6 +20,7 @@ char debug['Z'+1] = {
+ 
+ extern Target T_amd64_sysv;
+ extern Target T_amd64_apple;
++extern Target T_amd64_win;
+ extern Target T_arm64;
+ extern Target T_arm64_apple;
+ extern Target T_rv64;
+@@ -27,6 +28,7 @@ extern Target T_rv64;
+ static Target *tlist[] = {
+ 	&T_amd64_sysv,
+ 	&T_amd64_apple,
++	&T_amd64_win,
+ 	&T_arm64,
+ 	&T_arm64_apple,
+ 	&T_rv64,
+diff --git a/test/abi3.ssa b/test/abi3.ssa
+index cc263c2..5ca71f4 100644
+--- a/test/abi3.ssa
++++ b/test/abi3.ssa
+@@ -28,7 +28,7 @@ function $test() {
+ 
+ # >>> driver
+ # #include <stdio.h>
+-# struct four { long l; char c; int i; };
++# struct four { long long l; char c; int i; };
+ # extern void test(void);
+ # int F(int a0, int a1, int a2, int a3, struct four s, int a6) {
+ # 	printf("%d %d %d %d %d %d %d\n",
+diff --git a/test/abi5.ssa b/test/abi5.ssa
+index 65b702c..cd786cc 100644
+--- a/test/abi5.ssa
++++ b/test/abi5.ssa
+@@ -107,7 +107,7 @@ function $test() {
+ # typedef struct { int i; } st2;
+ # typedef struct { float f; int i; } st3;
+ # typedef struct { int i; double d; } st4;
+-# typedef struct { float f; long l; } st5;
++# typedef struct { float f; long long l; } st5;
+ # typedef struct { char t[16]; } st6;
+ # typedef struct { float f; double d; } st7;
+ # typedef struct { int i[4]; } st8;
+diff --git a/test/abi8.ssa b/test/abi8.ssa
+index e1e6c42..b6bc941 100644
+--- a/test/abi8.ssa
++++ b/test/abi8.ssa
+@@ -150,7 +150,7 @@ function w $main() {
+ # typedef struct { float s0, s1; } Sss;
+ # typedef struct { float s; double d; } Ssd;
+ # typedef struct { int w0, w1; } Sww;
+-# typedef struct { long l; char b; } Slb;
++# typedef struct { long long l; char b; } Slb;
+ # typedef struct { char b[17]; } Sbig;
+ # typedef struct { double d0, d1, d2; } Sddd;
+ # Sfi1 zfi1, fi1 = { -123, 4.56 };
+@@ -168,11 +168,11 @@ function w $main() {
+ # void pss(Sss *s) { printf(" { %g, %g }", s->s0, s->s1); }
+ # void psd(Ssd *s) { printf(" { %g, %g }", s->s, s->d); }
+ # void pww(Sww *s) { printf(" { %d, %d }", s->w0, s->w1); }
+-# void plb(Slb *s) { printf(" { %ld, '%c' }", s->l, s->b); }
++# void plb(Slb *s) { printf(" { %lld, '%c' }", s->l, s->b); }
+ # void pbig(Sbig *s) { printf(" \"%.17s\"", s->b); }
+ # void pddd(Sddd *s) { printf(" { %g, %g, %g }", s->d0, s->d1, s->d2); }
+ # void pw(int w) { printf(" %d", w); }
+-# void pl(long l) { printf(" %ld", l); }
++# void pl(long long l) { printf(" %lld", l); }
+ # void ps(float s) { printf(" %g", s); }
+ # void pd(double d) { printf(" %g", d); }
+ # /* --------------------------- */
+@@ -206,8 +206,8 @@ function w $main() {
+ # 	pss(&p0); puts("");
+ # 	qfn4(p0);
+ # }
+-# extern void qfn5(double, double, double, double, double, double, double, Sss, float, long);
+-# void cfn5(double p0, double p1, double p2, double p3, double p4, double p5, double p6, Sss p7, float p8, long p9) {
++# extern void qfn5(double, double, double, double, double, double, double, Sss, float, long long);
++# void cfn5(double p0, double p1, double p2, double p3, double p4, double p5, double p6, Sss p7, float p8, long long p9) {
+ # 	printf("qbe->c(%d)", 5);
+ # 	pss(&p7); ps(p8); pl(p9); puts("");
+ # 	qfn5(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9);
+@@ -236,8 +236,8 @@ function w $main() {
+ # 	pbig(&p0); puts("");
+ # 	qfn9(p0);
+ # }
+-# extern void qfn10(int, int, int, int, int, int, int, int, Sbig, float, long);
+-# void cfn10(int p0, int p1, int p2, int p3, int p4, int p5, int p6, int p7, Sbig p8, float p9, long p10) {
++# extern void qfn10(int, int, int, int, int, int, int, int, Sbig, float, long long);
++# void cfn10(int p0, int p1, int p2, int p3, int p4, int p5, int p6, int p7, Sbig p8, float p9, long long p10) {
+ # 	printf("qbe->c(%d)", 10);
+ # 	pbig(&p8); ps(p9); pl(p10); puts("");
+ # 	qfn10(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10);
+diff --git a/test/conaddr.ssa b/test/conaddr.ssa
+index 9e24d49..0ded18e 100644
+--- a/test/conaddr.ssa
++++ b/test/conaddr.ssa
+@@ -1,3 +1,4 @@
++# skip amd64_win (no signals on win32)
+ # test amd64 addressing modes
+ 
+ export
+diff --git a/test/dark.ssa b/test/dark.ssa
+index ed9ec21..c508e48 100644
+--- a/test/dark.ssa
++++ b/test/dark.ssa
+@@ -1,4 +1,4 @@
+-# skip arm64 arm64_apple rv64
++# skip arm64 arm64_apple rv64 amd64_win
+ # a hack example,
+ # we use a dark type to get
+ # a pointer to the stack.
+diff --git a/test/tls.ssa b/test/tls.ssa
+index a17dda9..381279f 100644
+--- a/test/tls.ssa
++++ b/test/tls.ssa
+@@ -1,3 +1,4 @@
++# skip amd64_win (pthread and tls not implemented)
+ thread data $i = align 4 {w 42}
+ data $fmti = align 1 {b "i%d==%d\n", b 0}
+ 
+diff --git a/tools/test.sh b/tools/test.sh
+index 23c6663..9412708 100755
+--- a/tools/test.sh
++++ b/tools/test.sh
+@@ -62,6 +62,29 @@ init() {
+ 		fi
+ 		bin="$bin -t rv64"
+ 		;;
++	amd64_win)
++		for p in x86_64-w64-mingw32
++		do
++			cc="$p-gcc -static"
++			qemu="wine"
++			dos2unix="dos2unix"
++			if
++				$cc -v >/dev/null 2>&1 &&
++				$dos2unix -V >/dev/null 2>&1 &&
++				$qemu --version >/dev/null 2>&1
++			then
++				break
++			fi
++			cc=
++		done
++		if test -z "$cc"
++		then
++			echo "Cannot find windows compiler or wine."
++			exit 1
++		fi
++		export WINEDEBUG=-all
++		bin="$bin -t amd64_win"
++		;;
+ 	"")
+ 		case `uname` in
+ 		*Darwin*)
+@@ -157,7 +180,7 @@ once() {
+ 
+ 	if test -s $out
+ 	then
+-		$qemu $exe a b c | diff -u - $out
++		$qemu $exe a b c | dos2unix | diff -u - $out
+ 		ret=$?
+ 		reason="output"
+ 	else
+-- 
+2.43.0
+

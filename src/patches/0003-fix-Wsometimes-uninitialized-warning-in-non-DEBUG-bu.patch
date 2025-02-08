@@ -1,0 +1,25 @@
+From 031186dd16ada01e3a436f37436a4df136b63dd8 Mon Sep 17 00:00:00 2001
+From: Scott Graham <sgraham@gmail.com>
+Date: Thu, 9 Jan 2025 15:28:55 -0800
+Subject: [PATCH 4/4] fix -Wsometimes-uninitialized warning in non DEBUG builds
+
+---
+ rv64/isel.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rv64/isel.c b/rv64/isel.c
+index 8921a07..99cc158 100644
+--- a/rv64/isel.c
++++ b/rv64/isel.c
+@@ -154,7 +154,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+ 		i.op = KWIDE(k) ? Oceqd : Oceqs;
+ 		break;
+ 	default:
+-		assert(0 && "unknown comparison");
++		die("unknown comparison");
+ 	}
+ 	if (op < NCmpI)
+ 		i.op = sign ? Ocsltl : Ocultl;
+-- 
+2.39.3 (Apple Git-146)
+

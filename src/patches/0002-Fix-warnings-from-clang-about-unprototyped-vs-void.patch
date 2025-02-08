@@ -1,0 +1,147 @@
+From 42496803f76fd1af79ad8d87bbec391fafad5e20 Mon Sep 17 00:00:00 2001
+From: Scott Graham <sgraham@gmail.com>
+Date: Sun, 12 Jan 2025 22:08:28 -0800
+Subject: [PATCH 3/4] Fix warnings from clang about unprototyped vs (void)
+
+e.g.
+
+clang -O3 -std=c99 -g -Wall -Wextra -Wpedantic -c cfg.c -o cfg.o
+cfg.c:4:7: warning: a function declaration without a prototype is deprecated in all versions of C [-Wstrict-prototypes]
+    4 | newblk()
+      |       ^
+      |        void
+1 warning generated.
+---
+ cfg.c   |  2 +-
+ parse.c | 18 +++++++++---------
+ rega.c  |  2 +-
+ util.c  |  2 +-
+ 4 files changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/cfg.c b/cfg.c
+index 406c307..f1fa21a 100644
+--- a/cfg.c
++++ b/cfg.c
+@@ -1,7 +1,7 @@
+ #include "all.h"
+ 
+ Blk *
+-newblk()
++newblk(void)
+ {
+ 	static Blk z;
+ 	Blk *b;
+diff --git a/parse.c b/parse.c
+index e896679..e321254 100644
+--- a/parse.c
++++ b/parse.c
+@@ -179,7 +179,7 @@ err(char *s, ...)
+ }
+ 
+ static void
+-lexinit()
++lexinit(void)
+ {
+ 	static int done;
+ 	int i;
+@@ -201,7 +201,7 @@ lexinit()
+ }
+ 
+ static int64_t
+-getint()
++getint(void)
+ {
+ 	uint64_t n;
+ 	int c, m;
+@@ -222,7 +222,7 @@ getint()
+ }
+ 
+ static int
+-lex()
++lex(void)
+ {
+ 	static char tok[NString];
+ 	int c, i, esc;
+@@ -332,7 +332,7 @@ Alpha:
+ }
+ 
+ static int
+-peek()
++peek(void)
+ {
+ 	if (thead == Txxx)
+ 		thead = lex();
+@@ -340,7 +340,7 @@ peek()
+ }
+ 
+ static int
+-next()
++next(void)
+ {
+ 	int t;
+ 
+@@ -350,7 +350,7 @@ next()
+ }
+ 
+ static int
+-nextnl()
++nextnl(void)
+ {
+ 	int t;
+ 
+@@ -415,7 +415,7 @@ tmpref(char *v)
+ }
+ 
+ static Ref
+-parseref()
++parseref(void)
+ {
+ 	Con c;
+ 
+@@ -580,7 +580,7 @@ findblk(char *name)
+ }
+ 
+ static void
+-closeblk()
++closeblk(void)
+ {
+ 	curb->nins = curi - insb;
+ 	idup(&curb->ins, insb, curb->nins);
+@@ -1012,7 +1012,7 @@ parsefields(Field *fld, Typ *ty, int t)
+ }
+ 
+ static void
+-parsetyp()
++parsetyp(void)
+ {
+ 	Typ *ty;
+ 	int t, al;
+diff --git a/rega.c b/rega.c
+index 8e601c9..4d2a06b 100644
+--- a/rega.c
++++ b/rega.c
+@@ -247,7 +247,7 @@ pmrec(enum PMStat *status, int i, int *k)
+ }
+ 
+ static void
+-pmgen()
++pmgen(void)
+ {
+ 	int i;
+ 	enum PMStat *status;
+diff --git a/util.c b/util.c
+index 2e4b4cc..1a71030 100644
+--- a/util.c
++++ b/util.c
+@@ -90,7 +90,7 @@ alloc(size_t n)
+ }
+ 
+ void
+-freeall()
++freeall(void)
+ {
+ 	void **pp;
+ 
+-- 
+2.39.3 (Apple Git-146)
+

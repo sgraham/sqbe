@@ -1,0 +1,96 @@
+From 23053db980498e4daa29ff89ef8d9e604cea4d26 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Tue, 14 Jan 2025 16:50:50 -0800
+Subject: [PATCH] Add printtyp() and debug['T']
+
+---
+ all.h   |  1 +
+ main.c  |  1 +
+ parse.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 42 insertions(+)
+
+diff --git a/all.h b/all.h
+index 3161440..049a026 100644
+--- a/all.h
++++ b/all.h
+@@ -518,6 +518,7 @@ bshas(BSet *bs, uint elt)
+ extern Op optab[NOp];
+ void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
+ void printfn(Fn *, FILE *);
++void printtyp(Typ*, FILE *);
+ void printref(Ref, Fn *, FILE *);
+ void err(char *, ...) __attribute__((noreturn));
+ 
+diff --git a/main.c b/main.c
+index c21320b..81604e4 100644
+--- a/main.c
++++ b/main.c
+@@ -16,6 +16,7 @@ char debug['Z'+1] = {
+ 	['L'] = 0, /* liveness */
+ 	['S'] = 0, /* spilling */
+ 	['R'] = 0, /* reg. allocation */
++	['T'] = 0, /* types */
+ };
+ 
+ extern Target T_amd64_sysv;
+diff --git a/parse.c b/parse.c
+index e321254..a8090d0 100644
+--- a/parse.c
++++ b/parse.c
+@@ -1066,6 +1066,11 @@ parsetyp(void)
+ 	} else
+ 		parsefields(ty->fields[n++], ty, t);
+ 	ty->nunion = n;
++
++  if (debug['T']) {
++    fprintf(stderr, "\n> Parsed type:\n");
++    printtyp(ty, stderr);
++  }
+ }
+ 
+ static void
+@@ -1264,6 +1269,41 @@ printcon(Con *c, FILE *f)
+ 	}
+ }
+ 
++static char* field_type_name[] = {
++    [FEnd] = "End",  //
++    [Fb] = "b",      //
++    [Fh] = "h",      //
++    [Fw] = "w",      //
++    [Fl] = "l",      //
++    [Fs] = "s",      //
++    [Fd] = "d",      //
++    [FPad] = "Pad",  //
++    [FTyp] = "Typ",  //
++};
++
++void printtyp(Typ* ty, FILE* f) {
++  fprintf(f, "type :%s\n", ty->name);
++  fprintf(f, "  isdark: %d\n", ty->isdark);
++  fprintf(f, "  isunion: %d\n", ty->isunion);
++  fprintf(f, "  align: %d\n", ty->align);
++  fprintf(f, "  size: %u\n", (uint)ty->size);
++  fprintf(f, "  nunion: %u\n", ty->nunion);
++  for (uint i = 0; i < ty->nunion; ++i) {
++    fprintf(f, "  union %d\n", i);
++    Field* fld = ty->fields[i];
++    for (int j = 0; j < NField+1; ++j) {
++      if (fld[j].type == FTyp) {
++        fprintf(f, "    field %d: %s => %s\n", j, field_type_name[fld[j].type],
++                typ[fld[j].len].name);
++      } else {
++        fprintf(f, "    field %d: %s len %u\n", j, field_type_name[fld[j].type], fld[j].len);
++      }
++      if (fld[j].type == FEnd)
++        break;
++    }
++  }
++}
++
+ void
+ printref(Ref r, Fn *fn, FILE *f)
+ {
+-- 
+2.39.3 (Apple Git-146)
+
