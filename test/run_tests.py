@@ -2,12 +2,13 @@ import glob
 import subprocess
 import sys
 
-CC = ["clang-cl", "/nologo"]
+TEST_CC = ["cl", "/nologo"]
+GEN_CC = ["clang"]
 
 
-def cc(in_file, out_bin):
-    subprocess.run(
-        CC
+def test_cc(in_file, out_bin):
+    proc = subprocess.run(
+        TEST_CC
         + [
             "/D_CRT_SECURE_NO_DEPRECATE",
             "/I../src",
@@ -16,8 +17,17 @@ def cc(in_file, out_bin):
             "/link",
             "/out:%s" % out_bin,
         ],
-        check=True,
+        capture_output=True,
     )
+    if proc.returncode != 0:
+        print('test_cc failed')
+        sys.stdout.write(proc.stdout.decode('utf-8'))
+        sys.stderr.write(proc.stderr.decode('utf-8'))
+        sys.exit(1)
+
+
+def gen_cc(in_file, out_bin):
+    subprocess.run(GEN_CC + [in_file, "-o", out_bin], check=True)
 
 
 def get_expected_output(filename):
@@ -61,13 +71,15 @@ class hexdump:
 
 
 def do_test(f):
-    print("%s... " % f, end='')
+    print("%s... " % f, end="")
     sys.stdout.flush()
     expected = get_expected_output(f)
-    cc(f, "tmp.exe")
+    test_cc(f, "tmp.exe")
     subprocess.run(["tmp.exe", "tmp.s"], check=True)
-    cc("tmp.s", "gen.exe")
-    proc = subprocess.run(["gen.exe"], capture_output=True, check=True, universal_newlines=True)
+    gen_cc("tmp.s", "gen.exe")
+    proc = subprocess.run(
+        ["gen.exe"], capture_output=True, check=True, universal_newlines=True
+    )
     got = proc.stdout
     if got != expected:
         print("FAILED")

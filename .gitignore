@@ -1,7 +1,7 @@
 src/qbe
 src/sqbe.c
 src/sqbe.h
-test/sqbe.obj
+test/*.obj
+test/gen.exe
 test/tmp.exe
 test/tmp.s
-test/gen.exe
