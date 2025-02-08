@@ -1,5 +1,10 @@
-import glob
 import os
+
+ROOT_DIR = os.path.normpath(
+    os.path.join(os.path.abspath(os.path.dirname(__file__)), "..")
+)
+
+import glob
 import platform
 import re
 import string
@@ -446,6 +451,8 @@ def staticize_prototypes(contents):
 
 
 def main():
+    os.chdir(os.path.join(ROOT_DIR, 'src'))
+
     QBE_ROOT = os.path.join(os.getcwd(), "qbe")
     if not os.path.exists(QBE_ROOT):
         subprocess.check_call(["git", "clone", "git://c9x.me/qbe.git"])

@@ -19,9 +19,7 @@ jobs:
         python-version: '3.12'
     - run: git config --global user.name "Patcher"
     - run: git config --global user.email "git@example.com"
-    - run: |
-        cd src
-        python build_amalg.py
+    - run: python src/build_amalg.py
     - uses: pyTooling/Actions/releaser@r0
       with:
         runs-on: ubuntu-latest

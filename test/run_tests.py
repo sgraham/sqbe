@@ -1,3 +1,9 @@
+import os
+
+ROOT_DIR = os.path.normpath(
+    os.path.join(os.path.abspath(os.path.dirname(__file__)), "..")
+)
+
 import glob
 import subprocess
 import sys
@@ -20,9 +26,9 @@ def test_cc(in_file, out_bin):
         capture_output=True,
     )
     if proc.returncode != 0:
-        print('test_cc failed')
-        sys.stdout.write(proc.stdout.decode('utf-8'))
-        sys.stderr.write(proc.stderr.decode('utf-8'))
+        print("test_cc failed")
+        sys.stdout.write(proc.stdout.decode("utf-8"))
+        sys.stderr.write(proc.stderr.decode("utf-8"))
         sys.exit(1)
 
 
@@ -94,6 +100,7 @@ def do_test(f):
 
 
 def main():
+    os.chdir(os.path.join(ROOT_DIR, "test"))
     for f in glob.glob("*.c"):
         do_test(f)
 
