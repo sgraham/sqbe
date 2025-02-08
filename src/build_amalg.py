@@ -230,9 +230,18 @@ def make_instr_prototypes(ops_h_contents):
             is_single_size_class, size_class0 = only_single_size_class(arg0)
             if is_single_size_class:
                 proto = "SqRef sq_i_%s(SqRef arg0 /*%s*/)" % (op, "".join(arg0))
+                proto_i = "void sq_i_%s_into(SqRef into, SqRef arg0 /*%s*/)" % (
+                    op,
+                    "".join(arg0),
+                )
                 defns += (
                     proto
                     + " { return _normal_one_op_instr(O%s, %s, arg0); }\n"
+                    % (op, size_class0)
+                )
+                defns += (
+                    proto_i
+                    + " { _normal_one_op_instr_into(O%s, _sqref_to_internal_ref(into), %s, arg0); }\n"
                     % (op, size_class0)
                 )
             else:
@@ -240,9 +249,21 @@ def make_instr_prototypes(ops_h_contents):
                     op,
                     "".join(arg0),
                 )
+                proto_i = (
+                    "void sq_i_%s_into(SqRef into, SqType size_class, SqRef arg0 /*%s*/)"
+                    % (
+                        op,
+                        "".join(arg0),
+                    )
+                )
                 defns += (
                     proto
                     + " { return _normal_one_op_instr(O%s, size_class, arg0); }\n"
+                    % (op)
+                )
+                defns += (
+                    proto_i
+                    + " { _normal_one_op_instr_into(O%s, _sqref_to_internal_ref(into), size_class, arg0); }\n"
                     % (op)
                 )
         else:
@@ -252,6 +273,7 @@ def make_instr_prototypes(ops_h_contents):
                     "".join(arg0),
                     "".join(arg1),
                 )
+                proto_i = None
                 defns += (
                     proto + " { _normal_two_op_void_instr(O%s, arg0, arg1); }\n" % op
                 )
@@ -262,12 +284,23 @@ def make_instr_prototypes(ops_h_contents):
                     "SqRef sq_i_%s(SqType size_class, SqRef arg0 /*%s*/, SqRef arg1 /*%s*/)"
                     % (op, "".join(arg0), "".join(arg1))
                 )
+                proto_i = (
+                    "void sq_i_%s_into(SqRef into, SqType size_class, SqRef arg0 /*%s*/, SqRef arg1 /*%s*/)"
+                    % (op, "".join(arg0), "".join(arg1))
+                )
                 defns += (
                     proto
                     + " { return _normal_two_op_instr(O%s, size_class, arg0, arg1); }\n"
                     % op
                 )
+                defns += (
+                    proto_i
+                    + " { _normal_two_op_instr_into(O%s, _sqref_to_internal_ref(into), size_class, arg0, arg1); }\n"
+                    % op
+                )
         decls += proto + ";\n"
+        if proto_i:
+            decls += proto_i + ";\n"
 
     return (decls, defns)
 

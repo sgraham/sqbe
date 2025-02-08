@@ -7,14 +7,14 @@ If you're looking for a stable backend that accepts [text
 input](https://c9x.me/compile/doc/il.html) and generates a `.s`, you
 should choose [qbe](https://c9x.me/compile/).
 
-In addition to qbe's features, sqbe adds the following features:
-available on all targets yet):
+sqbe differs from qbe in the following ways:
 
 - Windows support (sqbe's `amd64_win` target is being upstreamed to qbe, but
   sqbe also builds on Windows)
 - A C API (rather than file-based textual input)
 - [Amalgamated build](https://github.com/sgraham/sqbe/releases/tag/nightly) for
-  simple project integration
+  easy integration
+- Context-ized implementation to be suitable for library use
 
 Planned features:
 

@@ -1,7 +1,22 @@
+// OUT: 0
+// OUT: 1
+// OUT: 2
+// OUT: 3
+// OUT: 4
+// OUT: 5
+// OUT: 6
+// OUT: 7
+// OUT: 8
+// OUT: 9
+
 #include "sqbe.h"
 
 int main(int argc, char** argv) {
-  sq_init(SQ_TARGET_AMD64_WIN, stdout, "P");
+  if (argc != 2) {
+    fprintf(stderr, "no out file\n");
+    return 1;
+  }
+  sq_init(SQ_TARGET_AMD64_WIN, fopen(argv[1], "wb"), "");
 
   SqBlock b_start = sq_func_start(sq_linkage_export, sq_type_word, "main");
 
@@ -18,8 +33,7 @@ int main(int argc, char** argv) {
   SqRef c = sq_i_add(sq_type_word, n, sq_const_int('0'));
   sq_i_storeb(c, y);
 
-  SqRef r =
-      sq_i_call1(sq_type_word, sq_extern("puts"), (SqCallArg){sq_type_long, y});
+  SqRef r = sq_i_call1(sq_type_word, sq_extern("puts"), (SqCallArg){sq_type_long, y});
 
   sq_i_add_into(n1, sq_type_word, n, sq_const_int(1));
   SqRef cmp = sq_i_cslew(sq_type_word, n1, sq_const_int(9));
