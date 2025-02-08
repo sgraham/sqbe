@@ -6,16 +6,23 @@ mostly used to convert/generate test code.
 import sys
 
 
-def parse(lines):
-    get_linkages
-    for line in lines:
-        print(line)
+class Parser:
+    def __init__(self, contents):
+        self.contents = contents
+        self.lex()
+        self.parse()
+
+    def lex(self):
+        self.skip_whitespace()
+
+    def parse():
+        pass
 
 
 def main():
     with open(sys.argv[1], "rb") as f:
         contents = f.read().decode("utf-8")
-    parse(contents.splitlines())
+    p = Parser(contents)
 
 
 if __name__ == "__main__":

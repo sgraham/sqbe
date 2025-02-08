@@ -23,13 +23,13 @@ SQ_OPAQUE_STRUCT_DEF(SqSymbol);
 #undef SQ_OPAQUE_STRUCT_DEF
 
 typedef enum SqTarget {
-  SQ_TARGET_DEFAULT,        //
-  SQ_TARGET_AMD64_APPLE,    //
-  SQ_TARGET_AMD64_SYSV,     //
-  SQ_TARGET_AMD64_WINDOWS,  //
-  SQ_TARGET_ARM64,          //
-  SQ_TARGET_ARM64_APPLE,    //
-  SQ_TARGET_RV64,           //
+  SQ_TARGET_DEFAULT,      //
+  SQ_TARGET_AMD64_APPLE,  //
+  SQ_TARGET_AMD64_SYSV,   //
+  SQ_TARGET_AMD64_WIN,    //
+  SQ_TARGET_ARM64,        //
+  SQ_TARGET_ARM64_APPLE,  //
+  SQ_TARGET_RV64,         //
 } SqTarget;
 
 /*
@@ -110,12 +110,19 @@ void sq_data_double(double d);
 void sq_data_ref(SqSymbol ref, int64_t offset);
 SqSymbol sq_data_end(void);
 
-void sq_func_start(SqLinkage linkage, SqType return_type, const char* name);
+// Returns the start block (can be useful for subsequent phi instructions,
+// otherwise you can just ignore this return value.)
+SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name);
 SqSymbol sq_func_end(void);
 
 // SqRef are function local, so the return value from cannot be cached across
 // functions.
 SqRef sq_ref_for_symbol(SqSymbol sym);
+
+// Forward declare a reference for the `_into` versions of instructions.
+// Normally this is unnecessary, typically only when using a phi instruction do
+// you need the SqRef before the instruction that generates it.
+SqRef sq_ref_declare(void);
 
 SqRef sq_extern(const char* name);
 

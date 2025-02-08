@@ -131,7 +131,7 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
     case SQ_TARGET_AMD64_SYSV:
       T = T_amd64_sysv;
       break;
-    case SQ_TARGET_AMD64_WINDOWS:
+    case SQ_TARGET_AMD64_WIN:
       T = T_amd64_win;
       break;
     case SQ_TARGET_ARM64:
@@ -196,7 +196,7 @@ void sq_shutdown(void) {
   sq_initialized = SQIS_UNINITIALIZED;
 }
 
-void sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
+SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
   Lnk lnk = _linkage_to_internal_lnk(linkage);
   lnk.align = 16;
 
@@ -225,7 +225,7 @@ void sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
   strncpy(curf->name, name, NString - 1);
   _ps = PLbl;
 
-  sq_block_declare_and_start();
+  return sq_block_declare_and_start();
 }
 
 SqRef sq_func_param_named(SqType type, const char* name) {
@@ -303,6 +303,12 @@ SqRef sq_ref_for_symbol(SqSymbol sym) {
   c.sym.id = sym.u;
   Ref ret = newcon(&c, curf);
   return _internal_ref_to_sqref(ret);
+}
+
+SqRef sq_ref_declare(void) {
+  Ref tmp = newtmp(NULL, Kx, curf);
+  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
+  return _internal_ref_to_sqref(tmp);
 }
 
 SqRef sq_extern(const char* name) {
@@ -511,19 +517,23 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
   return _internal_ref_to_sqref(tmp);
 }
 
-static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef arg1) {
-  SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */size_class.u <= SQ_TYPE_D);
+static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0, SqRef arg1) {
+  SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   SQ_ASSERT(curi - insb < NIns);
-  Ref tmp = newtmp(NULL, Kx, curf);
-  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
   curi->op = op;
   curi->cls = size_class.u;
-  curi->to = tmp;
+  curi->to = into;
   curi->arg[0] = _sqref_to_internal_ref(arg0);
   curi->arg[1] = _sqref_to_internal_ref(arg1);
   ++curi;
   _ps = PIns;
+}
+
+static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef arg1) {
+  Ref tmp = newtmp(NULL, Kx, curf);
+  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
+  _normal_two_op_instr_into(op, tmp, size_class, arg0, arg1);
   return _internal_ref_to_sqref(tmp);
 }
 
@@ -539,19 +549,23 @@ static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   _ps = PIns;
 }
 
-static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
-  SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */size_class.u <= SQ_TYPE_D);
+static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0) {
+  SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   SQ_ASSERT(curi - insb < NIns);
-  Ref tmp = newtmp(NULL, Kx, curf);
-  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
   curi->op = op;
   curi->cls = size_class.u;
-  curi->to = tmp;
+  curi->to = into;
   curi->arg[0] = _sqref_to_internal_ref(arg0);
   curi->arg[1] = R;
   ++curi;
   _ps = PIns;
+}
+
+static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
+  Ref tmp = newtmp(NULL, Kx, curf);
+  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
+  _normal_one_op_instr_into(op, tmp, size_class, arg0);
   return _internal_ref_to_sqref(tmp);
 }
 
@@ -685,7 +699,8 @@ void sq_data_string(const char* str) {
   size_t len = _str_repr(str, NULL);
   char* escaped = alloca(len);
   size_t len2 = _str_repr(str, escaped);
-  SQ_ASSERT(len == len2); (void)len2;
+  SQ_ASSERT(len == len2);
+  (void)len2;
   _curd.u.str = (char*)escaped;
   qbe_main_data(&_curd);
 }
@@ -710,7 +725,7 @@ SqSymbol sq_data_end(void) {
 // QBE appears to define an arbitrary number of fields, it just drops the
 // details of fields beyond the 32nd (but still updates overall struct
 // size/alignment for additional values).
-void sq_type_struct_start(const char *name, int align) {
+void sq_type_struct_start(const char* name, int align) {
   vgrow(&typ, _ntyp + 1);
   _curty = &typ[_ntyp++];
   _curty->isdark = 0;
@@ -745,14 +760,46 @@ void sq_type_add_field_with_count(SqType field, uint32_t count) {
   int ty;
   int cls = _sqtype_to_cls_and_ty(field, &ty);
   switch (cls) {
-    case SQ_TYPE_D: type = Fd; s = 8; a = 3; break;
-    case SQ_TYPE_L: type = Fl; s = 8; a = 3; break;
-    case SQ_TYPE_S: type = Fs; s = 4; a = 2; break;
-    case SQ_TYPE_W: type = Fw; s = 4; a = 2; break;
-    case SQ_TYPE_SH: type = Fh; s = 2; a = 1; break;
-    case SQ_TYPE_UH: type = Fh; s = 2; a = 1; break;
-    case SQ_TYPE_SB: type = Fb; s = 1; a = 0; break;
-    case SQ_TYPE_UB: type = Fb; s = 1; a = 0; break;
+    case SQ_TYPE_D:
+      type = Fd;
+      s = 8;
+      a = 3;
+      break;
+    case SQ_TYPE_L:
+      type = Fl;
+      s = 8;
+      a = 3;
+      break;
+    case SQ_TYPE_S:
+      type = Fs;
+      s = 4;
+      a = 2;
+      break;
+    case SQ_TYPE_W:
+      type = Fw;
+      s = 4;
+      a = 2;
+      break;
+    case SQ_TYPE_SH:
+      type = Fh;
+      s = 2;
+      a = 1;
+      break;
+    case SQ_TYPE_UH:
+      type = Fh;
+      s = 2;
+      a = 1;
+      break;
+    case SQ_TYPE_SB:
+      type = Fb;
+      s = 1;
+      a = 0;
+      break;
+    case SQ_TYPE_UB:
+      type = Fb;
+      s = 1;
+      a = 0;
+      break;
     default:
       type = FTyp;
       ty1 = &typ[field.u];
