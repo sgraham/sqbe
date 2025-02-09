@@ -799,6 +799,8 @@ def main():
                 "-pedantic",
                 "-c",
                 "in_c_test.c",
+                "-o",
+                "sqbe.o"
             ]
         )
         # And can link from C++.
@@ -816,8 +818,8 @@ def main():
         )
         # And that the the only exported symbols from sqbe are those we expect
         # (prefixed by `sq_`).
-        symsp = subprocess.run(["readelf", "-s", "in_c_test.o"], capture_output=True)
-        os.remove("in_c_test.o")
+        symsp = subprocess.run(["readelf", "-s", "sqbe.o"], capture_output=True)
+        os.remove("sqbe.o")
         os.remove("in_cpp")
         syms = str(symsp.stdout, encoding="utf-8").splitlines()
         syms = [l for l in syms if "GLOBAL " in l]
@@ -827,7 +829,7 @@ def main():
             if not symname.startswith("sq_"):
                 print("Unexpected symbol:", symname)
                 sys.exit(1)
-        print("These are the global exported symbols.o. They look ok, but")
+        print("These are the global exported symbols from sqbe.o. They look ok, but")
         print("confirm that they match the header part of sqbe.h (only).")
         print("-" * 80)
         for s in syms:
