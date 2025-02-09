@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "no out file\n");
     return 1;
   }
-  sq_init(SQ_TARGET_AMD64_WIN, fopen(argv[1], "wb"), "");
+  sq_init(SQ_TARGET_DEFAULT, fopen(argv[1], "wb"), "");
 
   SqBlock b_start = sq_func_start(sq_linkage_export, sq_type_word, "main");
 

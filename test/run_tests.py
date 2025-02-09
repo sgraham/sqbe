@@ -8,32 +8,38 @@ import glob
 import subprocess
 import sys
 
-TEST_CC = ["cl", "/nologo"]
-GEN_CC = ["clang"]
 
+if sys.platform == "win32":
 
-def test_cc(in_file, out_bin):
-    proc = subprocess.run(
-        TEST_CC
-        + [
-            "/D_CRT_SECURE_NO_DEPRECATE",
-            "/I../src",
-            "../src/sqbe.c",
-            in_file,
-            "/link",
-            "/out:%s" % out_bin,
-        ],
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        print("test_cc failed")
-        sys.stdout.write(proc.stdout.decode("utf-8"))
-        sys.stderr.write(proc.stderr.decode("utf-8"))
-        sys.exit(1)
+    def test_cc(in_file, out_bin):
+        proc = subprocess.run(
+            [
+                "cl",
+                "/nologo",
+                "/D_CRT_SECURE_NO_DEPRECATE",
+                "/I../src",
+                "../src/sqbe.c",
+                in_file,
+                "/link",
+                "/out:%s" % out_bin,
+            ],
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            print("test_cc failed")
+            sys.stdout.write(proc.stdout.decode("utf-8"))
+            sys.stderr.write(proc.stderr.decode("utf-8"))
+            sys.exit(1)
+else:
+
+    def test_cc(in_file, out_bin):
+        proc = subprocess.run(
+            ["clang", "-I../src", "../src/sqbe.c", in_file, "-o", out_bin], check=True
+        )
 
 
 def gen_cc(in_file, out_bin):
-    subprocess.run(GEN_CC + [in_file, "-o", out_bin], check=True)
+    subprocess.run(["clang", in_file, "-o", out_bin], check=True)
 
 
 def get_expected_output(filename):
@@ -81,10 +87,10 @@ def do_test(f):
     sys.stdout.flush()
     expected = get_expected_output(f)
     test_cc(f, "tmp.exe")
-    subprocess.run(["tmp.exe", "tmp.s"], check=True)
+    subprocess.run(["./tmp.exe", "tmp.s"], check=True)
     gen_cc("tmp.s", "gen.exe")
     proc = subprocess.run(
-        ["gen.exe"], capture_output=True, check=True, universal_newlines=True
+        ["./gen.exe"], capture_output=True, check=True, universal_newlines=True
     )
     got = proc.stdout
     if got != expected:
