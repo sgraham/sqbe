@@ -26,5 +26,4 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
         tag: nightly
         files: |
-          src/sqbe.c
           src/sqbe.h

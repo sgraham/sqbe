@@ -1,3 +1,9 @@
+// License information at the end of the file.
+//
+// Do this:
+//     #define SQBE_IMPLEMENTATION
+// before you include this file in *one* C/C++ file to create the implementation.
+
 #ifndef SQBE_H_INCLUDED_
 #define SQBE_H_INCLUDED_
 

@@ -9,6 +9,7 @@
 // OUT: 8
 // OUT: 9
 
+#define SQBE_IMPLEMENTATION
 #include "sqbe.h"
 
 int main(int argc, char** argv) {

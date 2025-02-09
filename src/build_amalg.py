@@ -475,19 +475,17 @@ def main():
         "%%%INSTRUCTION_DECLARATIONS%%%\n", instr_decls
     )
 
-    with open("sqbe.h", "w", newline="\n") as header_out:
-        header_out.write(header_contents)
+    with open("sqbe.h", "w", newline="\n") as out:
+        out.write(header_contents)
 
-    with open("sqbe.c", "w", newline="\n") as amalg:
-        amalg.write("/*\n\nQBE LICENSE:\n\n")
-        amalg.write(license_contents)
-        amalg.write("\n---\n\n")
-        amalg.write(
-            "All other sqbe code under the same license,\n"
-            "© 2025 Scott Graham <scott.sqbe@h4ck3r.net>\n\n"
-        )
-        amalg.write("*/\n\n")
-        amalg.write(
+        out.write("// --------------------\n")
+        out.write("//    IMPLEMENTATION\n")
+        out.write("// --------------------\n")
+        out.write("\n")
+        out.write("#ifdef SQBE_IMPLEMENTATION\n")
+        out.write("#undef SQBE_IMPLEMENTATION\n")
+
+        out.write(
             """\
 #ifdef _MSC_VER
 #define SQ_NO_RETURN __declspec(noreturn)
@@ -687,37 +685,37 @@ def main():
 
             contents = replace_noreturn(contents)
 
-            amalg.write("/*** START FILE: %s ***/\n" % file)
+            out.write("/*** START FILE: %s ***/\n" % file)
             for line in contents.splitlines():
                 if line.startswith('#include "all.h"'):
-                    amalg.write("/* skipping all.h */\n")
+                    out.write("/* skipping all.h */\n")
                     continue
                 if line.startswith('#include "../all.h"'):
-                    amalg.write("/* skipping ../all.h */\n")
+                    out.write("/* skipping ../all.h */\n")
                     continue
                 if line.startswith('#include "config.h"'):
-                    amalg.write("/* skipping config.h */\n")
+                    out.write("/* skipping config.h */\n")
                     continue
                 if line.startswith("#include <getopt.h>"):
-                    amalg.write("/* skipping getopt.h */\n")
+                    out.write("/* skipping getopt.h */\n")
                     continue
                 if line.startswith("#include <assert.h>"):
-                    amalg.write("/* skipping assert.h */\n")
+                    out.write("/* skipping assert.h */\n")
                     continue
                 if line.strip().startswith(
                     '#include "ops.h"'
                 ) or line.strip().startswith('#include "../ops.h"'):
-                    amalg.write("/* " + 60 * "-" + "including ops.h */\n")
-                    amalg.write(ops_h_contents)
-                    amalg.write("/* " + 60 * "-" + "end of ops.h */\n")
+                    out.write("/* " + 60 * "-" + "including ops.h */\n")
+                    out.write(ops_h_contents)
+                    out.write("/* " + 60 * "-" + "end of ops.h */\n")
                     continue
-                amalg.write(line)
-                amalg.write("\n")
-            amalg.write("/*** END FILE: %s ***/\n" % file)
+                out.write(line)
+                out.write("\n")
+            out.write("/*** END FILE: %s ***/\n" % file)
 
-        amalg.write(instr_defns)
+        out.write(instr_defns)
 
-        amalg.write(
+        out.write(
             """\
 
 #ifdef _MSC_VER
@@ -725,6 +723,16 @@ def main():
 #endif
 """
         )
+        out.write("#endif // SQBE_IMPLEMENTATION\n\n")
+
+        out.write("/*\n\nQBE LICENSE:\n\n")
+        out.write(license_contents)
+        out.write("\n---\n\n")
+        out.write(
+            "All other sqbe code under the same license,\n"
+            "© 2025 Scott Graham <scott.sqbe@h4ck3r.net>\n\n"
+        )
+        out.write("*/\n\n")
 
     if sys.platform == "win32":
         subprocess.check_call(
@@ -735,7 +743,7 @@ def main():
                 "/W4",
                 "/WX",
                 "/c",
-                "sqbe.c",
+                "in_c_test.c"
             ]
         )
         subprocess.check_call(
@@ -747,14 +755,14 @@ def main():
                 "/W4",
                 "/WX",
                 "/c",
-                "sqbe.c",
+                "in_c_test.c",
             ]
         )
-        os.remove("sqbe.obj")
+        os.remove("in_c_test.obj")
         print("win32 build ok")
     elif sys.platform == "darwin":
         subprocess.check_call(
-            ["clang", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "sqbe.c"]
+            ["clang", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "in_c_test.c"]
         )
         subprocess.check_call(
             [
@@ -765,21 +773,21 @@ def main():
                 "-Werror",
                 "-pedantic",
                 "-c",
-                "sqbe.c",
+                "in_c_test.c",
             ]
         )
-        os.remove("sqbe.o")
+        os.remove("in_c_test.o")
         print("darwin build ok")
     elif sys.platform == "linux":
         # Check we can build with gcc and clang
         subprocess.check_call(
-            ["gcc", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "sqbe.c"]
+            ["gcc", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "in_c_test.c"]
         )
         subprocess.check_call(
-            ["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "sqbe.c"]
+            ["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "in_c_test.c"]
         )
         subprocess.check_call(
-            ["clang", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "sqbe.c"]
+            ["clang", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "in_c_test.c"]
         )
         subprocess.check_call(
             [
@@ -790,7 +798,7 @@ def main():
                 "-Werror",
                 "-pedantic",
                 "-c",
-                "sqbe.c",
+                "in_c_test.c",
             ]
         )
         # And can link from C++.
@@ -808,8 +816,8 @@ def main():
         )
         # And that the the only exported symbols from sqbe are those we expect
         # (prefixed by `sq_`).
-        symsp = subprocess.run(["readelf", "-s", "sqbe.o"], capture_output=True)
-        os.remove("sqbe.o")
+        symsp = subprocess.run(["readelf", "-s", "in_c_test.o"], capture_output=True)
+        os.remove("in_c_test.o")
         os.remove("in_cpp")
         syms = str(symsp.stdout, encoding="utf-8").splitlines()
         syms = [l for l in syms if "GLOBAL " in l]
@@ -819,13 +827,13 @@ def main():
             if not symname.startswith("sq_"):
                 print("Unexpected symbol:", symname)
                 sys.exit(1)
-        print("These are the global exported symbols from sqbe.o. They look ok, but")
-        print("confirm that they match sqbe.h (only).")
+        print("These are the global exported symbols.o. They look ok, but")
+        print("confirm that they match the header part of sqbe.h (only).")
         print("-" * 80)
         for s in syms:
             print(s)
         print("-" * 80)
-    print("sqbe.[ch] ready for distribution")
+    print("sqbe.h ready for distribution")
 
 
 if __name__ == "__main__":

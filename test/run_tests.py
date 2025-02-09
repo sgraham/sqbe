@@ -18,7 +18,6 @@ if sys.platform == "win32":
                 "/nologo",
                 "/D_CRT_SECURE_NO_DEPRECATE",
                 "/I../src",
-                "../src/sqbe.c",
                 in_file,
                 "/link",
                 "/out:%s" % out_bin,
@@ -34,7 +33,7 @@ else:
 
     def test_cc(in_file, out_bin):
         proc = subprocess.run(
-            ["clang", "-I../src", "../src/sqbe.c", in_file, "-o", out_bin], check=True
+            ["clang", "-I../src", in_file, "-o", out_bin], check=True
         )
 
 
