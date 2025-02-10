@@ -456,7 +456,7 @@ def main():
     QBE_ROOT = os.path.join(os.getcwd(), "qbe")
     if not os.path.exists(QBE_ROOT):
         subprocess.check_call(["git", "clone", "git://c9x.me/qbe.git"])
-        for patch in glob.glob("patches/*.patch"):
+        for patch in sorted(glob.glob("patches/*.patch")):
             subprocess.check_call(
                 ["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT
             )
