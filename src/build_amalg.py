@@ -456,10 +456,13 @@ def main():
     QBE_ROOT = os.path.join(os.getcwd(), "qbe")
     if not os.path.exists(QBE_ROOT):
         subprocess.check_call(["git", "clone", "git://c9x.me/qbe.git"])
-        for patch in sorted(glob.glob("patches/*.patch")):
-            subprocess.check_call(
-                ["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT
-            )
+
+    subprocess.check_call(["git", "fetch", "origin"], cwd=QBE_ROOT)
+    subprocess.check_call(["git", "checkout", "origin/master"], cwd=QBE_ROOT)
+    for patch in sorted(glob.glob("patches/*.patch")):
+        subprocess.check_call(
+            ["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT
+        )
 
     with open(os.path.join(QBE_ROOT, "ops.h"), "r") as f:
         ops_h_contents = f.read()
@@ -837,6 +840,9 @@ def main():
         for s in syms:
             print(s)
         print("-" * 80)
+
+    subprocess.run([sys.executable, os.path.join(ROOT_DIR, "test", "run_tests.py")])
+
     print("sqbe.h ready for distribution")
 
 
