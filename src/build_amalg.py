@@ -102,6 +102,10 @@ def abi_renames(ns, contents):
         "RAlloc",
         "Insl",
         "Params",
+        "ArgPassStyle",
+        "ArgClass",
+        "ExtraAlloc",
+        "RegisterUsage",
     ]:
         contents = re.sub(r"\b" + x + r"\b", ns_up + x, contents)
     for x in ["gpreg", "fpreg"]:
@@ -381,15 +385,6 @@ def fix_missing_static(contents, funcname):
     return "\n".join(result)
 
 
-def staticize_util_data(contents):
-    result = []
-    for line in contents.splitlines():
-        if line.startswith("Typ *typ;") or line.startswith("Ins insb[NIns],"):
-            line = "static " + line
-        result.append(line)
-    return "\n".join(result)
-
-
 def staticize_main_data(contents):
     result = []
     for line in contents.splitlines():
@@ -440,9 +435,6 @@ def staticize_prototypes(contents):
         elif (
             line.startswith("extern Target T")
             or line.startswith("extern GlobalContext global_context")
-            or line.startswith("extern char debug")
-            or line.startswith("extern Typ *")
-            or line.startswith("extern Ins ")
             or line.startswith("extern Op ")
         ):
             line = "static " + line.replace("extern ", "")
@@ -540,9 +532,6 @@ def main():
 
             if file == "cfg.c":  # This should be changed upstream.
                 contents = fix_missing_static(contents, "multloop")
-
-            if file == "util.c":
-                contents = staticize_util_data(contents)
 
             if file == "main.c":
                 contents = staticize_main_data(contents)
@@ -673,18 +662,13 @@ def main():
                 contents = remove_function(contents, "static Ref", "qbe_parse_parseref")
                 contents = remove_function(contents, "static Fn *", "qbe_parse_parsefn")
                 contents = remove_function(contents, "static void", "qbe_parse_lexinit")
-                contents = remove_data(contents, "static uint ntyp;")
-                contents = remove_data(contents, "static int nblk;")
-                contents = remove_data(contents, "static FILE *inf;")
-                contents = remove_data(contents, "static Blk *blkh")
-                contents = remove_data(contents, "static int thead;")
-                contents = remove_data(contents, "static uchar lexh")
-                contents = remove_data(contents, "static char *inpath;")
-                contents = remove_data(contents, "static int lnum;")
-                contents = remove_data(contents, "static int *tmph;")
-                contents = remove_data(contents, "static int tmphcap;")
                 contents = remove_lines_range(contents, "static struct {", "} tokval;")
                 contents = remove_lines_range(contents, "static char *kwmap", "};")
+                contents = remove_lines_range(contents, "enum Token {", "};")
+                contents = remove_data(contents, "\tNPred =")
+                contents = remove_data(contents, "\tTMask =")
+                contents = remove_data(contents, "\tK =")
+                contents = re.sub(r"enum {[\s]*};", "", contents)
 
             contents = replace_noreturn(contents)
 
