@@ -1,4 +1,4 @@
-From ae8405d885bb6fc2c73052e1e2649b83ae3ba512 Mon Sep 17 00:00:00 2001
+From 552fcf61ad0762e55bd587f021d6033966f32763 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
 Subject: [PATCH] Context-ize global and (most) function-static variables
@@ -29,7 +29,7 @@ be maintained as-is because they're used to return created strings.)
  fold.c         | 101 +++++-------
  live.c         |  18 +-
  load.c         |  70 ++++----
- main.c         |  71 ++++----
+ main.c         |  72 ++++----
  mem.c          |   6 +-
  parse.c        | 436 +++++++++++++++++++++++--------------------------
  rega.c         | 205 +++++++++++------------
@@ -40,7 +40,7 @@ be maintained as-is because they're used to return created strings.)
  spill.c        | 161 +++++++++---------
  ssa.c          |  25 ++-
  util.c         |  65 +++-----
- 25 files changed, 883 insertions(+), 819 deletions(-)
+ 25 files changed, 883 insertions(+), 820 deletions(-)
 
 diff --git a/all.h b/all.h
 index 7402867..58e77f1 100644
@@ -1836,10 +1836,10 @@ index 6f40cc7..a443c85 100644
  		printfn(fn, stderr);
  	}
 diff --git a/main.c b/main.c
-index 81604e4..8715ad4 100644
+index 81604e4..a6cefa7 100644
 --- a/main.c
 +++ b/main.c
-@@ -3,22 +3,21 @@
+@@ -3,21 +3,17 @@
  #include <ctype.h>
  #include <getopt.h>
  
@@ -1858,23 +1858,20 @@ index 81604e4..8715ad4 100644
 -	['S'] = 0, /* spilling */
 -	['R'] = 0, /* reg. allocation */
 -	['T'] = 0, /* types */
-+// TODO: get rid of the need for this non-zero init
-+GlobalContext global_context = {
-+	.util__pool = global_context.util__ptr,
-+	.util__nptr = 1,
- };
- 
+-};
++GlobalContext global_context;
++
 +void
 +reinit_global_context(GlobalContext* ctx) {
 +	memset(ctx, 0, sizeof *ctx);
++  // It'd be nice not to need this.
 +  ctx->util__pool = ctx->util__ptr;
 +  ctx->util__nptr = 1;
 +}
-+
+ 
  extern Target T_amd64_sysv;
  extern Target T_amd64_apple;
- extern Target T_amd64_win;
-@@ -35,17 +34,15 @@ static Target *tlist[] = {
+@@ -35,17 +31,15 @@ static Target *tlist[] = {
  	&T_rv64,
  	0
  };
@@ -1895,7 +1892,7 @@ index 81604e4..8715ad4 100644
  		freeall();
  	}
  }
-@@ -55,13 +52,13 @@ func(Fn *fn)
+@@ -55,13 +49,13 @@ func(Fn *fn)
  {
  	uint n;
  
@@ -1912,7 +1909,7 @@ index 81604e4..8715ad4 100644
  	fillrpo(fn);
  	fillpreds(fn);
  	filluse(fn);
-@@ -80,11 +77,11 @@ func(Fn *fn)
+@@ -80,11 +74,11 @@ func(Fn *fn)
  	copy(fn);
  	filluse(fn);
  	fold(fn);
@@ -1926,7 +1923,7 @@ index 81604e4..8715ad4 100644
  	fillrpo(fn);
  	filllive(fn);
  	fillloop(fn);
-@@ -102,9 +99,9 @@ func(Fn *fn)
+@@ -102,9 +96,9 @@ func(Fn *fn)
  			break;
  		} else
  			fn->rpo[n]->link = fn->rpo[n+1];
@@ -1939,7 +1936,7 @@ index 81604e4..8715ad4 100644
  	} else
  		fprintf(stderr, "\n");
  	freeall();
-@@ -113,7 +110,7 @@ func(Fn *fn)
+@@ -113,7 +107,7 @@ func(Fn *fn)
  static void
  dbgfile(char *fn)
  {
@@ -1948,12 +1945,14 @@ index 81604e4..8715ad4 100644
  }
  
  int
-@@ -124,21 +121,21 @@ main(int ac, char *av[])
+@@ -124,21 +118,23 @@ main(int ac, char *av[])
  	char *f, *sep;
  	int c;
  
 -	T = Deftgt;
 -	outf = stdout;
++  reinit_global_context(&global_context);
++
 +	GC(T) = Deftgt;
 +	G(outf) = stdout;
  	while ((c = getopt(ac, av, "hd:o:t:")) != -1)
@@ -1976,7 +1975,7 @@ index 81604e4..8715ad4 100644
  					fprintf(stderr, "cannot open '%s'\n", optarg);
  					exit(1);
  				}
-@@ -146,7 +143,7 @@ main(int ac, char *av[])
+@@ -146,7 +142,7 @@ main(int ac, char *av[])
  			break;
  		case 't':
  			if (strcmp(optarg, "?") == 0) {
@@ -1985,7 +1984,7 @@ index 81604e4..8715ad4 100644
  				exit(0);
  			}
  			for (t=tlist;; t++) {
-@@ -155,7 +152,7 @@ main(int ac, char *av[])
+@@ -155,7 +151,7 @@ main(int ac, char *av[])
  					exit(1);
  				}
  				if (strcmp(optarg, (*t)->name) == 0) {
@@ -1994,7 +1993,7 @@ index 81604e4..8715ad4 100644
  					break;
  				}
  			}
-@@ -194,8 +191,8 @@ main(int ac, char *av[])
+@@ -194,8 +190,8 @@ main(int ac, char *av[])
  		fclose(inf);
  	} while (++optind < ac);
  
