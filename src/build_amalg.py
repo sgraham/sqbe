@@ -388,9 +388,8 @@ def fix_missing_static(contents, funcname):
 def staticize_main_data(contents):
     result = []
     for line in contents.splitlines():
-        if (
-            line.startswith("extern Target T")
-            or line.startswith("GlobalContext global_context")
+        if line.startswith("extern Target T") or line.startswith(
+            "GlobalContext global_context"
         ):
             line = "static " + line.replace("extern ", "")
         result.append(line)
@@ -443,7 +442,7 @@ def staticize_prototypes(contents):
 
 
 def main():
-    os.chdir(os.path.join(ROOT_DIR, 'src'))
+    os.chdir(os.path.join(ROOT_DIR, "src"))
 
     QBE_ROOT = os.path.join(os.getcwd(), "qbe")
     if not os.path.exists(QBE_ROOT):
@@ -452,9 +451,7 @@ def main():
     subprocess.check_call(["git", "fetch", "origin"], cwd=QBE_ROOT)
     subprocess.check_call(["git", "checkout", "origin/master"], cwd=QBE_ROOT)
     for patch in sorted(glob.glob("patches/*.patch")):
-        subprocess.check_call(
-            ["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT
-        )
+        subprocess.check_call(["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT)
 
     with open(os.path.join(QBE_ROOT, "ops.h"), "r") as f:
         ops_h_contents = f.read()
@@ -620,6 +617,12 @@ def main():
                 contents = remove_function(contents, "int", "main")
                 contents = remove_lines_range(contents, "static Target *tlist", "};")
 
+            if file == "util.c":
+                contents = remove_function(contents, "void *", "emalloc")
+                contents = remove_function(contents, "void *", "alloc")
+                contents = remove_function(contents, "void", "freeall")
+                contents = remove_function(contents, "void", "qbe_free")
+
             if file == "parse.c":
                 contents = remove_function(contents, "void", "parse")
                 contents = remove_function(
@@ -731,7 +734,7 @@ def main():
                 "/W4",
                 "/WX",
                 "/c",
-                "in_c_test.c"
+                "in_c_test.c",
             ]
         )
         subprocess.check_call(
@@ -772,7 +775,16 @@ def main():
             ["gcc", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "in_c_test.c"]
         )
         subprocess.check_call(
-            ["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "in_c_test.c"]
+            [
+                "gcc",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic",
+                "-c",
+                "in_c_test.c",
+            ]
         )
         subprocess.check_call(
             ["clang", "-Wall", "-Wextra", "-Werror", "-pedantic", "-c", "in_c_test.c"]
@@ -788,7 +800,7 @@ def main():
                 "-c",
                 "in_c_test.c",
                 "-o",
-                "sqbe.o"
+                "sqbe.o",
             ]
         )
         # And can link from C++.
@@ -825,7 +837,9 @@ def main():
             print(s)
         print("-" * 80)
 
-    subprocess.run([sys.executable, os.path.join(ROOT_DIR, "test", "run_tests.py")])
+    subprocess.run(
+        [sys.executable, os.path.join(ROOT_DIR, "test", "run_tests.py")], check=True
+    )
 
     print("sqbe.h ready for distribution")
 

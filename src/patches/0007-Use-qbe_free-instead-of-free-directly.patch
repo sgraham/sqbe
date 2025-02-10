@@ -1,0 +1,201 @@
+From 65d57391db2290c8c21f5239c3d18439675847b8 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Mon, 10 Feb 2025 14:47:45 -0800
+Subject: [PATCH] Use qbe_free() instead of free() directly
+
+Pair emalloc() with qbe_free() rather than free() directly. This is so
+that when emalloc() is overridden in a library context, free() can also
+be revectored.
+---
+ all.h        |  1 +
+ amd64/isel.c |  2 +-
+ cfg.c        |  2 +-
+ copy.c       |  2 +-
+ emit.c       |  2 +-
+ fold.c       |  4 ++--
+ mem.c        |  2 +-
+ parse.c      |  2 +-
+ spill.c      |  2 +-
+ ssa.c        |  4 ++--
+ util.c       | 12 +++++++++---
+ 11 files changed, 21 insertions(+), 14 deletions(-)
+
+diff --git a/all.h b/all.h
+index 79a5c0c..0b85898 100644
+--- a/all.h
++++ b/all.h
+@@ -612,6 +612,7 @@ uint32_t hash(char *);
+ void die_(char *, char *, ...) __attribute__((noreturn));
+ void *emalloc(size_t);
+ void *alloc(size_t);
++void qbe_free(void *);
+ void freeall(void);
+ void *vnew(ulong, size_t, Pool);
+ void vfree(void *);
+diff --git a/amd64/isel.c b/amd64/isel.c
+index f9c5069..85585cc 100644
+--- a/amd64/isel.c
++++ b/amd64/isel.c
+@@ -831,7 +831,7 @@ amd64_isel(Fn *fn)
+ 		b->nins = &GC(insb)[NIns] - GC(curi);
+ 		idup(&b->ins, GC(curi), b->nins);
+ 	}
+-	free(num);
++	qbe_free(num);
+ 
+ 	if (GC(debug)['I']) {
+ 		fprintf(stderr, "\n> After instruction selection:\n");
+diff --git a/cfg.c b/cfg.c
+index 1b305bc..29c6e4d 100644
+--- a/cfg.c
++++ b/cfg.c
+@@ -328,5 +328,5 @@ simpljmp(Fn *fn)
+ 		}
+ 	}
+ 	*p = ret;
+-	free(uf);
++	qbe_free(uf);
+ }
+diff --git a/copy.c b/copy.c
+index e948957..5ab4b5b 100644
+--- a/copy.c
++++ b/copy.c
+@@ -215,5 +215,5 @@ copy(Fn *fn)
+ 		printfn(fn, stderr);
+ 	}
+ 	vfree(stk);
+-	free(cpy);
++	qbe_free(cpy);
+ }
+diff --git a/emit.c b/emit.c
+index c8be039..c25da25 100644
+--- a/emit.c
++++ b/emit.c
+@@ -183,7 +183,7 @@ emitfin(FILE *f, char *sec[3])
+ 		}
+ 	while ((b=G(stash))) {
+ 		G(stash) = b->link;
+-		free(b);
++		qbe_free(b);
+ 	}
+ }
+ 
+diff --git a/fold.c b/fold.c
+index 0e37181..4088bee 100644
+--- a/fold.c
++++ b/fold.c
+@@ -309,8 +309,8 @@ fold(Fn *fn)
+ 		printfn(fn, stderr);
+ 	}
+ 
+-	free(G(val));
+-	free(G(edge));
++	qbe_free(G(val));
++	qbe_free(G(edge));
+ 	vfree(G(usewrk));
+ }
+ 
+diff --git a/mem.c b/mem.c
+index 4afad11..2b0640e 100644
+--- a/mem.c
++++ b/mem.c
+@@ -302,7 +302,7 @@ coalesce(Fn *fn)
+ 			}
+ 		br[n].a = ip;
+ 	}
+-	free(br);
++	qbe_free(br);
+ 
+ 	/* kill dead stores */
+ 	for (s=sl; s<&sl[nsl]; s++)
+diff --git a/parse.c b/parse.c
+index 8998890..b9dd1e3 100644
+--- a/parse.c
++++ b/parse.c
+@@ -365,7 +365,7 @@ tmpref(char *v)
+ 	int t, i;
+ 
+ 	if (G(tmphcap)/2 <= G(curf)->ntmp-Tmp0) {
+-		free(G(tmph));
++		qbe_free(G(tmph));
+ 		G(tmphcap) = G(tmphcap) ? G(tmphcap)*2 : TMask+1;
+ 		G(tmph) = emalloc(G(tmphcap) * sizeof G(tmph)[0]);
+ 		for (t=Tmp0; t<G(curf)->ntmp; t++) {
+diff --git a/spill.c b/spill.c
+index 1298997..aecde71 100644
+--- a/spill.c
++++ b/spill.c
+@@ -164,7 +164,7 @@ limit(BSet *b, int k, BSet *f)
+ 	if (nt <= k)
+ 		return;
+ 	if (nt > G(limit_maxt)) {
+-		free(G(limit_tarr));
++		qbe_free(G(limit_tarr));
+ 		G(limit_tarr) = emalloc(nt * sizeof G(limit_tarr)[0]);
+ 		G(limit_maxt) = nt;
+ 	}
+diff --git a/ssa.c b/ssa.c
+index f866312..3c0414c 100644
+--- a/ssa.c
++++ b/ssa.c
+@@ -201,7 +201,7 @@ phiins(Fn *fn)
+ 			}
+ 		}
+ 	}
+-	free(blist);
++	qbe_free(blist);
+ }
+ 
+ struct Name {
+@@ -345,7 +345,7 @@ ssa(Fn *fn)
+ 			nfree(n);
+ 		}
+ 	GC(debug)['L'] = d;
+-	free(stk);
++	qbe_free(stk);
+ 	if (GC(debug)['N']) {
+ 		fprintf(stderr, "\n> After SSA construction:\n");
+ 		printfn(fn, stderr);
+diff --git a/util.c b/util.c
+index 2a2d3d4..a75e5de 100644
+--- a/util.c
++++ b/util.c
+@@ -57,6 +57,12 @@ emalloc(size_t n)
+ 	return p;
+ }
+ 
++// to allow revectoring in sqbe
++void
++qbe_free(void *ptr) {
++	free(ptr);
++}
++
+ void *
+ alloc(size_t n)
+ {
+@@ -80,11 +86,11 @@ freeall(void)
+ 
+ 	for (;;) {
+ 		for (pp = &G(pool)[1]; pp < &G(pool)[G(nptr)]; pp++)
+-			free(*pp);
++			qbe_free(*pp);
+ 		pp = G(pool)[0];
+ 		if (!pp)
+ 			break;
+-		free(G(pool));
++		qbe_free(G(pool));
+ 		G(pool) = pp;
+ 		G(nptr) = util__NPtr;
+ 	}
+@@ -118,7 +124,7 @@ vfree(void *p)
+ 	assert(v->mag == VMag);
+ 	if (v->pool == PHeap) {
+ 		v->mag = 0;
+-		free(v);
++		qbe_free(v);
+ 	}
+ }
+ 
+-- 
+2.47.2.vfs.0.1
+

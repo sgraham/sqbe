@@ -154,6 +154,29 @@ static void arena_pop_to(Arena* arena, uint64_t pos) {
   // TODO: ASAN
 }
 
+void* emalloc(size_t n) {
+  void* p = arena_push(_global_arena, n, 8);
+  memset(p, 0, n);
+  return p;
+}
+
+void* alloc(size_t n) {
+  if (n == 0) {
+    return NULL;
+  }
+  void* p = arena_push(_fn_arena, n, 8);
+  memset(p, 0, n);
+  return p;
+}
+
+void freeall(void) {
+  arena_pop_to(_fn_arena, 0);
+}
+
+void qbe_free(void* ptr) {
+  (void)ptr;  // Nothing until arena_destroy.
+}
+
 typedef enum SqInitStatus {
   SQIS_UNINITIALIZED = 0,
   SQIS_INITIALIZED_EMIT_FIN = 1,
@@ -261,8 +284,8 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
   (void)arena_push;
   (void)arena_pos;
   (void)arena_pop_to;
-  (void)_fn_arena;
-  (void)_global_arena;
+  _fn_arena = arena_create(64 << 20, 64 << 10);
+  _global_arena = arena_create(64 << 20, 64 << 10);
 
   _dbg_name_counter = 0;
 
@@ -276,7 +299,6 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
   (void)exp;
 
   (void)qbe_main_dbgfile;  // TODO
-  (void)amd64_winabi_rclob;
 
   switch (target) {
     case SQ_TARGET_AMD64_APPLE:
@@ -346,8 +368,14 @@ void sq_shutdown(void) {
   if (sq_initialized == SQIS_INITIALIZED_EMIT_FIN) {
     GC(T).emitfin(global_context.main__outf);
   }
+
   // TODO: pool flushes, etc
   sq_initialized = SQIS_UNINITIALIZED;
+
+  arena_destroy(_fn_arena);
+  arena_destroy(_global_arena);
+  _dbg_name_counter = 0;
+  _num_linkages = 0;
 }
 
 SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
@@ -448,6 +476,8 @@ SqSymbol sq_func_end(void) {
   qbe_main_func(G(curf));
 
   G(curf) = NULL;
+
+  arena_pop_to(_fn_arena, 0);
 
   return ret;
 }
