@@ -29,20 +29,20 @@ static int _dbg_name_counter;
 static Dat _curd;
 static Lnk _curd_lnk;
 
-static void _gen_dbg_name(char* into, const  char* prefix) {
+static void _gen_dbg_name(char* into, const char* prefix) {
   sprintf(into, "%s_%d", prefix ? prefix : "", _dbg_name_counter++);
 }
 
 #define SQ_NAMED_IF_DEBUG(into, provided) \
-  if (dbg) {                              \
+  if (global_context.main__dbg) {         \
     _gen_dbg_name(into, provided);        \
   }
 
-#define SQ_COUNTOF(a) (sizeof(a)/sizeof(a[0]))
-#define SQ_COUNTOFI(a) ((int)(sizeof(a)/sizeof(a[0])))
+#define SQ_COUNTOF(a) (sizeof(a) / sizeof(a[0]))
+#define SQ_COUNTOFI(a) ((int)(sizeof(a) / sizeof(a[0])))
 
 #ifdef _MSC_VER
-#define alloca _alloca
+#  define alloca _alloca
 #endif
 
 static void err(char* s, ...) {
@@ -117,52 +117,54 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
   _num_linkages = 0;
   // These have to match the header for sq_linkage_default/export.
   SqLinkage def = sq_linkage_create(8, false, false, false, NULL, NULL);
-  SQ_ASSERT(def.u == 0); (void)def;
+  SQ_ASSERT(def.u == 0);
+  (void)def;
   SqLinkage exp = sq_linkage_create(8, true, false, false, NULL, NULL);
-  SQ_ASSERT(exp.u == 1); (void)exp;
+  SQ_ASSERT(exp.u == 1);
+  (void)exp;
 
   (void)qbe_main_dbgfile;  // TODO
   (void)amd64_winabi_rclob;
 
   switch (target) {
     case SQ_TARGET_AMD64_APPLE:
-      T = T_amd64_apple;
+      GC(T) = T_amd64_apple;
       break;
     case SQ_TARGET_AMD64_SYSV:
-      T = T_amd64_sysv;
+      GC(T) = T_amd64_sysv;
       break;
     case SQ_TARGET_AMD64_WIN:
-      T = T_amd64_win;
+      GC(T) = T_amd64_win;
       break;
     case SQ_TARGET_ARM64:
-      T = T_arm64;
+      GC(T) = T_arm64;
       break;
     case SQ_TARGET_ARM64_APPLE:
-      T = T_arm64_apple;
+      GC(T) = T_arm64_apple;
       break;
     case SQ_TARGET_RV64:
-      T = T_rv64;
+      GC(T) = T_rv64;
       break;
     default: {
 #if defined(__APPLE__) && defined(__MACH__)
 #  if defined(__aarch64__)
-      T = T_arm64_apple;
+      GC(T) = T_arm64_apple;
 #  else
-      T = T_amd64_apple;
+      GC(T) = T_amd64_apple;
 #  endif
 #elif defined(_WIN32)
 #  if defined(__aarch64__)
 #    error port win arm64
 #  else
-      T = T_amd64_win;
+      GC(T) = T_amd64_win;
 #  endif
 #else
 #  if defined(__aarch64__)
-      T = T_arm64;
+      GC(T) = T_arm64;
 #  elif defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64)
-      T = T_amd64_sysv;
+      GC(T) = T_amd64_sysv;
 #  elif defined(__riscv)
-      T = T_rv64;
+      GC(T) = T_rv64;
 #  else
 #    error port unknown
 #  endif
@@ -170,27 +172,27 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
     }
   }
 
-  outf = output;
+  global_context.main__outf = output;
 
-  memset(debug, 0, sizeof(debug));
+  memset(GC(debug), 0, sizeof(GC(debug)));
   for (const char* d = debug_names; *d; ++d) {
-    debug[(int)*d] = 1;
+    GC(debug)[(int)*d] = 1;
   }
 
   _ntyp = 0;
-  typ = vnew(0, sizeof(typ[0]), PHeap);
+  GC(typ) = vnew(0, sizeof(GC(typ)[0]), PHeap);
   // Reserve the ids of the basic types so the .u values can be used as TypeKinds.
-  vgrow(&typ, _ntyp + SQ_TYPE_0 + 1);
+  vgrow(&GC(typ), _ntyp + SQ_TYPE_0 + 1);
   _ntyp += SQ_TYPE_0 + 1;
 
-  dbg = debug_names[0] != 0;
-  sq_initialized = dbg ? SQIS_INITIALIZED_NO_FIN : SQIS_INITIALIZED_EMIT_FIN;
+  global_context.main__dbg = debug_names[0] != 0;
+  sq_initialized = global_context.main__dbg ? SQIS_INITIALIZED_NO_FIN : SQIS_INITIALIZED_EMIT_FIN;
 }
 
 void sq_shutdown(void) {
   SQ_ASSERT(sq_initialized != SQIS_UNINITIALIZED);
   if (sq_initialized == SQIS_INITIALIZED_EMIT_FIN) {
-    T.emitfin(outf);
+    GC(T).emitfin(global_context.main__outf);
   }
   // TODO: pool flushes, etc
   sq_initialized = SQIS_UNINITIALIZED;
@@ -200,29 +202,31 @@ SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
   Lnk lnk = _linkage_to_internal_lnk(linkage);
   lnk.align = 16;
 
-  curb = 0;
+#define G(x) global_context.parse__##x
+
+  G(curb) = 0;
   _num_blocks = 0;
-  curi = insb;
-  curf = alloc(sizeof *curf);
-  curf->ntmp = 0;
-  curf->ncon = 2;
-  curf->tmp = vnew(curf->ntmp, sizeof curf->tmp[0], PFn);
-  curf->con = vnew(curf->ncon, sizeof curf->con[0], PFn);
+  GC(curi) = GC(insb);
+  G(curf) = alloc(sizeof *G(curf));
+  G(curf)->ntmp = 0;
+  G(curf)->ncon = 2;
+  G(curf)->tmp = vnew(G(curf)->ntmp, sizeof G(curf)->tmp[0], PFn);
+  G(curf)->con = vnew(G(curf)->ncon, sizeof G(curf)->con[0], PFn);
   for (int i = 0; i < Tmp0; ++i) {
-    if (T.fpr0 <= i && i < T.fpr0 + T.nfpr) {
-      newtmp(0, Kd, curf);
+    if (GC(T).fpr0 <= i && i < GC(T).fpr0 + GC(T).nfpr) {
+      newtmp(0, Kd, G(curf));
     } else {
-      newtmp(0, Kl, curf);
+      newtmp(0, Kl, G(curf));
     }
   }
-  curf->con[0].type = CBits;
-  curf->con[0].bits.i = 0xdeaddead; /* UNDEF */
-  curf->con[1].type = CBits;
-  curf->lnk = lnk;
-  curf->leaf = 1;
-  blink = &curf->start;
-  rcls = _sqtype_to_cls_and_ty(return_type, &curf->retty);
-  strncpy(curf->name, name, NString - 1);
+  G(curf)->con[0].type = CBits;
+  G(curf)->con[0].bits.i = 0xdeaddead; /* UNDEF */
+  G(curf)->con[1].type = CBits;
+  G(curf)->lnk = lnk;
+  G(curf)->leaf = 1;
+  G(blink) = &G(curf)->start;
+  G(rcls) = _sqtype_to_cls_and_ty(return_type, &G(curf)->retty);
+  strncpy(G(curf)->name, name, NString - 1);
   _ps = PLbl;
 
   return sq_block_declare_and_start();
@@ -231,17 +235,17 @@ SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
 SqRef sq_func_param_named(SqType type, const char* name) {
   int ty;
   int k = _sqtype_to_cls_and_ty(type, &ty);
-  Ref r = newtmp(0, Kx, curf);
-  SQ_NAMED_IF_DEBUG(curf->tmp[r.val].name, name);
+  Ref r = newtmp(0, Kx, G(curf));
+  SQ_NAMED_IF_DEBUG(G(curf)->tmp[r.val].name, name);
   // TODO: env ptr, varargs
   if (k == Kc) {
-    *curi = (Ins){Oparc, Kl, r, {TYPE(ty)}};
+    *GC(curi) = (Ins){Oparc, Kl, r, {TYPE(ty)}};
   } else if (k >= Ksb) {
-    *curi = (Ins){Oparsb + (k - Ksb), Kw, r, {R}};
+    *GC(curi) = (Ins){Oparsb + (k - Ksb), Kw, r, {R}};
   } else {
-    *curi = (Ins){Opar, k, r, {R}};
+    *GC(curi) = (Ins){Opar, k, r, {R}};
   }
-  ++curi;
+  ++GC(curi);
   return _internal_ref_to_sqref(r);
 }
 
@@ -249,7 +253,7 @@ SqRef sq_const_int(int64_t i) {
   Con c = {0};
   c.type = CBits;
   c.bits.i = i;
-  return _internal_ref_to_sqref(newcon(&c, curf));
+  return _internal_ref_to_sqref(newcon(&c, G(curf)));
 }
 
 SqRef sq_const_single(float f) {
@@ -257,7 +261,7 @@ SqRef sq_const_single(float f) {
   c.type = CBits;
   c.bits.s = f;
   c.flt = 1;
-  return _internal_ref_to_sqref(newcon(&c, curf));
+  return _internal_ref_to_sqref(newcon(&c, G(curf)));
 }
 
 SqRef sq_const_double(double d) {
@@ -265,49 +269,49 @@ SqRef sq_const_double(double d) {
   c.type = CBits;
   c.bits.d = d;
   c.flt = 2;
-  return _internal_ref_to_sqref(newcon(&c, curf));
+  return _internal_ref_to_sqref(newcon(&c, G(curf)));
 }
 
 // This has to return a SqSymbol that's the name that we re-lookup on use rather
 // than directly a Ref because Con Refs are stored per function (so when calling
 // the function, we need to create a new one in the caller).
 SqSymbol sq_func_end(void) {
-  if (!curb) {
+  if (!G(curb)) {
     err("empty function");
   }
-  if (curb->jmp.type == Jxxx) {
+  if (G(curb)->jmp.type == Jxxx) {
     err("last block misses jump");
   }
-  curf->mem = vnew(0, sizeof curf->mem[0], PFn);
-  curf->nmem = 0;
-  curf->nblk = _num_blocks;
-  curf->rpo = 0;
-  for (Blk* b = curf->start; b; b = b->link) {
+  G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
+  G(curf)->nmem = 0;
+  G(curf)->nblk = _num_blocks;
+  G(curf)->rpo = 0;
+  for (Blk* b = G(curf)->start; b; b = b->link) {
     SQ_ASSERT(b->dlink == 0);
   }
-  qbe_parse_typecheck(curf);
+  qbe_parse_typecheck(G(curf));
 
-  SqSymbol ret = {intern(curf->name)};
+  SqSymbol ret = {intern(G(curf)->name)};
 
-  qbe_main_func(curf);
+  qbe_main_func(G(curf));
 
-  curf = NULL;
+  G(curf) = NULL;
 
   return ret;
 }
 
 SqRef sq_ref_for_symbol(SqSymbol sym) {
-  SQ_ASSERT(curf);
+  SQ_ASSERT(G(curf));
   Con c = {0};
   c.type = CAddr;
   c.sym.id = sym.u;
-  Ref ret = newcon(&c, curf);
+  Ref ret = newcon(&c, G(curf));
   return _internal_ref_to_sqref(ret);
 }
 
 SqRef sq_ref_declare(void) {
-  Ref tmp = newtmp(NULL, Kx, curf);
-  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
+  Ref tmp = newtmp(NULL, Kx, G(curf));
+  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
   return _internal_ref_to_sqref(tmp);
 }
 
@@ -315,7 +319,7 @@ SqRef sq_extern(const char* name) {
   Con c = {0};
   c.type = CAddr;
   c.sym.id = intern((char*)name);
-  Ref ret = newcon(&c, curf);
+  Ref ret = newcon(&c, G(curf));
   return _internal_ref_to_sqref(ret);
 }
 
@@ -331,17 +335,17 @@ SqBlock sq_block_declare_named(const char* name) {
 
 void sq_block_start(SqBlock block) {
   Blk* b = _sqblock_to_internal_blk(block);
-  if (curb && curb->jmp.type == Jxxx) {
+  if (G(curb) && G(curb)->jmp.type == Jxxx) {
     qbe_parse_closeblk();
-    curb->jmp.type = Jjmp;
-    curb->s1 = b;
+    G(curb)->jmp.type = Jjmp;
+    G(curb)->s1 = b;
   }
   if (b->jmp.type != Jxxx) {
     err("multiple definitions of block @%s", b->name);
   }
-  *blink = b;
-  curb = b;
-  plink = &curb->phi;
+  *G(blink) = b;
+  G(curb) = b;
+  G(plink) = &G(curb)->phi;
   _ps = PPhi;
 }
 
@@ -353,15 +357,15 @@ SqBlock sq_block_declare_and_start_named(const char* name) {
 
 void sq_i_ret(SqRef val) {
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
-  curb->jmp.type = Jretw + rcls;
+  G(curb)->jmp.type = Jretw + G(rcls);
   if (val.u == 0) {
-    curb->jmp.type = Jret0;
-  } else if (rcls != K0) {
+    G(curb)->jmp.type = Jret0;
+  } else if (G(rcls) != K0) {
     Ref r = _sqref_to_internal_ref(val);
     if (req(r, R)) {
       err("invalid return value");
     }
-    curb->jmp.arg = r;
+    G(curb)->jmp.arg = r;
   }
   qbe_parse_closeblk();
   _ps = PLbl;
@@ -371,53 +375,50 @@ void sq_i_ret_void(void) {
   sq_i_ret((SqRef){0});  // TODO: not sure if this is correct == {RTmp, 0}.
 }
 
-SqRef sq_i_calla(SqType result,
-                 SqRef func,
-                 int num_args,
-                 SqCallArg* cas) {
+SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   // args are inserted into instrs first, then the call
   for (int i = 0; i < num_args; ++i) {
-    SQ_ASSERT(curi - insb < NIns);
+    SQ_ASSERT(GC(curi) - GC(insb) < NIns);
     int ty;
     int k = _sqtype_to_cls_and_ty(cas[i].type, &ty);
     Ref r = _sqref_to_internal_ref(cas[i].value);
     // TODO: env
     if (k == K0 && req(r, R)) {
       // This is our hacky special case for where '...' would appear in the call.
-      *curi = (Ins){.op = Oargv};
+      *GC(curi) = (Ins){.op = Oargv};
     } else if (k == Kc) {
-      *curi = (Ins){Oargc, Kl, R, {TYPE(ty), r}};
+      *GC(curi) = (Ins){Oargc, Kl, R, {TYPE(ty), r}};
     } else if (k >= Ksb) {
-      *curi = (Ins){Oargsb + (k - Ksb), Kw, R, {r}};
+      *GC(curi) = (Ins){Oargsb + (k - Ksb), Kw, R, {r}};
     } else {
-      *curi = (Ins){Oarg, k, R, {r}};
+      *GC(curi) = (Ins){Oarg, k, R, {r}};
     }
-    ++curi;
+    ++GC(curi);
   }
 
   Ref tmp;
 
   {
-    SQ_ASSERT(curi - insb < NIns);
+    SQ_ASSERT(GC(curi) - GC(insb) < NIns);
     int ty;
     int k = _sqtype_to_cls_and_ty(result, &ty);
-    curf->leaf = 0;
-    *curi = (Ins){0};
-    curi->op = Ocall;
-    curi->arg[0] = _sqref_to_internal_ref(func);
+    G(curf)->leaf = 0;
+    *GC(curi) = (Ins){0};
+    GC(curi)->op = Ocall;
+    GC(curi)->arg[0] = _sqref_to_internal_ref(func);
     if (k == Kc) {
       k = Kl;
-      curi->arg[1] = TYPE(ty);
+      GC(curi)->arg[1] = TYPE(ty);
     }
     if (k >= Ksb) {
       k = Kw;
     }
-    curi->cls = k;
-    tmp = newtmp(NULL, k, curf);
-    SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
-    curi->to = tmp;
-    ++curi;
+    GC(curi)->cls = k;
+    tmp = newtmp(NULL, k, G(curf));
+    SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
+    GC(curi)->to = tmp;
+    ++GC(curi);
   }
   _ps = PIns;
   return _internal_ref_to_sqref(tmp);
@@ -476,29 +477,30 @@ SqRef sq_i_call6(SqType result,
 
 void sq_i_jmp(SqBlock block) {
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
-  curb->jmp.type = Jjmp;
-  curb->s1 = _sqblock_to_internal_blk(block);
+  G(curb)->jmp.type = Jjmp;
+  G(curb)->s1 = _sqblock_to_internal_blk(block);
   qbe_parse_closeblk();
 }
 
 void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
   Ref r = _sqref_to_internal_ref(cond);
-  if (req(r, R))
+  if (req(r, R)) {
     err("invalid argument for jnz jump");
-  curb->jmp.type = Jjnz;
-  curb->jmp.arg = r;
-  curb->s1 = _sqblock_to_internal_blk(if_true);
-  curb->s2 = _sqblock_to_internal_blk(if_false);
+  }
+  G(curb)->jmp.type = Jjnz;
+  G(curb)->jmp.arg = r;
+  G(curb)->s1 = _sqblock_to_internal_blk(if_true);
+  G(curb)->s2 = _sqblock_to_internal_blk(if_false);
   qbe_parse_closeblk();
 }
 
 SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
-  if (_ps != PPhi || curb == curf->start) {
+  if (_ps != PPhi || G(curb) == G(curf)->start) {
     err("unexpected phi instruction");
   }
 
-  Ref tmp = newtmp(NULL, Kx, curf);
-  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
+  Ref tmp = newtmp(NULL, Kx, G(curf));
+  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
 
   Phi* phi = alloc(sizeof *phi);
   phi->to = tmp;
@@ -511,8 +513,8 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
   phi->blk[0] = _sqblock_to_internal_blk(block0);
   phi->blk[1] = _sqblock_to_internal_blk(block1);
   phi->narg = i;
-  *plink = phi;
-  plink = &phi->link;
+  *G(plink) = phi;
+  G(plink) = &phi->link;
   _ps = PPhi;
   return _internal_ref_to_sqref(tmp);
 }
@@ -520,51 +522,51 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
 static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0, SqRef arg1) {
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
-  SQ_ASSERT(curi - insb < NIns);
-  curi->op = op;
-  curi->cls = size_class.u;
-  curi->to = into;
-  curi->arg[0] = _sqref_to_internal_ref(arg0);
-  curi->arg[1] = _sqref_to_internal_ref(arg1);
-  ++curi;
+  SQ_ASSERT(GC(curi) - GC(insb) < NIns);
+  GC(curi)->op = op;
+  GC(curi)->cls = size_class.u;
+  GC(curi)->to = into;
+  GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
+  GC(curi)->arg[1] = _sqref_to_internal_ref(arg1);
+  ++GC(curi);
   _ps = PIns;
 }
 
 static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef arg1) {
-  Ref tmp = newtmp(NULL, Kx, curf);
-  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
+  Ref tmp = newtmp(NULL, Kx, G(curf));
+  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
   _normal_two_op_instr_into(op, tmp, size_class, arg0, arg1);
   return _internal_ref_to_sqref(tmp);
 }
 
 static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
-  SQ_ASSERT(curi - insb < NIns);
-  curi->op = op;
-  curi->cls = SQ_TYPE_W;
-  curi->to = R;
-  curi->arg[0] = _sqref_to_internal_ref(arg0);
-  curi->arg[1] = _sqref_to_internal_ref(arg1);
-  ++curi;
+  SQ_ASSERT(GC(curi) - GC(insb) < NIns);
+  GC(curi)->op = op;
+  GC(curi)->cls = SQ_TYPE_W;
+  GC(curi)->to = R;
+  GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
+  GC(curi)->arg[1] = _sqref_to_internal_ref(arg1);
+  ++GC(curi);
   _ps = PIns;
 }
 
 static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0) {
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
-  SQ_ASSERT(curi - insb < NIns);
-  curi->op = op;
-  curi->cls = size_class.u;
-  curi->to = into;
-  curi->arg[0] = _sqref_to_internal_ref(arg0);
-  curi->arg[1] = R;
-  ++curi;
+  SQ_ASSERT(GC(curi) - GC(insb) < NIns);
+  GC(curi)->op = op;
+  GC(curi)->cls = size_class.u;
+  GC(curi)->to = into;
+  GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
+  GC(curi)->arg[1] = R;
+  ++GC(curi);
   _ps = PIns;
 }
 
 static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
-  Ref tmp = newtmp(NULL, Kx, curf);
-  SQ_NAMED_IF_DEBUG(curf->tmp[tmp.val].name, NULL);
+  Ref tmp = newtmp(NULL, Kx, G(curf));
+  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
   _normal_one_op_instr_into(op, tmp, size_class, arg0);
   return _internal_ref_to_sqref(tmp);
 }
@@ -726,8 +728,8 @@ SqSymbol sq_data_end(void) {
 // details of fields beyond the 32nd (but still updates overall struct
 // size/alignment for additional values).
 void sq_type_struct_start(const char* name, int align) {
-  vgrow(&typ, _ntyp + 1);
-  _curty = &typ[_ntyp++];
+  vgrow(&GC(typ), _ntyp + 1);
+  _curty = &GC(typ)[_ntyp++];
   _curty->isdark = 0;
   _curty->isunion = 0;
   _curty->align = -1;
@@ -802,7 +804,7 @@ void sq_type_add_field_with_count(SqType field, uint32_t count) {
       break;
     default:
       type = FTyp;
-      ty1 = &typ[field.u];
+      ty1 = &GC(typ)[field.u];
       s = ty1->size;
       a = ty1->align;
       break;
@@ -843,11 +845,11 @@ SqType sq_type_struct_end(void) {
   }
   _curty->size = (_curty_build_sz + a - 1) & -a;
   _curty->align = _curty_build_al;
-  if (debug['T']) {
+  if (GC(debug)['T']) {
     fprintf(stderr, "\n> Parsed type:\n");
     printtyp(_curty, stderr);
   }
-  SqType ret = {_curty - typ};
+  SqType ret = {_curty - GC(typ)};
   _curty = NULL;
   _curty_build_n = 0;
   _curty_build_sz = 0;

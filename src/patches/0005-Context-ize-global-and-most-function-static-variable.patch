@@ -1,0 +1,4378 @@
+From 6f6fbe424e11422c59d5947cb060a38da932c184 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Sat, 8 Feb 2025 21:09:53 -0800
+Subject: [PATCH] Context-ize global and (most) function-static variables
+
+Moves all mutable globals into a single GlobalContext struct.
+
+Uses G() "global" for per-file and GC() "global context" for truly
+global variables to access to keep the names relatively short.
+
+The intention of this change is to be able to cleanly (re-)initialize
+qbe's state when used in a library context.
+
+In the future, it might help enable multithreaded compilation too
+(though currently, there are still function-static buffers that have to
+be maintained as-is because they're used to return created strings.)
+---
+ all.h          | 155 +++++++++++++++++-
+ amd64/emit.c   |  35 ++--
+ amd64/isel.c   |  38 ++---
+ amd64/sysv.c   |  32 ++--
+ amd64/winabi.c |  22 +--
+ arm64/abi.c    |  48 +++---
+ arm64/emit.c   |  29 ++--
+ arm64/isel.c   |  22 +--
+ cfg.c          |   5 +-
+ copy.c         |   4 +-
+ emit.c         |  77 ++++-----
+ fold.c         | 101 +++++-------
+ live.c         |  18 +-
+ load.c         |  70 ++++----
+ main.c         |  70 ++++----
+ mem.c          |   6 +-
+ parse.c        | 436 +++++++++++++++++++++++--------------------------
+ rega.c         | 205 +++++++++++------------
+ rv64/abi.c     |  30 ++--
+ rv64/emit.c    |  11 +-
+ rv64/isel.c    |  24 +--
+ simpl.c        |  12 +-
+ spill.c        | 161 +++++++++---------
+ ssa.c          |  25 ++-
+ util.c         |  65 +++-----
+ 25 files changed, 882 insertions(+), 819 deletions(-)
+
+diff --git a/all.h b/all.h
+index 7402867..1eb2906 100644
+--- a/all.h
++++ b/all.h
+@@ -33,6 +33,12 @@ typedef struct Dat Dat;
+ typedef struct Lnk Lnk;
+ typedef struct Target Target;
+ 
++typedef struct Asmbits Asmbits;
++typedef struct Edge Edge;
++typedef struct Insert Insert;
++typedef struct Name Name;
++
++
+ enum {
+ 	NString = 80,
+ 	NIns    = 1 << 20,
+@@ -451,9 +457,150 @@ struct Dat {
+ 	char isstr;
+ };
+ 
+-/* main.c */
+-extern Target T;
+-extern char debug['Z'+1];
++enum {
++	util__NPtr = 256,
++	util__IBits = 12,
++	util__IMask = (1<<util__IBits) - 1,
++
++	parse__M = 23,
++	parse__BMask = 8191, /* for blocks hash */
++};
++
++typedef struct Bucket Bucket;
++struct Bucket {
++	uint nstr;
++	char **str;
++};
++
++struct Edge {
++	int dest;
++	int dead;
++	Edge *work;
++};
++
++typedef struct GlobalContext {
++	/* cfg.c */
++	Blk cfg__newblk_z;
++
++	/* emit.c */
++	Asmbits *emit__stash;
++	int64_t emit__zero;
++	uint32_t *emit__file;
++	uint emit__nfile;
++	uint emit__curfile;
++
++	/* fold.c */
++	int *fold__val;
++	Edge *fold__flowrk;
++	Edge (*fold__edge)[2];
++	Use **fold__usewrk;
++	uint fold__nuse;
++
++	/* load.c */
++	Fn *load__curf;
++	uint load__inum;     /* current insertion number */
++	Insert *load__ilog;  /* global insertion log */
++	uint load__nlog;     /* number of entries in the log */
++
++	/* main.c */
++	FILE* main__outf;
++	int main__dbg;
++
++	/* parse.c */
++	int parse__lexinit_done;
++	char parse__lex_tok[NString];
++	uchar parse__lexh[1 << (32-parse__M)];
++	int parse__lnum;
++	FILE *parse__inf;
++	char *parse__inpath;
++	int parse__thead;
++	struct {
++		char chr;
++		double fltd;
++		float flts;
++		int64_t num;
++		char *str;
++	} parse__tokval;
++	Fn *parse__curf;
++	int *parse__tmph;
++	int parse__tmphcap;
++	Phi **parse__plink;
++	Blk *parse__curb;
++	Blk **parse__blink;
++	Blk *parse__blkh[parse__BMask+1];
++	int parse__nblk;
++	int parse__rcls;
++	uint parse__ntyp;
++
++	/* rega.c */
++	bits rega__regu;      /* registers used */
++	Tmp *rega__tmp;       /* function temporaries */
++	Mem *rega__mem;       /* function mem references */
++	struct {
++		Ref src, dst;
++		int cls;
++	} rega__pm[Tmp0];     /* parallel move constructed */
++	int rega__npm;        /* size of pm */
++	int rega__loop;       /* current loop level */
++	uint rega__stmov;     /* stats: added moves */
++	uint rega__stblk;     /* stats: added blocks */
++
++  /* spill.c */
++	BSet *spill__fst; /* temps to prioritize in registers (for tcmp1) */
++	Tmp *spill__tmp;  /* current temporaries (for tcmpX) */
++	int spill__ntmp;  /* current # of temps (for limit) */
++	int spill__locs;  /* stack size used by locals */
++	int spill__slot4; /* next slot of 4 bytes */
++	int spill__slot8; /* ditto, 8 bytes */
++	BSet spill__mask[2][1]; /* class masks */
++	int *spill__limit_tarr;
++	int spill__limit_maxt;
++
++	/* ssa.c */
++	Name *ssa__namel;
++
++	/* util.c */
++	void *util__ptr[util__NPtr];
++	void **util__pool;
++	int util__nptr;
++	Bucket util__itbl[util__IMask+1]; /* string interning table */
++  int util__newtmp_n;
++
++	int amd64_emit__amd64_sysv_emitfn_id0;
++	int amd64_emit__amd64_winabi_emitfn_id0;
++	int arm64_emit__arm64_emitfn_id0;
++	int rv64_emit__rv64_emitfn_id0;
++
++	/* nominally owned by util.c, but used everywhere */
++	Typ *typ;
++	Ins insb[NIns];
++
++	/* nominally owned by main.c, but used everywhere */
++	Target T;
++	char debug['Z' + 1];
++	// ['P'] = 0, /* parsing */
++	// ['M'] = 0, /* memory optimization */
++	// ['N'] = 0, /* ssa construction */
++	// ['C'] = 0, /* copy elimination */
++	// ['F'] = 0, /* constant folding */
++	// ['A'] = 0, /* abi lowering */
++	// ['I'] = 0, /* instruction selection */
++	// ['L'] = 0, /* liveness */
++	// ['S'] = 0, /* spilling */
++	// ['R'] = 0, /* reg. allocation */
++	// ['T'] = 0, /* types */
++	Ins *curi;
++
++} GlobalContext;
++
++extern GlobalContext global_context;
++
++// This should be used sparingly for things that are "really" global. Normally,
++// prefer a file-local G(x) that prefixes with the filename. Currently, just
++// `typ`, `insb`, and `curi`, `debug`, and `T`.
++#define GC(x) global_context.x
++
++extern void reinit_global_context(GlobalContext* ctx);
+ 
+ /* util.c */
+ typedef enum {
+@@ -461,8 +608,6 @@ typedef enum {
+ 	PFn, /* discarded after processing the function */
+ } Pool;
+ 
+-extern Typ *typ;
+-extern Ins insb[NIns], *curi;
+ uint32_t hash(char *);
+ void die_(char *, char *, ...) __attribute__((noreturn));
+ void *emalloc(size_t);
+diff --git a/amd64/emit.c b/amd64/emit.c
+index 2f5be61..74e7cbc 100644
+--- a/amd64/emit.c
++++ b/amd64/emit.c
+@@ -1,5 +1,6 @@
+ #include "all.h"
+ 
++#define G(x) global_context.amd64_emit__##x
+ 
+ typedef struct E E;
+ 
+@@ -168,7 +169,7 @@ slot(Ref r, E *e)
+ 	else if (e->fp == RSP)
+ 		return 4*s + e->nclob*8;
+ 	else if (e->fn->vararg) {
+-		if (T.windows)
++		if (GC(T).windows)
+ 			return -4 * (e->fn->slot - s);
+ 		else
+ 			return -176 + -4 * (e->fn->slot - s);
+@@ -184,9 +185,9 @@ emitcon(Con *con, E *e)
+ 	switch (con->type) {
+ 	case CAddr:
+ 		l = str(con->sym.id);
+-		p = l[0] == '"' ? "" : T.assym;
++		p = l[0] == '"' ? "" : GC(T).assym;
+ 		if (con->sym.type == SThr) {
+-			if (T.apple)
++			if (GC(T).apple)
+ 				fprintf(e->f, "%s%s@TLVP", p, l);
+ 			else
+ 				fprintf(e->f, "%%fs:%s%s@tpoff", p, l);
+@@ -370,7 +371,7 @@ Next:
+ 			off = e->fn->con[ref.val];
+ 			emitcon(&off, e);
+ 			if (off.type == CAddr)
+-			if (off.sym.type != SThr || T.apple)
++			if (off.sym.type != SThr || GC(T).apple)
+ 				fprintf(e->f, "(%%rip)");
+ 			break;
+ 		case RTmp:
+@@ -460,7 +461,7 @@ emitins(Ins i, E *e)
+ 			fprintf(e->f,
+ 				"\txorp%c %sfp%d(%%rip), %%%s\n",
+ 				"xxsd"[i.cls],
+-				T.asloc,
++				GC(T).asloc,
+ 				stashbits(negmask[i.cls], 16),
+ 				regtoa(i.to.val, SLong)
+ 			);
+@@ -520,7 +521,7 @@ emitins(Ins i, E *e)
+ 		emitf("mov%k %0, %=", &i, e);
+ 		break;
+ 	case Oaddr:
+-		if (!T.apple
++		if (!GC(T).apple
+ 		&& rtype(i.arg[0]) == RCon
+ 		&& e->fn->con[i.arg[0].val].sym.type == SThr) {
+ 			/* derive the symbol address from the TCB
+@@ -530,7 +531,7 @@ emitins(Ins i, E *e)
+ 			sym = str(con->sym.id);
+ 			emitf("movq %%fs:0, %L=", &i, e);
+ 			fprintf(e->f, "\tleaq %s%s@tpoff",
+-				sym[0] == '"' ? "" : T.assym, sym);
++				sym[0] == '"' ? "" : GC(T).assym, sym);
+ 			if (con->bits.i)
+ 				fprintf(e->f, "%+"PRId64,
+ 					con->bits.i);
+@@ -611,7 +612,6 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+ 		CMP(X)
+ 	#undef X
+ 	};
+-	static int id0;
+ 	Blk *b, *s;
+ 	Ins *i, itmp;
+ 	int *r, c, o, n, lbl;
+@@ -644,7 +644,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+ 
+ 	for (lbl=0, b=fn->start; b; b=b->link) {
+ 		if (lbl || b->npred > 1)
+-			fprintf(f, "%sbb%d:\n", T.asloc, id0+b->id);
++			fprintf(f, "%sbb%d:\n", GC(T).asloc, G(amd64_sysv_emitfn_id0)+b->id);
+ 		for (i=b->ins; i!=&b->ins[b->nins]; i++)
+ 			emitins(*i, e);
+ 		lbl = 1;
+@@ -675,7 +675,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+ 		Jmp:
+ 			if (b->s1 != b->link)
+ 				fprintf(f, "\tjmp %sbb%d\n",
+-					T.asloc, id0+b->s1->id);
++					GC(T).asloc, G(amd64_sysv_emitfn_id0)+b->s1->id);
+ 			else
+ 				lbl = 0;
+ 			break;
+@@ -689,14 +689,14 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+ 				} else
+ 					c = cmpneg(c);
+ 				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
+-					T.asloc, id0+b->s2->id);
++					GC(T).asloc, G(amd64_sysv_emitfn_id0)+b->s2->id);
+ 				goto Jmp;
+ 			}
+ 			die("unhandled jump %d", b->jmp.type);
+ 		}
+ 	}
+-	id0 += fn->nblk;
+-	if (!T.apple)
++	G(amd64_sysv_emitfn_id0) += fn->nblk;
++	if (!GC(T).apple)
+ 		elf_emitfnfin(fn->name, f);
+ }
+ 
+@@ -729,7 +729,6 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+ 		CMP(X)
+ 	#undef X
+ 	};
+-	static int id0;
+ 	Blk *b, *s;
+ 	Ins *i, itmp;
+ 	int *r, c, lbl;
+@@ -761,7 +760,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+ 
+ 	for (lbl=0, b=fn->start; b; b=b->link) {
+ 		if (lbl || b->npred > 1)
+-			fprintf(f, "%sbb%d:\n", T.asloc, id0+b->id);
++			fprintf(f, "%sbb%d:\n", GC(T).asloc, G(amd64_winabi_emitfn_id0)+b->id);
+ 		for (i=b->ins; i!=&b->ins[b->nins]; i++)
+ 			emitins(*i, e);
+ 		lbl = 1;
+@@ -792,7 +791,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+ 		Jmp:
+ 			if (b->s1 != b->link)
+ 				fprintf(f, "\tjmp %sbb%d\n",
+-					T.asloc, id0+b->s1->id);
++					GC(T).asloc, G(amd64_winabi_emitfn_id0)+b->s1->id);
+ 			else
+ 				lbl = 0;
+ 			break;
+@@ -806,11 +805,11 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+ 				} else
+ 					c = cmpneg(c);
+ 				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
+-					T.asloc, id0+b->s2->id);
++					GC(T).asloc, G(amd64_winabi_emitfn_id0)+b->s2->id);
+ 				goto Jmp;
+ 			}
+ 			die("unhandled jump %d", b->jmp.type);
+ 		}
+ 	}
+-	id0 += fn->nblk;
++	G(amd64_winabi_emitfn_id0) += fn->nblk;
+ }
+diff --git a/amd64/isel.c b/amd64/isel.c
+index bd645ce..d8107ff 100644
+--- a/amd64/isel.c
++++ b/amd64/isel.c
+@@ -92,7 +92,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+ 		 * add symbol prefixes on the apple
+ 		 * target variant
+ 		 */
+-		sprintf(buf, "\"%sfp%d\"", T.asloc, n);
++		sprintf(buf, "\"%sfp%d\"", GC(T).asloc, n);
+ 		a.offset.sym.id = intern(buf);
+ 		fn->mem[fn->nmem-1] = a;
+ 	}
+@@ -112,7 +112,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+ 		r1 = newtmp("isel", Kl, fn);
+ 		emit(Oaddr, Kl, r1, SLOT(s), R);
+ 	}
+-	else if (T.apple && hascon(r0, &c, fn)
++	else if (GC(T).apple && hascon(r0, &c, fn)
+ 	&& c->type == CAddr && c->sym.type == SThr) {
+ 		r1 = newtmp("isel", Kl, fn);
+ 		if (c->bits.i) {
+@@ -227,12 +227,12 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
+ 		arg[0] = r;
+ 	}
+ 	emit(Oxcmp, k, R, arg[1], arg[0]);
+-	icmp = curi;
++	icmp = GC(curi);
+ 	if (rtype(arg[0]) == RCon) {
+ 		assert(k != Kw);
+ 		icmp->arg[1] = newtmp("isel", k, fn);
+ 		emit(Ocopy, k, icmp->arg[1], arg[0], R);
+-		fixarg(&curi->arg[0], k, curi, fn);
++		fixarg(&GC(curi)->arg[0], k, GC(curi), fn);
+ 	}
+ 	fixarg(&icmp->arg[0], k, icmp, fn);
+ 	fixarg(&icmp->arg[1], k, icmp, fn);
+@@ -252,7 +252,7 @@ sel(Ins i, Num *tn, Fn *fn)
+ 		chuse(i.arg[1], -1, fn);
+ 		return;
+ 	}
+-	i0 = curi;
++	i0 = GC(curi);
+ 	k = i.cls;
+ 	switch (i.op) {
+ 	case Odiv:
+@@ -285,7 +285,7 @@ sel(Ins i, Num *tn, Fn *fn)
+ 			emit(Ocopy, k, TMP(RDX), CON_Z, R);
+ 		}
+ 		emit(Ocopy, k, TMP(RAX), i.arg[0], R);
+-		fixarg(&curi->arg[0], k, curi, fn);
++		fixarg(&GC(curi)->arg[0], k, GC(curi), fn);
+ 		if (rtype(i.arg[1]) == RCon)
+ 			emit(Ocopy, k, r0, i.arg[1], R);
+ 		break;
+@@ -301,7 +301,7 @@ sel(Ins i, Num *tn, Fn *fn)
+ 		i.arg[1] = TMP(RCX);
+ 		emit(Ocopy, Kw, R, TMP(RCX), R);
+ 		emiti(i);
+-		i1 = curi;
++		i1 = GC(curi);
+ 		emit(Ocopy, Kw, TMP(RCX), r0, R);
+ 		fixarg(&i1->arg[0], argcls(&i, 0), i1, fn);
+ 		break;
+@@ -309,7 +309,7 @@ sel(Ins i, Num *tn, Fn *fn)
+ 		r0 = newtmp("utof", Kl, fn);
+ 		emit(Osltof, k, i.to, r0, R);
+ 		emit(Oextuw, Kl, r0, i.arg[0], R);
+-		fixarg(&curi->arg[0], k, curi, fn);
++		fixarg(&GC(curi)->arg[0], k, GC(curi), fn);
+ 		break;
+ 	case Oultof:
+ 		/* %mask =l and %arg.0, 1
+@@ -338,11 +338,11 @@ sel(Ins i, Num *tn, Fn *fn)
+ 		emit(Osltof, k, r0, tmp[3], R);
+ 		emit(Oor, Kl, tmp[3], tmp[0], tmp[2]);
+ 		emit(Oshr, Kl, tmp[2], i.arg[0], tmp[1]);
+-		sel(*curi++, 0, fn);
++		sel(*GC(curi)++, 0, fn);
+ 		emit(Oshr, Kl, tmp[1], i.arg[0], getcon(63, fn));
+-		fixarg(&curi->arg[0], Kl, curi, fn);
++		fixarg(&GC(curi)->arg[0], Kl, GC(curi), fn);
+ 		emit(Oand, Kl, tmp[0], i.arg[0], getcon(1, fn));
+-		fixarg(&curi->arg[0], Kl, curi, fn);
++		fixarg(&GC(curi)->arg[0], Kl, GC(curi), fn);
+ 		break;
+ 	case Ostoui:
+ 		i.op = Ostosi;
+@@ -380,12 +380,12 @@ sel(Ins i, Num *tn, Fn *fn)
+ 		emit(Oand, Kl, tmp[3], tmp[2], tmp[1]);
+ 		emit(i.op, Kl, tmp[2], r0, R);
+ 		emit(Oadd, kc, r0, tmp[4], i.arg[0]);
+-		i1 = curi; /* fixarg() can change curi */
++		i1 = GC(curi); /* fixarg() can change curi */
+ 		fixarg(&i1->arg[0], kc, i1, fn);
+ 		fixarg(&i1->arg[1], kc, i1, fn);
+ 		emit(Osar, Kl, tmp[1], tmp[0], getcon(63, fn));
+ 		emit(i.op, Kl, tmp[0], i.arg[0], R);
+-		fixarg(&curi->arg[0], Kl, curi, fn);
++		fixarg(&GC(curi)->arg[0], Kl, GC(curi), fn);
+ 		break;
+ 	case Onop:
+ 		break;
+@@ -428,7 +428,7 @@ sel(Ins i, Num *tn, Fn *fn)
+ 	case_OExt:
+ Emit:
+ 		emiti(i);
+-		i1 = curi; /* fixarg() can change curi */
++		i1 = GC(curi); /* fixarg() can change curi */
+ 		fixarg(&i1->arg[0], argcls(&i, 0), i1, fn);
+ 		fixarg(&i1->arg[1], argcls(&i, 1), i1, fn);
+ 		break;
+@@ -473,7 +473,7 @@ Emit:
+ 		die("unknown instruction %s", optab[i.op].name);
+ 	}
+ 
+-	while (i0>curi && --i0) {
++	while (i0>GC(curi) && --i0) {
+ 		assert(rslot(i0->arg[0], fn) == -1);
+ 		assert(rslot(i0->arg[1], fn) == -1);
+ 	}
+@@ -816,7 +816,7 @@ amd64_isel(Fn *fn)
+ 	n = fn->ntmp;
+ 	num = emalloc(n * sizeof num[0]);
+ 	for (b=fn->start; b; b=b->link) {
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
+ 			for (p=(*sb)->phi; p; p=p->link) {
+ 				for (a=0; p->blk[a] != b; a++)
+@@ -828,12 +828,12 @@ amd64_isel(Fn *fn)
+ 		seljmp(b, fn);
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			sel(*--i, num, fn);
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	}
+ 	free(num);
+ 
+-	if (debug['I']) {
++	if (GC(debug)['I']) {
+ 		fprintf(stderr, "\n> After instruction selection:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/amd64/sysv.c b/amd64/sysv.c
+index 49b125f..79f70ac 100644
+--- a/amd64/sysv.c
++++ b/amd64/sysv.c
+@@ -49,8 +49,8 @@ classify(AClass *a, Typ *t, uint s)
+ 				s += f->len;
+ 				break;
+ 			case FTyp:
+-				classify(a, &typ[f->len], s);
+-				s += typ[f->len].size;
++				classify(a, &GC(typ)[f->len], s);
++				s += GC(typ)[f->len].size;
+ 				break;
+ 			}
+ 		}
+@@ -123,7 +123,7 @@ selret(Blk *b, Fn *fn)
+ 	b->jmp.type = Jret0;
+ 
+ 	if (j == Jretc) {
+-		typclass(&aret, &typ[fn->retty]);
++		typclass(&aret, &GC(typ)[fn->retty]);
+ 		if (aret.inmem) {
+ 			assert(rtype(fn->retr) == RTmp);
+ 			emit(Ocopy, Kl, TMP(RAX), fn->retr, R);
+@@ -185,7 +185,7 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
+ 			break;
+ 		case Oargc:
+ 			n = i->arg[0].val;
+-			typclass(a, &typ[n]);
++			typclass(a, &GC(typ)[n]);
+ 			if (a->inmem)
+ 				continue;
+ 			ni = ns = 0;
+@@ -314,7 +314,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
+ 
+ 	if (!req(i1->arg[1], R)) {
+ 		assert(rtype(i1->arg[1]) == RType);
+-		typclass(&aret, &typ[i1->arg[1].val]);
++		typclass(&aret, &GC(typ)[i1->arg[1].val]);
+ 		ca = argsclass(i0, i1, ac, Oarg, &aret, &env);
+ 	} else
+ 		ca = argsclass(i0, i1, ac, Oarg, 0, &env);
+@@ -435,11 +435,11 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 
+ 	env = R;
+ 	ac = alloc((i1-i0) * sizeof ac[0]);
+-	curi = &insb[NIns];
++	GC(curi) = &GC(insb)[NIns];
+ 	ni = ns = 0;
+ 
+ 	if (fn->retty >= 0) {
+-		typclass(&aret, &typ[fn->retty]);
++		typclass(&aret, &GC(typ)[fn->retty]);
+ 		fa = argsclass(i0, i1, ac, Opar, &aret, &env);
+ 	} else
+ 		fa = argsclass(i0, i1, ac, Opar, 0, &env);
+@@ -508,9 +508,9 @@ split(Fn *fn, Blk *b)
+ 
+ 	++fn->nblk;
+ 	bn = newblk();
+-	bn->nins = &insb[NIns] - curi;
+-	idup(&bn->ins, curi, bn->nins);
+-	curi = &insb[NIns];
++	bn->nins = &GC(insb)[NIns] - GC(curi);
++	idup(&bn->ins, GC(curi), bn->nins);
++	GC(curi) = &GC(insb)[NIns];
+ 	bn->visit = ++b->visit;
+ 	strf(bn->name, "%s.%d", b->name, b->visit);
+ 	bn->loop = b->loop;
+@@ -669,9 +669,9 @@ amd64_sysv_abi(Fn *fn)
+ 		if (!ispar(i->op))
+ 			break;
+ 	fa = selpar(fn, b->ins, i);
+-	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
++	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
+ 	i0 = alloc(n * sizeof(Ins));
+-	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
++	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
+ 	ip = icpy(ip, i, &b->ins[b->nins] - i);
+ 	b->nins = n;
+ 	b->ins = i0;
+@@ -684,7 +684,7 @@ amd64_sysv_abi(Fn *fn)
+ 			b = fn->start; /* do it last */
+ 		if (b->visit)
+ 			continue;
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		selret(b, fn);
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			switch ((--i)->op) {
+@@ -711,11 +711,11 @@ amd64_sysv_abi(Fn *fn)
+ 		if (b == fn->start)
+ 			for (; ral; ral=ral->link)
+ 				emiti(ral->i);
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	} while (b != fn->start);
+ 
+-	if (debug['A']) {
++	if (GC(debug)['A']) {
+ 		fprintf(stderr, "\n> After ABI lowering:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/amd64/winabi.c b/amd64/winabi.c
+index 2482705..d5223a4 100755
+--- a/amd64/winabi.c
++++ b/amd64/winabi.c
+@@ -191,7 +191,7 @@ static void classify_arguments(RegisterUsage* reg_usage,
+       case Oargc:
+       case Oparc: {
+         int typ_index = instr->arg[0].val;
+-        Typ* type = &typ[typ_index];
++        Typ* type = &GC(typ)[typ_index];
+         bool by_copy = type_is_by_copy(type);
+         assign_register_or_stack(reg_usage, arg, /*is_float=*/false, by_copy);
+         arg->cls = Kl;
+@@ -277,7 +277,7 @@ static Ins* lower_call(Fn* func,
+   bool il_has_struct_return = !req(call_instr->arg[1], R);
+   bool is_struct_return = false;
+   if (il_has_struct_return) {
+-    Typ* ret_type = &typ[call_instr->arg[1].val];
++    Typ* ret_type = &GC(typ)[call_instr->arg[1].val];
+     is_struct_return = type_is_by_copy(ret_type);
+     if (is_struct_return) {
+       assign_register_or_stack(&reg_usage, &ret_arg_class, /*is_float=*/false,
+@@ -488,7 +488,7 @@ static void lower_block_return(Fn* func, Blk* block) {
+   RegisterUsage reg_usage = {0};
+ 
+   if (jmp_type == Jretc) {
+-    Typ* type = &typ[func->retty];
++    Typ* type = &GC(typ)[func->retty];
+     if (type_is_by_copy(type)) {
+       assert(rtype(func->retr) == RTmp);
+       emit(Ocopy, Kl, TMP(RAX), func->retr, R);
+@@ -551,7 +551,7 @@ static void lower_args_for_block(Fn* func,
+                                  ExtraAlloc** pextra_alloc) {
+   // global temporary buffer used by emit. Reset to the end, and predecremented
+   // when adding to it.
+-  curi = &insb[NIns];
++  GC(curi) = &GC(insb)[NIns];
+ 
+   lower_block_return(func, block);
+ 
+@@ -593,8 +593,8 @@ static void lower_args_for_block(Fn* func,
+ 
+   // emit/emiti add instructions from the end to the beginning of the temporary
+   // global buffer. dup the final version into the final block storage.
+-  block->nins = &insb[NIns] - curi;
+-  idup(&block->ins, curi, block->nins);
++  block->nins = &GC(insb)[NIns] - GC(curi);
++  idup(&block->ins, GC(curi), block->nins);
+ }
+ 
+ static Ins* find_end_of_func_parameters(Blk* start_block) {
+@@ -620,11 +620,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+ 
+   // global temporary buffer used by emit. Reset to the end, and predecremented
+   // when adding to it.
+-  curi = &insb[NIns];
++  GC(curi) = &GC(insb)[NIns];
+ 
+   RegisterUsage reg_usage = {0};
+   if (func->retty >= 0) {
+-    bool by_copy = type_is_by_copy(&typ[func->retty]);
++    bool by_copy = type_is_by_copy(&GC(typ)[func->retty]);
+     if (by_copy) {
+       assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false,
+                                by_copy);
+@@ -695,11 +695,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+     emit(Ocopy, Kl, env, TMP(RAX), R);
+   }
+ 
+-  int num_created_instrs = &insb[NIns] - curi;
++  int num_created_instrs = &GC(insb)[NIns] - GC(curi);
+   int num_other_after_instrs = (int)(start_block->nins - num_params);
+   int new_total_instrs = num_other_after_instrs + num_created_instrs;
+   Ins* new_instrs = alloc(new_total_instrs * sizeof(Ins));
+-  Ins* instr_p = icpy(new_instrs, curi, num_created_instrs);
++  Ins* instr_p = icpy(new_instrs, GC(curi), num_created_instrs);
+   icpy(instr_p, end_of_params, num_other_after_instrs);
+   start_block->nins = new_total_instrs;
+   start_block->ins = new_instrs;
+@@ -747,7 +747,7 @@ void amd64_winabi_abi(Fn* func) {
+   }
+   lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
+ 
+-  if (debug['A']) {
++  if (GC(debug)['A']) {
+     fprintf(stderr, "\n> After ABI lowering:\n");
+     printfn(func, stderr);
+   }
+diff --git a/arm64/abi.c b/arm64/abi.c
+index b9e6a14..4541ace 100644
+--- a/arm64/abi.c
++++ b/arm64/abi.c
+@@ -78,7 +78,7 @@ isfloatv(Typ *t, char *cls)
+ 				*cls = Kd;
+ 				break;
+ 			case FTyp:
+-				if (isfloatv(&typ[f->len], cls))
++				if (isfloatv(&GC(typ)[f->len], cls))
+ 					break;
+ 				/* fall through */
+ 			default:
+@@ -187,7 +187,7 @@ selret(Blk *b, Fn *fn)
+ 	b->jmp.type = Jret0;
+ 
+ 	if (j == Jretc) {
+-		typclass(&cr, &typ[fn->retty], gpreg, fpreg);
++		typclass(&cr, &GC(typ)[fn->retty], gpreg, fpreg);
+ 		if (cr.class & Cptr) {
+ 			assert(rtype(fn->retr) == RTmp);
+ 			emit(Oblit1, 0, R, INT(cr.t->size), R);
+@@ -241,7 +241,7 @@ argsclass(Ins *i0, Ins *i1, Class *carg)
+ 		case Opar:
+ 		case Oarg:
+ 			c->size = 8;
+-			if (T.apple && !KWIDE(i->cls))
++			if (GC(T).apple && !KWIDE(i->cls))
+ 				c->size = 4;
+ 		Scalar:
+ 			c->align = c->size;
+@@ -266,7 +266,7 @@ argsclass(Ins *i0, Ins *i1, Class *carg)
+ 			break;
+ 		case Oparc:
+ 		case Oargc:
+-			typclass(c, &typ[i->arg[0].val], gp, fp);
++			typclass(c, &GC(typ)[i->arg[0].val], gp, fp);
+ 			if (c->ngp <= ngp) {
+ 				if (c->nfp <= nfp) {
+ 					ngp -= c->ngp;
+@@ -287,7 +287,7 @@ argsclass(Ins *i0, Ins *i1, Class *carg)
+ 			envc = 1;
+ 			break;
+ 		case Oargv:
+-			va = T.apple != 0;
++			va = GC(T).apple != 0;
+ 			break;
+ 		default:
+ 			die("unreachable");
+@@ -393,7 +393,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
+ 		emit(Oadd, Kl, TMP(SP), TMP(SP), rstk);
+ 
+ 	if (!req(i1->arg[1], R)) {
+-		typclass(&cr, &typ[i1->arg[1].val], gpreg, fpreg);
++		typclass(&cr, &GC(typ)[i1->arg[1].val], gpreg, fpreg);
+ 		stkblob(i1->to, &cr, fn, ilp);
+ 		cty |= (cr.nfp << 2) | cr.ngp;
+ 		if (cr.class & Cptr) {
+@@ -480,7 +480,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 	Ref r, tmp[16], *t;
+ 
+ 	ca = alloc((i1-i0) * sizeof ca[0]);
+-	curi = &insb[NIns];
++	GC(curi) = &GC(insb)[NIns];
+ 
+ 	cty = argsclass(i0, i1, ca);
+ 	fn->reg = arm64_argregs(CALL(cty), 0);
+@@ -498,7 +498,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 		emiti(il->i);
+ 
+ 	if (fn->retty >= 0) {
+-		typclass(&cr, &typ[fn->retty], gpreg, fpreg);
++		typclass(&cr, &GC(typ)[fn->retty], gpreg, fpreg);
+ 		if (cr.class & Cptr) {
+ 			fn->retr = newtmp("abi", Kl, fn);
+ 			emit(Ocopy, Kl, fn->retr, TMP(R8), R);
+@@ -545,9 +545,9 @@ split(Fn *fn, Blk *b)
+ 
+ 	++fn->nblk;
+ 	bn = newblk();
+-	bn->nins = &insb[NIns] - curi;
+-	idup(&bn->ins, curi, bn->nins);
+-	curi = &insb[NIns];
++	bn->nins = &GC(insb)[NIns] - GC(curi);
++	idup(&bn->ins, GC(curi), bn->nins);
++	GC(curi) = &GC(insb)[NIns];
+ 	bn->visit = ++b->visit;
+ 	strf(bn->name, "%s.%d", b->name, b->visit);
+ 	bn->loop = b->loop;
+@@ -743,9 +743,9 @@ arm64_abi(Fn *fn)
+ 		if (!ispar(i->op))
+ 			break;
+ 	p = selpar(fn, b->ins, i);
+-	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
++	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
+ 	i0 = alloc(n * sizeof(Ins));
+-	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
++	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
+ 	ip = icpy(ip, i, &b->ins[b->nins] - i);
+ 	b->nins = n;
+ 	b->ins = i0;
+@@ -758,7 +758,7 @@ arm64_abi(Fn *fn)
+ 			b = fn->start; /* do it last */
+ 		if (b->visit)
+ 			continue;
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		selret(b, fn);
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			switch ((--i)->op) {
+@@ -773,13 +773,13 @@ arm64_abi(Fn *fn)
+ 				i = i0;
+ 				break;
+ 			case Ovastart:
+-				if (T.apple)
++				if (GC(T).apple)
+ 					apple_selvastart(fn, p, i->arg[0]);
+ 				else
+ 					arm64_selvastart(fn, p, i->arg[0]);
+ 				break;
+ 			case Ovaarg:
+-				if (T.apple)
++				if (GC(T).apple)
+ 					apple_selvaarg(fn, b, i);
+ 				else
+ 					arm64_selvaarg(fn, b, i);
+@@ -791,11 +791,11 @@ arm64_abi(Fn *fn)
+ 		if (b == fn->start)
+ 			for (; il; il=il->link)
+ 				emiti(il->i);
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	} while (b != fn->start);
+ 
+-	if (debug['A']) {
++	if (GC(debug)['A']) {
+ 		fprintf(stderr, "\n> After ABI lowering:\n");
+ 		printfn(fn, stderr);
+ 	}
+@@ -814,7 +814,7 @@ apple_extsb(Fn *fn)
+ 	Ref r;
+ 
+ 	for (b=fn->start; b; b=b->link) {
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		j = b->jmp.type;
+ 		if (isretbh(j)) {
+ 			r = newtmp("abi", Kw, fn);
+@@ -834,7 +834,7 @@ apple_extsb(Fn *fn)
+ 				emiti(*--i);
+ 				if (isargbh(i->op)) {
+ 					i->to = newtmp("abi", Kl, fn);
+-					curi->arg[0] = i->to;
++					GC(curi)->arg[0] = i->to;
+ 				}
+ 			}
+ 			for (i=i1; i>i0;)
+@@ -843,11 +843,11 @@ apple_extsb(Fn *fn)
+ 					emit(op, Kw, i->to, i->arg[0], R);
+ 				}
+ 		}
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	}
+ 
+-	if (debug['A']) {
++	if (GC(debug)['A']) {
+ 		fprintf(stderr, "\n> After Apple pre-ABI:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/arm64/emit.c b/arm64/emit.c
+index 28cd6a5..50e3ac5 100644
+--- a/arm64/emit.c
++++ b/arm64/emit.c
+@@ -1,5 +1,7 @@
+ #include "all.h"
+ 
++#define G(x) global_context.arm64_emit__##x
++
+ typedef struct E E;
+ 
+ struct E {
+@@ -146,7 +148,7 @@ slot(Ref r, E *e)
+ 	if (s == -1)
+ 		return 16 + e->frame;
+ 	if (s < 0) {
+-		if (e->fn->vararg && !T.apple)
++		if (e->fn->vararg && !GC(T).apple)
+ 			return 16 + e->frame + 192 - (s+2);
+ 		else
+ 			return 16 + e->frame - (s+2);
+@@ -261,7 +263,7 @@ loadaddr(Con *c, char *rn, E *e)
+ 	default:
+ 		die("unreachable");
+ 	case SGlo:
+-		if (T.apple)
++		if (GC(T).apple)
+ 			s = "\tadrp\tR, S@pageO\n"
+ 			    "\tadd\tR, R, S@pageoffO\n";
+ 		else
+@@ -269,7 +271,7 @@ loadaddr(Con *c, char *rn, E *e)
+ 			    "\tadd\tR, R, #:lo12:SO\n";
+ 		break;
+ 	case SThr:
+-		if (T.apple)
++		if (GC(T).apple)
+ 			s = "\tadrp\tR, S@tlvppage\n"
+ 			    "\tldr\tR, [R, S@tlvppageoff]\n";
+ 		else
+@@ -280,7 +282,7 @@ loadaddr(Con *c, char *rn, E *e)
+ 	}
+ 
+ 	l = str(c->sym.id);
+-	p = l[0] == '"' ? "" : T.assym;
++	p = l[0] == '"' ? "" : GC(T).assym;
+ 	for (; *s; s++)
+ 		switch (*s) {
+ 		default:
+@@ -447,7 +449,7 @@ emitins(Ins *i, E *e)
+ 		|| c->bits.i)
+ 			die("invalid call argument");
+ 		l = str(c->sym.id);
+-		p = l[0] == '"' ? "" : T.assym;
++		p = l[0] == '"' ? "" : GC(T).assym;
+ 		fprintf(e->f, "\tbl\t%s%s\n", p, l);
+ 		break;
+ 	case Osalloc:
+@@ -512,7 +514,6 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 		CMP(X)
+ 	#undef X
+ 	};
+-	static int id0;
+ 	int s, n, c, lbl, *r;
+ 	uint64_t o;
+ 	Blk *b, *t;
+@@ -520,13 +521,13 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 	E *e;
+ 
+ 	e = &(E){.f = out, .fn = fn};
+-	if (T.apple)
++	if (GC(T).apple)
+ 		e->fn->lnk.align = 4;
+ 	emitfnlnk(e->fn->name, &e->fn->lnk, e->f);
+ 	fputs("\thint\t#34\n", e->f);
+ 	framelayout(e);
+ 
+-	if (e->fn->vararg && !T.apple) {
++	if (e->fn->vararg && !GC(T).apple) {
+ 		for (n=7; n>=0; n--)
+ 			fprintf(e->f, "\tstr\tq%d, [sp, -16]!\n", n);
+ 		for (n=7; n>=0; n-=2)
+@@ -571,7 +572,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 
+ 	for (lbl=0, b=e->fn->start; b; b=b->link) {
+ 		if (lbl || b->npred > 1)
+-			fprintf(e->f, "%s%d:\n", T.asloc, id0+b->id);
++			fprintf(e->f, "%s%d:\n", GC(T).asloc, G(arm64_emitfn_id0)+b->id);
+ 		for (i=b->ins; i!=&b->ins[b->nins]; i++)
+ 			emitins(i, e);
+ 		lbl = 1;
+@@ -591,7 +592,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 			if (e->fn->dynalloc)
+ 				fputs("\tmov sp, x29\n", e->f);
+ 			o = e->frame + 16;
+-			if (e->fn->vararg && !T.apple)
++			if (e->fn->vararg && !GC(T).apple)
+ 				o += 192;
+ 			if (o <= 504)
+ 				fprintf(e->f,
+@@ -626,7 +627,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 			if (b->s1 != b->link)
+ 				fprintf(e->f,
+ 					"\tb\t%s%d\n",
+-					T.asloc, id0+b->s1->id
++					GC(T).asloc, G(arm64_emitfn_id0)+b->s1->id
+ 				);
+ 			else
+ 				lbl = 0;
+@@ -643,12 +644,12 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 				c = cmpneg(c);
+ 			fprintf(e->f,
+ 				"\tb%s\t%s%d\n",
+-				ctoa[c], T.asloc, id0+b->s2->id
++				ctoa[c], GC(T).asloc, G(arm64_emitfn_id0)+b->s2->id
+ 			);
+ 			goto Jmp;
+ 		}
+ 	}
+-	id0 += e->fn->nblk;
+-	if (!T.apple)
++	G(arm64_emitfn_id0) += e->fn->nblk;
++	if (!GC(T).apple)
+ 		elf_emitfnfin(fn->name, out);
+ }
+diff --git a/arm64/isel.c b/arm64/isel.c
+index 9ce6adc..43fa1e5 100644
+--- a/arm64/isel.c
++++ b/arm64/isel.c
+@@ -78,7 +78,7 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
+ 	switch (rtype(r0)) {
+ 	case RCon:
+ 		c = &fn->con[r0.val];
+-		if (T.apple
++		if (GC(T).apple
+ 		&& c->type == CAddr
+ 		&& c->sym.type == SThr) {
+ 			r1 = newtmp("isel", Kl, fn);
+@@ -112,7 +112,7 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
+ 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+ 			vgrow(&fn->con, ++fn->ncon);
+ 			c = &fn->con[fn->ncon-1];
+-			sprintf(buf, "\"%sfp%d\"", T.asloc, n);
++			sprintf(buf, "\"%sfp%d\"", GC(T).asloc, n);
+ 			*c = (Con){.type = CAddr};
+ 			c->sym.id = intern(buf);
+ 			r2 = newtmp("isel", Kl, fn);
+@@ -142,7 +142,7 @@ selcmp(Ref arg[2], int k, Fn *fn)
+ 
+ 	if (KBASE(k) == 1) {
+ 		emit(Oafcmp, k, R, arg[0], arg[1]);
+-		iarg = curi->arg;
++		iarg = GC(curi)->arg;
+ 		fixarg(&iarg[0], k, 0, fn);
+ 		fixarg(&iarg[1], k, 0, fn);
+ 		return 0;
+@@ -174,7 +174,7 @@ selcmp(Ref arg[2], int k, Fn *fn)
+ 		}
+ 	}
+ 	emit(cmp, k, R, arg[0], r);
+-	iarg = curi->arg;
++	iarg = GC(curi)->arg;
+ 	fixarg(&iarg[0], k, 0, fn);
+ 	if (fix)
+ 		fixarg(&iarg[1], k, 0, fn);
+@@ -205,14 +205,14 @@ sel(Ins i, Fn *fn)
+ 	int ck, cc;
+ 
+ 	if (INRANGE(i.op, Oalloc, Oalloc1)) {
+-		i0 = curi - 1;
++		i0 = GC(curi) - 1;
+ 		salloc(i.to, i.arg[0], fn);
+ 		fixarg(&i0->arg[0], Kl, 0, fn);
+ 		return;
+ 	}
+ 	if (iscmp(i.op, &ck, &cc)) {
+ 		emit(Oflag, i.cls, i.to, R, R);
+-		i0 = curi;
++		i0 = GC(curi);
+ 		if (selcmp(i.arg, ck, fn))
+ 			i0->op += cmpop(cc);
+ 		else
+@@ -226,7 +226,7 @@ sel(Ins i, Fn *fn)
+ 	}
+ 	if (i.op != Onop) {
+ 		emiti(i);
+-		iarg = curi->arg; /* fixarg() can change curi */
++		iarg = GC(curi)->arg; /* fixarg() can change curi */
+ 		fixarg(&iarg[0], argcls(&i, 0), 0, fn);
+ 		fixarg(&iarg[1], argcls(&i, 1), 0, fn);
+ 	}
+@@ -296,7 +296,7 @@ arm64_isel(Fn *fn)
+ 			}
+ 
+ 	for (b=fn->start; b; b=b->link) {
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
+ 			for (p=(*sb)->phi; p; p=p->link) {
+ 				for (n=0; p->blk[n] != b; n++)
+@@ -306,11 +306,11 @@ arm64_isel(Fn *fn)
+ 		seljmp(b, fn);
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			sel(*--i, fn);
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	}
+ 
+-	if (debug['I']) {
++	if (GC(debug)['I']) {
+ 		fprintf(stderr, "\n> After instruction selection:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/cfg.c b/cfg.c
+index f1fa21a..1b305bc 100644
+--- a/cfg.c
++++ b/cfg.c
+@@ -1,13 +1,14 @@
+ #include "all.h"
+ 
++#define G(x) global_context.cfg__##x
++
+ Blk *
+ newblk(void)
+ {
+-	static Blk z;
+ 	Blk *b;
+ 
+ 	b = alloc(sizeof *b);
+-	*b = z;
++	*b = G(newblk_z);
+ 	return b;
+ }
+ 
+diff --git a/copy.c b/copy.c
+index da3987f..853e897 100644
+--- a/copy.c
++++ b/copy.c
+@@ -1,5 +1,7 @@
+ #include "all.h"
+ 
++#define G(x) global_context.copy__##x
++
+ static int
+ iscon(Ref r, int64_t bits, Fn *fn)
+ {
+@@ -196,7 +198,7 @@ copy(Fn *fn)
+ 		subst(&b->jmp.arg, cpy);
+ 	}
+ 
+-	if (debug['C']) {
++	if (GC(debug)['C']) {
+ 		fprintf(stderr, "\n> Copy information:");
+ 		for (t=Tmp0; t<fn->ntmp; t++) {
+ 			if (req(cpy[t], R)) {
+diff --git a/emit.c b/emit.c
+index 2f1a715..c8be039 100644
+--- a/emit.c
++++ b/emit.c
+@@ -1,5 +1,7 @@
+ #include "all.h"
+ 
++#define G(x) global_context.emit__##x
++
+ enum {
+ 	SecText,
+ 	SecData,
+@@ -19,9 +21,9 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
+ 	};
+ 	char *pfx, *sfx;
+ 
+-	pfx = n[0] == '"' ? "" : T.assym;
++	pfx = n[0] == '"' ? "" : GC(T).assym;
+ 	sfx = "";
+-	if (T.apple && l->thread) {
++	if (GC(T).apple && l->thread) {
+ 		l->sec = "__DATA";
+ 		l->secf = "__thread_data,thread_local_regular";
+ 		sfx = "$tlv$init";
+@@ -67,41 +69,40 @@ emitdat(Dat *d, FILE *f)
+ 		[DW] = "\t.int",
+ 		[DL] = "\t.quad"
+ 	};
+-	static int64_t zero;
+ 	char *p;
+ 
+ 	switch (d->type) {
+ 	case DStart:
+-		zero = 0;
++		G(zero) = 0;
+ 		break;
+ 	case DEnd:
+ 		if (d->lnk->common) {
+-			if (zero == -1)
++			if (G(zero) == -1)
+ 				die("invalid common data definition");
+-			p = d->name[0] == '"' ? "" : T.assym;
++			p = d->name[0] == '"' ? "" : GC(T).assym;
+ 			fprintf(f, ".comm %s%s,%"PRId64,
+-				p, d->name, zero);
++				p, d->name, G(zero));
+ 			if (d->lnk->align)
+ 				fprintf(f, ",%d", d->lnk->align);
+ 			fputc('\n', f);
+ 		}
+-		else if (zero != -1) {
++		else if (G(zero) != -1) {
+ 			emitlnk(d->name, d->lnk, SecBss, f);
+-			fprintf(f, "\t.fill %"PRId64",1,0\n", zero);
++			fprintf(f, "\t.fill %"PRId64",1,0\n", G(zero));
+ 		}
+ 		break;
+ 	case DZ:
+-		if (zero != -1)
+-			zero += d->u.num;
++		if (G(zero) != -1)
++			G(zero) += d->u.num;
+ 		else
+ 			fprintf(f, "\t.fill %"PRId64",1,0\n", d->u.num);
+ 		break;
+ 	default:
+-		if (zero != -1) {
++		if (G(zero) != -1) {
+ 			emitlnk(d->name, d->lnk, SecData, f);
+-			if (zero > 0)
+-				fprintf(f, "\t.fill %"PRId64",1,0\n", zero);
+-			zero = -1;
++			if (G(zero) > 0)
++				fprintf(f, "\t.fill %"PRId64",1,0\n", G(zero));
++			G(zero) = -1;
+ 		}
+ 		if (d->isstr) {
+ 			if (d->type != DB)
+@@ -109,7 +110,7 @@ emitdat(Dat *d, FILE *f)
+ 			fprintf(f, "\t.ascii %s\n", d->u.str);
+ 		}
+ 		else if (d->isref) {
+-			p = d->u.ref.name[0] == '"' ? "" : T.assym;
++			p = d->u.ref.name[0] == '"' ? "" : GC(T).assym;
+ 			fprintf(f, "%s %s%s%+"PRId64"\n",
+ 				dtoa[d->type], p, d->u.ref.name,
+ 				d->u.ref.off);
+@@ -122,16 +123,12 @@ emitdat(Dat *d, FILE *f)
+ 	}
+ }
+ 
+-typedef struct Asmbits Asmbits;
+-
+ struct Asmbits {
+ 	char bits[16];
+ 	int size;
+ 	Asmbits *link;
+ };
+ 
+-static Asmbits *stash;
+-
+ int
+ stashbits(void *bits, int size)
+ {
+@@ -139,7 +136,7 @@ stashbits(void *bits, int size)
+ 	int i;
+ 
+ 	assert(size == 4 || size == 8 || size == 16);
+-	for (pb=&stash, i=0; (b=*pb); pb=&b->link, i++)
++	for (pb=&G(stash), i=0; (b=*pb); pb=&b->link, i++)
+ 		if (size <= b->size)
+ 		if (memcmp(bits, b->bits, size) == 0)
+ 			return i;
+@@ -159,17 +156,17 @@ emitfin(FILE *f, char *sec[3])
+ 	int lg, i;
+ 	double d;
+ 
+-	if (!stash)
++	if (!G(stash))
+ 		return;
+ 	fprintf(f, "/* floating point constants */\n");
+ 	for (lg=4; lg>=2; lg--)
+-		for (b=stash, i=0; b; b=b->link, i++) {
++		for (b=G(stash), i=0; b; b=b->link, i++) {
+ 			if (b->size == (1<<lg)) {
+ 				fprintf(f,
+ 					".section %s\n"
+ 					".p2align %d\n"
+ 					"%sfp%d:",
+-					sec[lg-2], lg, T.asloc, i
++					sec[lg-2], lg, GC(T).asloc, i
+ 				);
+ 				for (p=b->bits; p<&b->bits[b->size]; p+=4)
+ 					fprintf(f, "\n\t.int %"PRId32,
+@@ -184,8 +181,8 @@ emitfin(FILE *f, char *sec[3])
+ 					fprintf(f, "\n\n");
+ 			}
+ 		}
+-	while ((b=stash)) {
+-		stash = b->link;
++	while ((b=G(stash))) {
++		G(stash) = b->link;
+ 		free(b);
+ 	}
+ }
+@@ -223,13 +220,9 @@ pe_emitfin(FILE *f)
+ {
+ 	static char *sec[3] = { ".rodata", ".rodata", ".rodata" };
+ 
+-	emitfin(f ,sec);
++	emitfin(f, sec);
+ }
+ 
+-static uint32_t *file;
+-static uint nfile;
+-static uint curfile;
+-
+ void
+ emitdbgfile(char *fn, FILE *f)
+ {
+@@ -237,26 +230,26 @@ emitdbgfile(char *fn, FILE *f)
+ 	uint n;
+ 
+ 	id = intern(fn);
+-	for (n=0; n<nfile; n++)
+-		if (file[n] == id) {
++	for (n=0; n<G(nfile); n++)
++		if (G(file)[n] == id) {
+ 			/* gas requires positive
+ 			 * file numbers */
+-			curfile = n + 1;
++			G(curfile) = n + 1;
+ 			return;
+ 		}
+-	if (!file)
+-		file = vnew(0, sizeof *file, PHeap);
+-	vgrow(&file, ++nfile);
+-	file[nfile-1] = id;
+-	curfile = nfile;
+-	fprintf(f, ".file %u %s\n", curfile, fn);
++	if (!G(file))
++		G(file) = vnew(0, sizeof *G(file), PHeap);
++	vgrow(&G(file), ++G(nfile));
++	G(file)[G(nfile)-1] = id;
++	G(curfile) = G(nfile);
++	fprintf(f, ".file %u %s\n", G(curfile), fn);
+ }
+ 
+ void
+ emitdbgloc(uint line, uint col, FILE *f)
+ {
+ 	if (col != 0)
+-		fprintf(f, "\t.loc %u %u %u\n", curfile, line, col);
++		fprintf(f, "\t.loc %u %u %u\n", G(curfile), line, col);
+ 	else
+-		fprintf(f, "\t.loc %u %u\n", curfile, line);
++		fprintf(f, "\t.loc %u %u\n", G(curfile), line);
+ }
+diff --git a/fold.c b/fold.c
+index 3ff0bc7..90fd6c6 100644
+--- a/fold.c
++++ b/fold.c
+@@ -1,23 +1,12 @@
+ #include "all.h"
+ 
++#define G(x) global_context.fold__##x
++
+ enum {
+ 	Bot = -1, /* lattice bottom */
+ 	Top = 0,  /* lattice top (matches UNDEF) */
+ };
+ 
+-typedef struct Edge Edge;
+-
+-struct Edge {
+-	int dest;
+-	int dead;
+-	Edge *work;
+-};
+-
+-static int *val;
+-static Edge *flowrk, (*edge)[2];
+-static Use **usewrk;
+-static uint nuse;
+-
+ static int
+ iscon(Con *c, int w, uint64_t k)
+ {
+@@ -34,7 +23,7 @@ latval(Ref r)
+ {
+ 	switch (rtype(r)) {
+ 	case RTmp:
+-		return val[r.val];
++		return G(val)[r.val];
+ 	case RCon:
+ 		return r.val;
+ 	default:
+@@ -54,14 +43,14 @@ update(int t, int m, Fn *fn)
+ 	Tmp *tmp;
+ 	uint u;
+ 
+-	m = latmerge(val[t], m);
+-	if (m != val[t]) {
++	m = latmerge(G(val)[t], m);
++	if (m != G(val)[t]) {
+ 		tmp = &fn->tmp[t];
+ 		for (u=0; u<tmp->nuse; u++) {
+-			vgrow(&usewrk, ++nuse);
+-			usewrk[nuse-1] = &tmp->use[u];
++			vgrow(&G(usewrk), ++G(nuse));
++			G(usewrk)[G(nuse)-1] = &tmp->use[u];
+ 		}
+-		val[t] = m;
++		G(val)[t] = m;
+ 	}
+ }
+ 
+@@ -70,7 +59,7 @@ deadedge(int s, int d)
+ {
+ 	Edge *e;
+ 
+-	e = edge[s];
++	e = G(edge)[s];
+ 	if (e[0].dest == d && !e[0].dead)
+ 		return 0;
+ 	if (e[1].dest == d && !e[1].dead)
+@@ -127,24 +116,24 @@ visitjmp(Blk *b, int n, Fn *fn)
+ 	case Jjnz:
+ 		l = latval(b->jmp.arg);
+ 		if (l == Bot) {
+-			edge[n][1].work = flowrk;
+-			edge[n][0].work = &edge[n][1];
+-			flowrk = &edge[n][0];
++			G(edge)[n][1].work = G(flowrk);
++			G(edge)[n][0].work = &G(edge)[n][1];
++			G(flowrk) = &G(edge)[n][0];
+ 		}
+ 		else if (iscon(&fn->con[l], 0, 0)) {
+-			assert(edge[n][0].dead);
+-			edge[n][1].work = flowrk;
+-			flowrk = &edge[n][1];
++			assert(G(edge)[n][0].dead);
++			G(edge)[n][1].work = G(flowrk);
++			G(flowrk) = &G(edge)[n][1];
+ 		}
+ 		else {
+-			assert(edge[n][1].dead);
+-			edge[n][0].work = flowrk;
+-			flowrk = &edge[n][0];
++			assert(G(edge)[n][1].dead);
++			G(edge)[n][0].work = G(flowrk);
++			G(flowrk) = &G(edge)[n][0];
+ 		}
+ 		break;
+ 	case Jjmp:
+-		edge[n][0].work = flowrk;
+-		flowrk = &edge[n][0];
++		G(edge)[n][0].work = G(flowrk);
++		G(flowrk) = &G(edge)[n][0];
+ 		break;
+ 	case Jhlt:
+ 		break;
+@@ -172,7 +161,7 @@ renref(Ref *r)
+ 	int l;
+ 
+ 	if (rtype(*r) == RTmp)
+-		if ((l=val[r->val]) != Bot) {
++		if ((l=G(val)[r->val]) != Bot) {
+ 			*r = CON(l);
+ 			return 1;
+ 		}
+@@ -191,27 +180,27 @@ fold(Fn *fn)
+ 	int t, d;
+ 	uint n, a;
+ 
+-	val = emalloc(fn->ntmp * sizeof val[0]);
+-	edge = emalloc(fn->nblk * sizeof edge[0]);
+-	usewrk = vnew(0, sizeof usewrk[0], PHeap);
++	G(val) = emalloc(fn->ntmp * sizeof G(val)[0]);
++	G(edge) = emalloc(fn->nblk * sizeof G(edge)[0]);
++	G(usewrk) = vnew(0, sizeof G(usewrk)[0], PHeap);
+ 
+ 	for (t=0; t<fn->ntmp; t++)
+-		val[t] = Top;
++		G(val)[t] = Top;
+ 	for (n=0; n<fn->nblk; n++) {
+ 		b = fn->rpo[n];
+ 		b->visit = 0;
+-		initedge(&edge[n][0], b->s1);
+-		initedge(&edge[n][1], b->s2);
++		initedge(&G(edge)[n][0], b->s1);
++		initedge(&G(edge)[n][1], b->s2);
+ 	}
+ 	initedge(&start, fn->start);
+-	flowrk = &start;
+-	nuse = 0;
++	G(flowrk) = &start;
++	G(nuse) = 0;
+ 
+ 	/* 1. find out constants and dead cfg edges */
+ 	for (;;) {
+-		e = flowrk;
++		e = G(flowrk);
+ 		if (e) {
+-			flowrk = e->work;
++			G(flowrk) = e->work;
+ 			e->work = 0;
+ 			if (e->dest == -1 || !e->dead)
+ 				continue;
+@@ -227,11 +216,11 @@ fold(Fn *fn)
+ 			}
+ 			b->visit++;
+ 			assert(b->jmp.type != Jjmp
+-				|| !edge[n][0].dead
+-				|| flowrk == &edge[n][0]);
++				|| !G(edge)[n][0].dead
++				|| G(flowrk) == &G(edge)[n][0]);
+ 		}
+-		else if (nuse) {
+-			u = usewrk[--nuse];
++		else if (G(nuse)) {
++			u = G(usewrk)[--G(nuse)];
+ 			n = u->bid;
+ 			b = fn->rpo[n];
+ 			if (b->visit == 0)
+@@ -254,16 +243,16 @@ fold(Fn *fn)
+ 			break;
+ 	}
+ 
+-	if (debug['F']) {
++	if (GC(debug)['F']) {
+ 		fprintf(stderr, "\n> SCCP findings:");
+ 		for (t=Tmp0; t<fn->ntmp; t++) {
+-			if (val[t] == Bot)
++			if (G(val)[t] == Bot)
+ 				continue;
+ 			fprintf(stderr, "\n%10s: ", fn->tmp[t].name);
+-			if (val[t] == Top)
++			if (G(val)[t] == Top)
+ 				fprintf(stderr, "Top");
+ 			else
+-				printref(CON(val[t]), fn, stderr);
++				printref(CON(G(val)[t]), fn, stderr);
+ 		}
+ 		fprintf(stderr, "\n dead code: ");
+ 	}
+@@ -273,7 +262,7 @@ fold(Fn *fn)
+ 	for (pb=&fn->start; (b=*pb);) {
+ 		if (b->visit == 0) {
+ 			d = 1;
+-			if (debug['F'])
++			if (GC(debug)['F'])
+ 				fprintf(stderr, "%s ", b->name);
+ 			edgedel(b, &b->s1);
+ 			edgedel(b, &b->s2);
+@@ -281,7 +270,7 @@ fold(Fn *fn)
+ 			continue;
+ 		}
+ 		for (pp=&b->phi; (p=*pp);)
+-			if (val[p->to.val] != Bot)
++			if (G(val)[p->to.val] != Bot)
+ 				*pp = p->link;
+ 			else {
+ 				for (a=0; a<p->narg; a++)
+@@ -313,16 +302,16 @@ fold(Fn *fn)
+ 		pb = &b->link;
+ 	}
+ 
+-	if (debug['F']) {
++	if (GC(debug)['F']) {
+ 		if (!d)
+ 			fprintf(stderr, "(none)");
+ 		fprintf(stderr, "\n\n> After constant folding:\n");
+ 		printfn(fn, stderr);
+ 	}
+ 
+-	free(val);
+-	free(edge);
+-	vfree(usewrk);
++	free(G(val));
++	free(G(edge));
++	vfree(G(usewrk));
+ }
+ 
+ /* boring folding code */
+diff --git a/live.c b/live.c
+index 68f48b0..3586ffa 100644
+--- a/live.c
++++ b/live.c
+@@ -68,34 +68,34 @@ Again:
+ 		chg |= !bsequal(b->out, u);
+ 
+ 		memset(nlv, 0, sizeof nlv);
+-		b->out->t[0] |= T.rglob;
++		b->out->t[0] |= GC(T).rglob;
+ 		bscopy(b->in, b->out);
+ 		for (t=0; bsiter(b->in, &t); t++)
+ 			nlv[KBASE(f->tmp[t].cls)]++;
+ 		if (rtype(b->jmp.arg) == RCall) {
+-			assert((int)bscount(b->in) == T.nrglob &&
+-				b->in->t[0] == T.rglob);
+-			b->in->t[0] |= T.retregs(b->jmp.arg, nlv);
++			assert((int)bscount(b->in) == GC(T).nrglob &&
++				b->in->t[0] == GC(T).rglob);
++			b->in->t[0] |= GC(T).retregs(b->jmp.arg, nlv);
+ 		} else
+ 			bset(b->jmp.arg, b, nlv, f->tmp);
+ 		for (k=0; k<2; k++)
+ 			b->nlive[k] = nlv[k];
+ 		for (i=&b->ins[b->nins]; i!=b->ins;) {
+ 			if ((--i)->op == Ocall && rtype(i->arg[1]) == RCall) {
+-				b->in->t[0] &= ~T.retregs(i->arg[1], m);
++				b->in->t[0] &= ~GC(T).retregs(i->arg[1], m);
+ 				for (k=0; k<2; k++) {
+ 					nlv[k] -= m[k];
+ 					/* caller-save registers are used
+ 					 * by the callee, in that sense,
+ 					 * right in the middle of the call,
+ 					 * they are live: */
+-					nlv[k] += T.nrsave[k];
++					nlv[k] += GC(T).nrsave[k];
+ 					if (nlv[k] > b->nlive[k])
+ 						b->nlive[k] = nlv[k];
+ 				}
+-				b->in->t[0] |= T.argregs(i->arg[1], m);
++				b->in->t[0] |= GC(T).argregs(i->arg[1], m);
+ 				for (k=0; k<2; k++) {
+-					nlv[k] -= T.nrsave[k];
++					nlv[k] -= GC(T).nrsave[k];
+ 					nlv[k] += m[k];
+ 				}
+ 			}
+@@ -128,7 +128,7 @@ Again:
+ 		goto Again;
+ 	}
+ 
+-	if (debug['L']) {
++	if (GC(debug)['L']) {
+ 		fprintf(stderr, "\n> Liveness analysis:\n");
+ 		for (b=f->start; b; b=b->link) {
+ 			fprintf(stderr, "\t%-10sin:   ", b->name);
+diff --git a/load.c b/load.c
+index 6f40cc7..a443c85 100644
+--- a/load.c
++++ b/load.c
+@@ -1,10 +1,11 @@
+ #include "all.h"
+ 
++#define G(x) global_context.load__##x
++
+ #define MASK(w) (BIT(8*(w)-1)*2-1) /* must work when w==8 */
+ 
+ typedef struct Loc Loc;
+ typedef struct Slice Slice;
+-typedef struct Insert Insert;
+ 
+ struct Loc {
+ 	enum {
+@@ -37,11 +38,6 @@ struct Insert {
+ 	} new;
+ };
+ 
+-static Fn *curf;
+-static uint inum;    /* current insertion number */
+-static Insert *ilog; /* global insertion log */
+-static uint nlog;    /* number of entries in the log */
+-
+ int
+ loadsz(Ins *l)
+ {
+@@ -71,14 +67,14 @@ iins(int cls, int op, Ref a0, Ref a1, Loc *l)
+ {
+ 	Insert *ist;
+ 
+-	vgrow(&ilog, ++nlog);
+-	ist = &ilog[nlog-1];
++	vgrow(&G(ilog), ++G(nlog));
++	ist = &G(ilog)[G(nlog)-1];
+ 	ist->isphi = 0;
+-	ist->num = inum++;
++	ist->num = G(inum)++;
+ 	ist->bid = l->blk->id;
+ 	ist->off = l->off;
+ 	ist->new.ins = (Ins){op, cls, R, {a0, a1}};
+-	return ist->new.ins.to = newtmp("ld", cls, curf);
++	return ist->new.ins.to = newtmp("ld", cls, G(curf));
+ }
+ 
+ static void
+@@ -89,7 +85,7 @@ cast(Ref *r, int cls, Loc *l)
+ 	if (rtype(*r) == RCon)
+ 		return;
+ 	assert(rtype(*r) == RTmp);
+-	cls0 = curf->tmp[r->val].cls;
++	cls0 = G(curf)->tmp[r->val].cls;
+ 	if (cls0 == cls || (cls == Kw && cls0 == Kl))
+ 		return;
+ 	if (KWIDE(cls0) < KWIDE(cls)) {
+@@ -110,7 +106,7 @@ static inline void
+ mask(int cls, Ref *r, bits msk, Loc *l)
+ {
+ 	cast(r, cls, l);
+-	*r = iins(cls, Oand, *r, getcon(msk, curf), l);
++	*r = iins(cls, Oand, *r, getcon(msk, G(curf)), l);
+ }
+ 
+ static Ref
+@@ -137,7 +133,7 @@ load(Slice sl, bits msk, Loc *l)
+ 	 * but its alias base ref will be
+ 	 * (see killsl() below) */
+ 	if (rtype(r) == RTmp) {
+-		a = &curf->tmp[r.val].alias;
++		a = &G(curf)->tmp[r.val].alias;
+ 		switch (a->type) {
+ 		default:
+ 			die("unreachable");
+@@ -147,7 +143,7 @@ load(Slice sl, bits msk, Loc *l)
+ 			r = TMP(a->base);
+ 			if (!a->offset)
+ 				break;
+-			r1 = getcon(a->offset, curf);
++			r1 = getcon(a->offset, G(curf));
+ 			r = iins(Kl, Oadd, r, r1, l);
+ 			break;
+ 		case ACon:
+@@ -156,7 +152,7 @@ load(Slice sl, bits msk, Loc *l)
+ 			c.type = CAddr;
+ 			c.sym = a->u.sym;
+ 			c.bits.i = a->offset;
+-			r = newcon(&c, curf);
++			r = newcon(&c, G(curf));
+ 			break;
+ 		}
+ 	}
+@@ -173,7 +169,7 @@ killsl(Ref r, Slice sl)
+ 
+ 	if (rtype(sl.ref) != RTmp)
+ 		return 0;
+-	a = &curf->tmp[sl.ref.val].alias;
++	a = &G(curf)->tmp[sl.ref.val].alias;
+ 	switch (a->type) {
+ 	default:   die("unreachable");
+ 	case ALoc:
+@@ -215,12 +211,12 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
+ 	 *     original load)
+ 	 */
+ 	assert(dom(b, il->blk));
+-	oldl = nlog;
+-	oldt = curf->ntmp;
++	oldl = G(nlog);
++	oldt = G(curf)->ntmp;
+ 	if (0) {
+ 	Load:
+-		curf->ntmp = oldt;
+-		nlog = oldl;
++		G(curf)->ntmp = oldt;
++		G(nlog) = oldl;
+ 		if (il->type != LLoad)
+ 			return R;
+ 		return load(sl, msk, il);
+@@ -234,7 +230,7 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
+ 	while (i > b->ins) {
+ 		--i;
+ 		if (killsl(i->to, sl)
+-		|| (i->op == Ocall && escapes(sl.ref, curf)))
++		|| (i->op == Ocall && escapes(sl.ref, G(curf))))
+ 			goto Load;
+ 		ld = isload(i->op);
+ 		if (ld) {
+@@ -254,7 +250,7 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
+ 			r1 = i->arg[1];
+ 		} else
+ 			continue;
+-		switch (alias(sl.ref, sl.off, sl.sz, r1, sz, &off, curf)) {
++		switch (alias(sl.ref, sl.off, sl.sz, r1, sz, &off, G(curf))) {
+ 		case MustAlias:
+ 			if (i->op == Oblit0) {
+ 				sl1 = sl;
+@@ -293,7 +289,7 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
+ 				if (op == Oshr && off + sl.sz > 4)
+ 					cls1 = Kl;
+ 				cast(&r, cls1, il);
+-				r1 = getcon(8*off, curf);
++				r1 = getcon(8*off, G(curf));
+ 				r = iins(cls1, op, r, r1, il);
+ 			}
+ 			if ((msk1 & msk) != msk1 || off + sz < sl.sz)
+@@ -319,7 +315,7 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
+ 		}
+ 	}
+ 
+-	for (ist=ilog; ist<&ilog[nlog]; ++ist)
++	for (ist=G(ilog); ist<&G(ilog)[G(nlog)]; ++ist)
+ 		if (ist->isphi && ist->bid == b->id)
+ 		if (req(ist->new.phi.m.ref, sl.ref))
+ 		if (ist->new.phi.m.off == sl.off)
+@@ -352,10 +348,10 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
+ 		return r1;
+ 	}
+ 
+-	r = newtmp("ld", sl.cls, curf);
++	r = newtmp("ld", sl.cls, G(curf));
+ 	p = alloc(sizeof *p);
+-	vgrow(&ilog, ++nlog);
+-	ist = &ilog[nlog-1];
++	vgrow(&G(ilog), ++G(nlog));
++	ist = &G(ilog)[G(nlog)-1];
+ 	ist->isphi = 1;
+ 	ist->bid = b->id;
+ 	ist->new.phi.m = sl;
+@@ -419,10 +415,10 @@ loadopt(Fn *fn)
+ 	Slice sl;
+ 	Loc l;
+ 
+-	curf = fn;
+-	ilog = vnew(0, sizeof ilog[0], PHeap);
+-	nlog = 0;
+-	inum = 0;
++	G(curf) = fn;
++	G(ilog) = vnew(0, sizeof G(ilog)[0], PHeap);
++	G(nlog) = 0;
++	G(inum) = 0;
+ 	for (b=fn->start; b; b=b->link)
+ 		for (i=b->ins; i<&b->ins[b->nins]; ++i) {
+ 			if (!isload(i->op))
+@@ -432,11 +428,11 @@ loadopt(Fn *fn)
+ 			l = (Loc){LRoot, i-b->ins, b};
+ 			i->arg[1] = def(sl, MASK(sz), b, i, &l);
+ 		}
+-	qsort(ilog, nlog, sizeof ilog[0], icmp);
+-	vgrow(&ilog, nlog+1);
+-	ilog[nlog].bid = fn->nblk; /* add a sentinel */
++	qsort(G(ilog), G(nlog), sizeof G(ilog)[0], icmp);
++	vgrow(&G(ilog), G(nlog)+1);
++	G(ilog)[G(nlog)].bid = fn->nblk; /* add a sentinel */
+ 	ib = vnew(0, sizeof(Ins), PHeap);
+-	for (ist=ilog, n=0; n<fn->nblk; ++n) {
++	for (ist=G(ilog), n=0; n<fn->nblk; ++n) {
+ 		b = fn->rpo[n];
+ 		for (; ist->bid == n && ist->isphi; ++ist) {
+ 			ist->new.phi.p->link = b->phi;
+@@ -485,8 +481,8 @@ loadopt(Fn *fn)
+ 		idup(&b->ins, ib, nt);
+ 	}
+ 	vfree(ib);
+-	vfree(ilog);
+-	if (debug['M']) {
++	vfree(G(ilog));
++	if (GC(debug)['M']) {
+ 		fprintf(stderr, "\n> After load elimination:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/main.c b/main.c
+index 81604e4..eb85958 100644
+--- a/main.c
++++ b/main.c
+@@ -3,22 +3,20 @@
+ #include <ctype.h>
+ #include <getopt.h>
+ 
+-Target T;
++#define G(x) global_context.main__##x
+ 
+-char debug['Z'+1] = {
+-	['P'] = 0, /* parsing */
+-	['M'] = 0, /* memory optimization */
+-	['N'] = 0, /* ssa construction */
+-	['C'] = 0, /* copy elimination */
+-	['F'] = 0, /* constant folding */
+-	['A'] = 0, /* abi lowering */
+-	['I'] = 0, /* instruction selection */
+-	['L'] = 0, /* liveness */
+-	['S'] = 0, /* spilling */
+-	['R'] = 0, /* reg. allocation */
+-	['T'] = 0, /* types */
++// TODO: get rid of the need for this non-zero init
++GlobalContext global_context = {
++	.util__pool = global_context.util__ptr,
++	.util__nptr = 1,
+ };
+ 
++void reinit_global_context(GlobalContext* ctx) {
++	memset(ctx, 0, sizeof *ctx);
++  ctx->util__pool = ctx->util__ptr;
++  ctx->util__nptr = 1;
++}
++
+ extern Target T_amd64_sysv;
+ extern Target T_amd64_apple;
+ extern Target T_amd64_win;
+@@ -35,17 +33,15 @@ static Target *tlist[] = {
+ 	&T_rv64,
+ 	0
+ };
+-static FILE *outf;
+-static int dbg;
+ 
+ static void
+ data(Dat *d)
+ {
+-	if (dbg)
++	if (G(dbg))
+ 		return;
+-	emitdat(d, outf);
++	emitdat(d, G(outf));
+ 	if (d->type == DEnd) {
+-		fputs("/* end data */\n\n", outf);
++		fputs("/* end data */\n\n", G(outf));
+ 		freeall();
+ 	}
+ }
+@@ -55,13 +51,13 @@ func(Fn *fn)
+ {
+ 	uint n;
+ 
+-	if (dbg)
++	if (G(dbg))
+ 		fprintf(stderr, "**** Function %s ****", fn->name);
+-	if (debug['P']) {
++	if (GC(debug)['P']) {
+ 		fprintf(stderr, "\n> After parsing:\n");
+ 		printfn(fn, stderr);
+ 	}
+-	T.abi0(fn);
++	GC(T).abi0(fn);
+ 	fillrpo(fn);
+ 	fillpreds(fn);
+ 	filluse(fn);
+@@ -80,11 +76,11 @@ func(Fn *fn)
+ 	copy(fn);
+ 	filluse(fn);
+ 	fold(fn);
+-	T.abi1(fn);
++	GC(T).abi1(fn);
+ 	simpl(fn);
+ 	fillpreds(fn);
+ 	filluse(fn);
+-	T.isel(fn);
++	GC(T).isel(fn);
+ 	fillrpo(fn);
+ 	filllive(fn);
+ 	fillloop(fn);
+@@ -102,9 +98,9 @@ func(Fn *fn)
+ 			break;
+ 		} else
+ 			fn->rpo[n]->link = fn->rpo[n+1];
+-	if (!dbg) {
+-		T.emitfn(fn, outf);
+-		fprintf(outf, "/* end function %s */\n\n", fn->name);
++	if (!G(dbg)) {
++		GC(T).emitfn(fn, G(outf));
++		fprintf(G(outf), "/* end function %s */\n\n", fn->name);
+ 	} else
+ 		fprintf(stderr, "\n");
+ 	freeall();
+@@ -113,7 +109,7 @@ func(Fn *fn)
+ static void
+ dbgfile(char *fn)
+ {
+-	emitdbgfile(fn, outf);
++	emitdbgfile(fn, G(outf));
+ }
+ 
+ int
+@@ -124,21 +120,21 @@ main(int ac, char *av[])
+ 	char *f, *sep;
+ 	int c;
+ 
+-	T = Deftgt;
+-	outf = stdout;
++	GC(T) = Deftgt;
++	G(outf) = stdout;
+ 	while ((c = getopt(ac, av, "hd:o:t:")) != -1)
+ 		switch (c) {
+ 		case 'd':
+ 			for (; *optarg; optarg++)
+ 				if (isalpha(*optarg)) {
+-					debug[toupper(*optarg)] = 1;
+-					dbg = 1;
++					GC(debug)[toupper(*optarg)] = 1;
++					G(dbg) = 1;
+ 				}
+ 			break;
+ 		case 'o':
+ 			if (strcmp(optarg, "-") != 0) {
+-				outf = fopen(optarg, "w");
+-				if (!outf) {
++				G(outf) = fopen(optarg, "w");
++				if (!G(outf)) {
+ 					fprintf(stderr, "cannot open '%s'\n", optarg);
+ 					exit(1);
+ 				}
+@@ -146,7 +142,7 @@ main(int ac, char *av[])
+ 			break;
+ 		case 't':
+ 			if (strcmp(optarg, "?") == 0) {
+-				puts(T.name);
++				puts(GC(T).name);
+ 				exit(0);
+ 			}
+ 			for (t=tlist;; t++) {
+@@ -155,7 +151,7 @@ main(int ac, char *av[])
+ 					exit(1);
+ 				}
+ 				if (strcmp(optarg, (*t)->name) == 0) {
+-					T = **t;
++					GC(T) = **t;
+ 					break;
+ 				}
+ 			}
+@@ -194,8 +190,8 @@ main(int ac, char *av[])
+ 		fclose(inf);
+ 	} while (++optind < ac);
+ 
+-	if (!dbg)
+-		T.emitfin(outf);
++	if (!G(dbg))
++		GC(T).emitfin(G(outf));
+ 
+ 	exit(0);
+ }
+diff --git a/mem.c b/mem.c
+index 3265b39..b270ec6 100644
+--- a/mem.c
++++ b/mem.c
+@@ -85,7 +85,7 @@ promote(Fn *fn)
+ 		}
+ 	Skip:;
+ 	}
+-	if (debug['M']) {
++	if (GC(debug)['M']) {
+ 		fprintf(stderr, "\n> After slot promotion:\n");
+ 		printfn(fn, stderr);
+ 	}
+@@ -330,7 +330,7 @@ coalesce(Fn *fn)
+ 			*s0++ = *s;
+ 	}
+ 	nsl = s0-sl;
+-	if (debug['M']) {
++	if (GC(debug)['M']) {
+ 		fputs("\n> Slot coalescing:\n", stderr);
+ 		if (n) {
+ 			fputs("\tkill [", stderr);
+@@ -460,7 +460,7 @@ coalesce(Fn *fn)
+ 	}
+ 	vfree(bl);
+ 
+-	if (debug['M']) {
++	if (GC(debug)['M']) {
+ 		for (s0=sl; s0<&sl[nsl]; s0++) {
+ 			if (s0->s != s0)
+ 				continue;
+diff --git a/parse.c b/parse.c
+index 38c265a..c0c1857 100644
+--- a/parse.c
++++ b/parse.c
+@@ -2,6 +2,8 @@
+ #include <ctype.h>
+ #include <stdarg.h>
+ 
++#define G(x) global_context.parse__##x
++
+ enum {
+ 	Ksb = 4, /* matches Oarg/Opar/Jret */
+ 	Kub,
+@@ -135,43 +137,17 @@ enum {
+ 	NPred = 63,
+ 
+ 	TMask = 16383, /* for temps hash */
+-	BMask = 8191, /* for blocks hash */
+ 
+ 	K = 11183273, /* found using tools/lexh.c */
+-	M = 23,
+ };
+ 
+-static uchar lexh[1 << (32-M)];
+-static FILE *inf;
+-static char *inpath;
+-static int thead;
+-static struct {
+-	char chr;
+-	double fltd;
+-	float flts;
+-	int64_t num;
+-	char *str;
+-} tokval;
+-static int lnum;
+-
+-static Fn *curf;
+-static int *tmph;
+-static int tmphcap;
+-static Phi **plink;
+-static Blk *curb;
+-static Blk **blink;
+-static Blk *blkh[BMask+1];
+-static int nblk;
+-static int rcls;
+-static uint ntyp;
+-
+ void
+ err(char *s, ...)
+ {
+ 	va_list ap;
+ 
+ 	va_start(ap, s);
+-	fprintf(stderr, "qbe:%s:%d: ", inpath, lnum);
++	fprintf(stderr, "qbe:%s:%d: ", G(inpath), G(lnum));
+ 	vfprintf(stderr, s, ap);
+ 	fprintf(stderr, "\n");
+ 	va_end(ap);
+@@ -181,11 +157,10 @@ err(char *s, ...)
+ static void
+ lexinit(void)
+ {
+-	static int done;
+ 	int i;
+ 	long h;
+ 
+-	if (done)
++	if (G(lexinit_done))
+ 		return;
+ 	for (i=0; i<NPubOp; ++i)
+ 		if (optab[i].name)
+@@ -193,11 +168,11 @@ lexinit(void)
+ 	assert(Ntok <= UCHAR_MAX);
+ 	for (i=0; i<Ntok; ++i)
+ 		if (kwmap[i]) {
+-			h = hash(kwmap[i])*K >> M;
+-			assert(lexh[h] == Txxx);
+-			lexh[h] = i;
++			h = hash(kwmap[i])*K >> parse__M;
++			assert(G(lexh)[h] == Txxx);
++			G(lexh)[h] = i;
+ 		}
+-	done = 1;
++	G(lexinit_done) = 1;
+ }
+ 
+ static int64_t
+@@ -207,15 +182,15 @@ getint(void)
+ 	int c, m;
+ 
+ 	n = 0;
+-	c = fgetc(inf);
++	c = fgetc(G(inf));
+ 	m = (c == '-');
+ 	if (m)
+-		c = fgetc(inf);
++		c = fgetc(G(inf));
+ 	do {
+ 		n = 10*n + (c - '0');
+-		c = fgetc(inf);
++		c = fgetc(G(inf));
+ 	} while ('0' <= c && c <= '9');
+-	ungetc(c, inf);
++	ungetc(c, G(inf));
+ 	if (m)
+ 		n = 1 + ~n;
+ 	return *(int64_t *)&n;
+@@ -224,15 +199,14 @@ getint(void)
+ static int
+ lex(void)
+ {
+-	static char tok[NString];
+ 	int c, i, esc;
+ 	int t;
+ 
+ 	do
+-		c = fgetc(inf);
++		c = fgetc(G(inf));
+ 	while (isblank(c));
+ 	t = Txxx;
+-	tokval.chr = c;
++	G(tokval).chr = c;
+ 	switch (c) {
+ 	case EOF:
+ 		return Teof;
+@@ -251,57 +225,57 @@ lex(void)
+ 	case '+':
+ 		return Tplus;
+ 	case 's':
+-		if (fscanf(inf, "_%f", &tokval.flts) != 1)
++		if (fscanf(G(inf), "_%f", &G(tokval).flts) != 1)
+ 			break;
+ 		return Tflts;
+ 	case 'd':
+-		if (fscanf(inf, "_%lf", &tokval.fltd) != 1)
++		if (fscanf(G(inf), "_%lf", &G(tokval).fltd) != 1)
+ 			break;
+ 		return Tfltd;
+ 	case '%':
+ 		t = Ttmp;
+-		c = fgetc(inf);
++		c = fgetc(G(inf));
+ 		goto Alpha;
+ 	case '@':
+ 		t = Tlbl;
+-		c = fgetc(inf);
++		c = fgetc(G(inf));
+ 		goto Alpha;
+ 	case '$':
+ 		t = Tglo;
+-		if ((c = fgetc(inf)) == '"')
++		if ((c = fgetc(G(inf))) == '"')
+ 			goto Quoted;
+ 		goto Alpha;
+ 	case ':':
+ 		t = Ttyp;
+-		c = fgetc(inf);
++		c = fgetc(G(inf));
+ 		goto Alpha;
+ 	case '#':
+-		while ((c=fgetc(inf)) != '\n' && c != EOF)
++		while ((c=fgetc(G(inf))) != '\n' && c != EOF)
+ 			;
+ 		/* fall through */
+ 	case '\n':
+-		lnum++;
++		G(lnum)++;
+ 		return Tnl;
+ 	}
+ 	if (isdigit(c) || c == '-') {
+-		ungetc(c, inf);
+-		tokval.num = getint();
++		ungetc(c, G(inf));
++		G(tokval).num = getint();
+ 		return Tint;
+ 	}
+ 	if (c == '"') {
+ 		t = Tstr;
+ 	Quoted:
+-		tokval.str = vnew(2, 1, PFn);
+-		tokval.str[0] = c;
++		G(tokval).str = vnew(2, 1, PFn);
++		G(tokval).str[0] = c;
+ 		esc = 0;
+ 		for (i=1;; i++) {
+-			c = fgetc(inf);
++			c = fgetc(G(inf));
+ 			if (c == EOF)
+ 				err("unterminated string");
+-			vgrow(&tokval.str, i+2);
+-			tokval.str[i] = c;
++			vgrow(&G(tokval).str, i+2);
++			G(tokval).str[i] = c;
+ 			if (c == '"' && !esc) {
+-				tokval.str[i+1] = 0;
++				G(tokval).str[i+1] = 0;
+ 				return t;
+ 			}
+ 			esc = (c == '\\' && !esc);
+@@ -314,18 +288,18 @@ Alpha:
+ 	do {
+ 		if (i >= NString-1)
+ 			err("identifier too long");
+-		tok[i++] = c;
+-		c = fgetc(inf);
++		G(lex_tok)[i++] = c;
++		c = fgetc(G(inf));
+ 	} while (isalpha(c) || c == '$' || c == '.' || c == '_' || isdigit(c));
+-	tok[i] = 0;
+-	ungetc(c, inf);
+-	tokval.str = tok;
++	G(lex_tok)[i] = 0;
++	ungetc(c, G(inf));
++	G(tokval).str = G(lex_tok);
+ 	if (t != Txxx) {
+ 		return t;
+ 	}
+-	t = lexh[hash(tok)*K >> M];
+-	if (t == Txxx || strcmp(kwmap[t], tok) != 0) {
+-		err("unknown keyword %s", tok);
++	t = G(lexh)[hash(G(lex_tok))*K >> parse__M];
++	if (t == Txxx || strcmp(kwmap[t], G(lex_tok)) != 0) {
++		err("unknown keyword %s", G(lex_tok));
+ 		return Txxx;
+ 	}
+ 	return t;
+@@ -334,9 +308,9 @@ Alpha:
+ static int
+ peek(void)
+ {
+-	if (thead == Txxx)
+-		thead = lex();
+-	return thead;
++	if (G(thead) == Txxx)
++		G(thead) = lex();
++	return G(thead);
+ }
+ 
+ static int
+@@ -345,7 +319,7 @@ next(void)
+ 	int t;
+ 
+ 	t = peek();
+-	thead = Txxx;
++	G(thead) = Txxx;
+ 	return t;
+ }
+ 
+@@ -390,27 +364,27 @@ tmpref(char *v)
+ {
+ 	int t, i;
+ 
+-	if (tmphcap/2 <= curf->ntmp-Tmp0) {
+-		free(tmph);
+-		tmphcap = tmphcap ? tmphcap*2 : TMask+1;
+-		tmph = emalloc(tmphcap * sizeof tmph[0]);
+-		for (t=Tmp0; t<curf->ntmp; t++) {
+-			i = hash(curf->tmp[t].name) & (tmphcap-1);
+-			for (; tmph[i]; i=(i+1) & (tmphcap-1))
++	if (G(tmphcap)/2 <= G(curf)->ntmp-Tmp0) {
++		free(G(tmph));
++		G(tmphcap) = G(tmphcap) ? G(tmphcap)*2 : TMask+1;
++		G(tmph) = emalloc(G(tmphcap) * sizeof G(tmph)[0]);
++		for (t=Tmp0; t<G(curf)->ntmp; t++) {
++			i = hash(G(curf)->tmp[t].name) & (G(tmphcap)-1);
++			for (; G(tmph)[i]; i=(i+1) & (G(tmphcap)-1))
+ 				;
+-			tmph[i] = t;
++			G(tmph)[i] = t;
+ 		}
+ 	}
+-	i = hash(v) & (tmphcap-1);
+-	for (; tmph[i]; i=(i+1) & (tmphcap-1)) {
+-		t = tmph[i];
+-		if (strcmp(curf->tmp[t].name, v) == 0)
++	i = hash(v) & (G(tmphcap)-1);
++	for (; G(tmph)[i]; i=(i+1) & (G(tmphcap)-1)) {
++		t = G(tmph)[i];
++		if (strcmp(G(curf)->tmp[t].name, v) == 0)
+ 			return TMP(t);
+ 	}
+-	t = curf->ntmp;
+-	tmph[i] = t;
+-	newtmp(0, Kx, curf);
+-	strcpy(curf->tmp[t].name, v);
++	t = G(curf)->ntmp;
++	G(tmph)[i] = t;
++	newtmp(0, Kx, G(curf));
++	strcpy(G(curf)->tmp[t].name, v);
+ 	return TMP(t);
+ }
+ 
+@@ -424,19 +398,19 @@ parseref(void)
+ 	default:
+ 		return R;
+ 	case Ttmp:
+-		return tmpref(tokval.str);
++		return tmpref(G(tokval).str);
+ 	case Tint:
+ 		c.type = CBits;
+-		c.bits.i = tokval.num;
++		c.bits.i = G(tokval).num;
+ 		break;
+ 	case Tflts:
+ 		c.type = CBits;
+-		c.bits.s = tokval.flts;
++		c.bits.s = G(tokval).flts;
+ 		c.flt = 1;
+ 		break;
+ 	case Tfltd:
+ 		c.type = CBits;
+-		c.bits.d = tokval.fltd;
++		c.bits.d = G(tokval).fltd;
+ 		c.flt = 2;
+ 		break;
+ 	case Tthread:
+@@ -445,19 +419,19 @@ parseref(void)
+ 		/* fall through */
+ 	case Tglo:
+ 		c.type = CAddr;
+-		c.sym.id = intern(tokval.str);
++		c.sym.id = intern(G(tokval).str);
+ 		break;
+ 	}
+-	return newcon(&c, curf);
++	return newcon(&c, G(curf));
+ }
+ 
+ static int
+ findtyp(int i)
+ {
+ 	while (--i >= 0)
+-		if (strcmp(tokval.str, typ[i].name) == 0)
++		if (strcmp(G(tokval).str, GC(typ)[i].name) == 0)
+ 			return i;
+-	err("undefined type :%s", tokval.str);
++	err("undefined type :%s", G(tokval).str);
+ }
+ 
+ static int
+@@ -467,7 +441,7 @@ parsecls(int *tyn)
+ 	default:
+ 		err("invalid class specifier");
+ 	case Ttyp:
+-		*tyn = findtyp(ntyp);
++		*tyn = findtyp(G(ntyp));
+ 		return Kc;
+ 	case Tsb:
+ 		return Ksb;
+@@ -498,7 +472,7 @@ parserefl(int arg)
+ 	vararg = 0;
+ 	expect(Tlparen);
+ 	while (peek() != Trparen) {
+-		if (curi - insb >= NIns)
++		if (GC(curi) - GC(insb) >= NIns)
+ 			err("too many instructions");
+ 		if (!arg && vararg)
+ 			err("no parameters allowed after '...'");
+@@ -508,8 +482,8 @@ parserefl(int arg)
+ 				err("only one '...' allowed");
+ 			vararg = 1;
+ 			if (arg) {
+-				*curi = (Ins){.op = Oargv};
+-				curi++;
++				*GC(curi) = (Ins){.op = Oargv};
++				GC(curi)++;
+ 			}
+ 			next();
+ 			goto Next;
+@@ -533,25 +507,25 @@ parserefl(int arg)
+ 			err("invalid function parameter");
+ 		if (env)
+ 			if (arg)
+-				*curi = (Ins){Oarge, k, R, {r}};
++				*GC(curi) = (Ins){Oarge, k, R, {r}};
+ 			else
+-				*curi = (Ins){Opare, k, r, {R}};
++				*GC(curi) = (Ins){Opare, k, r, {R}};
+ 		else if (k == Kc)
+ 			if (arg)
+-				*curi = (Ins){Oargc, Kl, R, {TYPE(ty), r}};
++				*GC(curi) = (Ins){Oargc, Kl, R, {TYPE(ty), r}};
+ 			else
+-				*curi = (Ins){Oparc, Kl, r, {TYPE(ty)}};
++				*GC(curi) = (Ins){Oparc, Kl, r, {TYPE(ty)}};
+ 		else if (k >= Ksb)
+ 			if (arg)
+-				*curi = (Ins){Oargsb+(k-Ksb), Kw, R, {r}};
++				*GC(curi) = (Ins){Oargsb+(k-Ksb), Kw, R, {r}};
+ 			else
+-				*curi = (Ins){Oparsb+(k-Ksb), Kw, r, {R}};
++				*GC(curi) = (Ins){Oparsb+(k-Ksb), Kw, r, {R}};
+ 		else
+ 			if (arg)
+-				*curi = (Ins){Oarg, k, R, {r}};
++				*GC(curi) = (Ins){Oarg, k, R, {r}};
+ 			else
+-				*curi = (Ins){Opar, k, r, {R}};
+-		curi++;
++				*GC(curi) = (Ins){Opar, k, r, {R}};
++		GC(curi)++;
+ 	Next:
+ 		if (peek() == Trparen)
+ 			break;
+@@ -567,25 +541,25 @@ findblk(char *name)
+ 	Blk *b;
+ 	uint32_t h;
+ 
+-	h = hash(name) & BMask;
+-	for (b=blkh[h]; b; b=b->dlink)
++	h = hash(name) & parse__BMask;
++	for (b=G(blkh)[h]; b; b=b->dlink)
+ 		if (strcmp(b->name, name) == 0)
+ 			return b;
+ 	b = newblk();
+-	b->id = nblk++;
++	b->id = G(nblk)++;
+ 	strcpy(b->name, name);
+-	b->dlink = blkh[h];
+-	blkh[h] = b;
++	b->dlink = G(blkh)[h];
++	G(blkh)[h] = b;
+ 	return b;
+ }
+ 
+ static void
+ closeblk(void)
+ {
+-	curb->nins = curi - insb;
+-	idup(&curb->ins, insb, curb->nins);
+-	blink = &curb->link;
+-	curi = insb;
++	G(curb)->nins = GC(curi) - GC(insb);
++	idup(&G(curb)->ins, GC(insb), G(curb)->nins);
++	G(blink) = &G(curb)->link;
++	GC(curi) = GC(insb);
+ }
+ 
+ static PState
+@@ -604,7 +578,7 @@ parseline(PState ps)
+ 		err("label or } expected");
+ 	switch (t) {
+ 	case Ttmp:
+-		r = tmpref(tokval.str);
++		r = tmpref(G(tokval).str);
+ 		expect(Teq);
+ 		k = parsecls(&ty);
+ 		op = next();
+@@ -624,53 +598,53 @@ parseline(PState ps)
+ 	case Trbrace:
+ 		return PEnd;
+ 	case Tlbl:
+-		b = findblk(tokval.str);
+-		if (curb && curb->jmp.type == Jxxx) {
++		b = findblk(G(tokval).str);
++		if (G(curb) && G(curb)->jmp.type == Jxxx) {
+ 			closeblk();
+-			curb->jmp.type = Jjmp;
+-			curb->s1 = b;
++			G(curb)->jmp.type = Jjmp;
++			G(curb)->s1 = b;
+ 		}
+ 		if (b->jmp.type != Jxxx)
+ 			err("multiple definitions of block @%s", b->name);
+-		*blink = b;
+-		curb = b;
+-		plink = &curb->phi;
++		*G(blink) = b;
++		G(curb) = b;
++		G(plink) = &G(curb)->phi;
+ 		expect(Tnl);
+ 		return PPhi;
+ 	case Tret:
+-		curb->jmp.type = Jretw + rcls;
++		G(curb)->jmp.type = Jretw + G(rcls);
+ 		if (peek() == Tnl)
+-			curb->jmp.type = Jret0;
+-		else if (rcls != K0) {
++			G(curb)->jmp.type = Jret0;
++		else if (G(rcls) != K0) {
+ 			r = parseref();
+ 			if (req(r, R))
+ 				err("invalid return value");
+-			curb->jmp.arg = r;
++			G(curb)->jmp.arg = r;
+ 		}
+ 		goto Close;
+ 	case Tjmp:
+-		curb->jmp.type = Jjmp;
++		G(curb)->jmp.type = Jjmp;
+ 		goto Jump;
+ 	case Tjnz:
+-		curb->jmp.type = Jjnz;
++		G(curb)->jmp.type = Jjnz;
+ 		r = parseref();
+ 		if (req(r, R))
+ 			err("invalid argument for jnz jump");
+-		curb->jmp.arg = r;
++		G(curb)->jmp.arg = r;
+ 		expect(Tcomma);
+ 	Jump:
+ 		expect(Tlbl);
+-		curb->s1 = findblk(tokval.str);
+-		if (curb->jmp.type != Jjmp) {
++		G(curb)->s1 = findblk(G(tokval).str);
++		if (G(curb)->jmp.type != Jjmp) {
+ 			expect(Tcomma);
+ 			expect(Tlbl);
+-			curb->s2 = findblk(tokval.str);
++			G(curb)->s2 = findblk(G(tokval).str);
+ 		}
+-		if (curb->s1 == curf->start || curb->s2 == curf->start)
++		if (G(curb)->s1 == G(curf)->start || G(curb)->s2 == G(curf)->start)
+ 			err("invalid jump to the start block");
+ 		goto Close;
+ 	case Thlt:
+-		curb->jmp.type = Jhlt;
++		G(curb)->jmp.type = Jhlt;
+ 	Close:
+ 		expect(Tnl);
+ 		closeblk();
+@@ -680,21 +654,21 @@ parseline(PState ps)
+ 		k = Kw;
+ 		r = R;
+ 		expect(Tint);
+-		arg[0] = INT(tokval.num);
+-		if (arg[0].val != tokval.num)
++		arg[0] = INT(G(tokval).num);
++		if (arg[0].val != G(tokval).num)
+ 			err("line number too big");
+ 		if (peek() == Tcomma) {
+ 			next();
+ 			expect(Tint);
+-			arg[1] = INT(tokval.num);
+-			if (arg[1].val != tokval.num)
++			arg[1] = INT(G(tokval).num);
++			if (arg[1].val != G(tokval).num)
+ 				err("column number too big");
+ 		} else
+ 			arg[1] = INT(0);
+ 		goto Ins;
+ 	}
+ 	if (op == Tcall) {
+-		curf->leaf = 0;
++		G(curf)->leaf = 0;
+ 		arg[0] = parseref();
+ 		parserefl(1);
+ 		op = Ocall;
+@@ -713,7 +687,7 @@ parseline(PState ps)
+ 		op = Oload;
+ 	if (op == Talloc1 || op == Talloc2)
+ 		op = Oalloc;
+-	if (op == Ovastart && !curf->vararg)
++	if (op == Ovastart && !G(curf)->vararg)
+ 		err("cannot use vastart in non-variadic function");
+ 	if (k >= Ksb)
+ 		err("size class must be w, l, s, or d");
+@@ -724,7 +698,7 @@ parseline(PState ps)
+ 				err("too many arguments");
+ 			if (op == Tphi) {
+ 				expect(Tlbl);
+-				blk[i] = findblk(tokval.str);
++				blk[i] = findblk(G(tokval).str);
+ 			}
+ 			arg[i] = parseref();
+ 			if (req(arg[i], R))
+@@ -740,7 +714,7 @@ parseline(PState ps)
+ 	next();
+ 	switch (op) {
+ 	case Tphi:
+-		if (ps != PPhi || curb == curf->start)
++		if (ps != PPhi || G(curb) == G(curf)->start)
+ 			err("unexpected phi instruction");
+ 		phi = alloc(sizeof *phi);
+ 		phi->to = r;
+@@ -750,41 +724,41 @@ parseline(PState ps)
+ 		phi->blk = vnew(i, sizeof blk[0], PFn);
+ 		memcpy(phi->blk, blk, i * sizeof blk[0]);
+ 		phi->narg = i;
+-		*plink = phi;
+-		plink = &phi->link;
++		*G(plink) = phi;
++		G(plink) = &phi->link;
+ 		return PPhi;
+ 	case Tblit:
+-		if (curi - insb >= NIns-1)
++		if (GC(curi) - GC(insb) >= NIns-1)
+ 			err("too many instructions");
+-		memset(curi, 0, 2 * sizeof(Ins));
+-		curi->op = Oblit0;
+-		curi->arg[0] = arg[0];
+-		curi->arg[1] = arg[1];
+-		curi++;
++		memset(GC(curi), 0, 2 * sizeof(Ins));
++		GC(curi)->op = Oblit0;
++		GC(curi)->arg[0] = arg[0];
++		GC(curi)->arg[1] = arg[1];
++		GC(curi)++;
+ 		if (rtype(arg[2]) != RCon)
+ 			err("blit size must be constant");
+-		c = &curf->con[arg[2].val];
++		c = &G(curf)->con[arg[2].val];
+ 		r = INT(c->bits.i);
+ 		if (c->type != CBits
+ 		|| rsval(r) < 0
+ 		|| rsval(r) != c->bits.i)
+ 			err("invalid blit size");
+-		curi->op = Oblit1;
+-		curi->arg[0] = r;
+-		curi++;
++		GC(curi)->op = Oblit1;
++		GC(curi)->arg[0] = r;
++		GC(curi)++;
+ 		return PIns;
+ 	default:
+ 		if (op >= NPubOp)
+ 			err("invalid instruction");
+ 	Ins:
+-		if (curi - insb >= NIns)
++		if (GC(curi) - GC(insb) >= NIns)
+ 			err("too many instructions");
+-		curi->op = op;
+-		curi->cls = k;
+-		curi->to = r;
+-		curi->arg[0] = arg[0];
+-		curi->arg[1] = arg[1];
+-		curi++;
++		GC(curi)->op = op;
++		GC(curi)->cls = k;
++		GC(curi)->to = r;
++		GC(curi)->arg[0] = arg[0];
++		GC(curi)->arg[1] = arg[1];
++		GC(curi)++;
+ 		return PIns;
+ 	}
+ }
+@@ -894,55 +868,55 @@ parsefn(Lnk *lnk)
+ 	int i;
+ 	PState ps;
+ 
+-	curb = 0;
+-	nblk = 0;
+-	curi = insb;
+-	curf = alloc(sizeof *curf);
+-	curf->ntmp = 0;
+-	curf->ncon = 2;
+-	curf->tmp = vnew(curf->ntmp, sizeof curf->tmp[0], PFn);
+-	curf->con = vnew(curf->ncon, sizeof curf->con[0], PFn);
++	G(curb) = 0;
++	G(nblk) = 0;
++	GC(curi) = GC(insb);
++	G(curf) = alloc(sizeof *G(curf));
++	G(curf)->ntmp = 0;
++	G(curf)->ncon = 2;
++	G(curf)->tmp = vnew(G(curf)->ntmp, sizeof G(curf)->tmp[0], PFn);
++	G(curf)->con = vnew(G(curf)->ncon, sizeof G(curf)->con[0], PFn);
+ 	for (i=0; i<Tmp0; ++i)
+-		if (T.fpr0 <= i && i < T.fpr0 + T.nfpr)
+-			newtmp(0, Kd, curf);
++		if (GC(T).fpr0 <= i && i < GC(T).fpr0 + GC(T).nfpr)
++			newtmp(0, Kd, G(curf));
+ 		else
+-			newtmp(0, Kl, curf);
+-	curf->con[0].type = CBits;
+-	curf->con[0].bits.i = 0xdeaddead;  /* UNDEF */
+-	curf->con[1].type = CBits;
+-	curf->lnk = *lnk;
+-	curf->leaf = 1;
+-	blink = &curf->start;
+-	curf->retty = Kx;
++			newtmp(0, Kl, G(curf));
++	G(curf)->con[0].type = CBits;
++	G(curf)->con[0].bits.i = 0xdeaddead;  /* UNDEF */
++	G(curf)->con[1].type = CBits;
++	G(curf)->lnk = *lnk;
++	G(curf)->leaf = 1;
++	G(blink) = &G(curf)->start;
++	G(curf)->retty = Kx;
+ 	if (peek() != Tglo)
+-		rcls = parsecls(&curf->retty);
++		G(rcls) = parsecls(&G(curf)->retty);
+ 	else
+-		rcls = K0;
++		G(rcls) = K0;
+ 	if (next() != Tglo)
+ 		err("function name expected");
+-	strncpy(curf->name, tokval.str, NString-1);
+-	curf->vararg = parserefl(0);
++	strncpy(G(curf)->name, G(tokval).str, NString-1);
++	G(curf)->vararg = parserefl(0);
+ 	if (nextnl() != Tlbrace)
+ 		err("function body must start with {");
+ 	ps = PLbl;
+ 	do
+ 		ps = parseline(ps);
+ 	while (ps != PEnd);
+-	if (!curb)
++	if (!G(curb))
+ 		err("empty function");
+-	if (curb->jmp.type == Jxxx)
++	if (G(curb)->jmp.type == Jxxx)
+ 		err("last block misses jump");
+-	curf->mem = vnew(0, sizeof curf->mem[0], PFn);
+-	curf->nmem = 0;
+-	curf->nblk = nblk;
+-	curf->rpo = 0;
+-	for (b=curf->start; b; b=b->link)
++	G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
++	G(curf)->nmem = 0;
++	G(curf)->nblk = G(nblk);
++	G(curf)->rpo = 0;
++	for (b=G(curf)->start; b; b=b->link)
+ 		b->dlink = 0; /* was trashed by findblk() */
+-	for (i=0; i<BMask+1; ++i)
+-		blkh[i] = 0;
+-	memset(tmph, 0, tmphcap * sizeof tmph[0]);
+-	typecheck(curf);
+-	return curf;
++	for (i=0; i<parse__BMask+1; ++i)
++		G(blkh)[i] = 0;
++	memset(G(tmph), 0, G(tmphcap) * sizeof G(tmph)[0]);
++	typecheck(G(curf));
++	return G(curf);
+ }
+ 
+ static void
+@@ -967,7 +941,7 @@ parsefields(Field *fld, Typ *ty, int t)
+ 		case Tb: type = Fb; s = 1; a = 0; break;
+ 		case Ttyp:
+ 			type = FTyp;
+-			ty1 = &typ[findtyp(ntyp-1)];
++			ty1 = &GC(typ)[findtyp(G(ntyp)-1)];
+ 			s = ty1->size;
+ 			a = ty1->align;
+ 			break;
+@@ -986,13 +960,13 @@ parsefields(Field *fld, Typ *ty, int t)
+ 		}
+ 		t = nextnl();
+ 		if (t == Tint) {
+-			c = tokval.num;
++			c = G(tokval).num;
+ 			t = nextnl();
+ 		} else
+ 			c = 1;
+ 		sz += a + c*s;
+ 		if (type == FTyp)
+-			s = ty1 - typ;
++			s = ty1 - GC(typ);
+ 		for (; c>0 && n<NField; c--, n++) {
+ 			fld[n].type = type;
+ 			fld[n].len = s;
+@@ -1022,20 +996,20 @@ parsetyp(void)
+ 	 * to handle nested types, any pointer
+ 	 * held to typ[] might be invalidated!
+ 	 */
+-	vgrow(&typ, ntyp+1);
+-	ty = &typ[ntyp++];
++	vgrow(&GC(typ), G(ntyp)+1);
++	ty = &GC(typ)[G(ntyp)++];
+ 	ty->isdark = 0;
+ 	ty->isunion = 0;
+ 	ty->align = -1;
+ 	ty->size = 0;
+ 	if (nextnl() != Ttyp ||  nextnl() != Teq)
+ 		err("type name and then = expected");
+-	strcpy(ty->name, tokval.str);
++	strcpy(ty->name, G(tokval).str);
+ 	t = nextnl();
+ 	if (t == Talign) {
+ 		if (nextnl() != Tint)
+ 			err("alignment expected");
+-		for (al=0; tokval.num /= 2; al++)
++		for (al=0; G(tokval).num /= 2; al++)
+ 			;
+ 		ty->align = al;
+ 		t = nextnl();
+@@ -1045,7 +1019,7 @@ parsetyp(void)
+ 	t = nextnl();
+ 	if (t == Tint) {
+ 		ty->isdark = 1;
+-		ty->size = tokval.num;
++		ty->size = G(tokval).num;
+ 		if (ty->align == -1)
+ 			err("dark types need alignment");
+ 		if (nextnl() != Trbrace)
+@@ -1067,7 +1041,7 @@ parsetyp(void)
+ 		parsefields(ty->fields[n++], ty, t);
+ 	ty->nunion = n;
+ 
+-  if (debug['T']) {
++  if (GC(debug)['T']) {
+     fprintf(stderr, "\n> Parsed type:\n");
+     printtyp(ty, stderr);
+   }
+@@ -1079,14 +1053,14 @@ parsedatref(Dat *d)
+ 	int t;
+ 
+ 	d->isref = 1;
+-	d->u.ref.name = tokval.str;
++	d->u.ref.name = G(tokval).str;
+ 	d->u.ref.off = 0;
+ 	t = peek();
+ 	if (t == Tplus) {
+ 		next();
+ 		if (next() != Tint)
+ 			err("invalid token after offset in ref");
+-		d->u.ref.off = tokval.num;
++		d->u.ref.off = G(tokval).num;
+ 	}
+ }
+ 
+@@ -1094,7 +1068,7 @@ static void
+ parsedatstr(Dat *d)
+ {
+ 	d->isstr = 1;
+-	d->u.str = tokval.str;
++	d->u.str = G(tokval).str;
+ }
+ 
+ static void
+@@ -1106,16 +1080,16 @@ parsedat(void cb(Dat *), Lnk *lnk)
+ 
+ 	if (nextnl() != Tglo || nextnl() != Teq)
+ 		err("data name, then = expected");
+-	strncpy(name, tokval.str, NString-1);
++	strncpy(name, G(tokval).str, NString-1);
+ 	t = nextnl();
+ 	lnk->align = 8;
+ 	if (t == Talign) {
+ 		if (nextnl() != Tint)
+ 			err("alignment expected");
+-		if (tokval.num <= 0 || tokval.num > CHAR_MAX
+-		|| (tokval.num & (tokval.num-1)) != 0)
++		if (G(tokval).num <= 0 || G(tokval).num > CHAR_MAX
++		|| (G(tokval).num & (G(tokval).num-1)) != 0)
+ 			err("invalid alignment");
+-		lnk->align = tokval.num;
++		lnk->align = G(tokval).num;
+ 		t = nextnl();
+ 	}
+ 	d.type = DStart;
+@@ -1127,7 +1101,7 @@ parsedat(void cb(Dat *), Lnk *lnk)
+ 		err("expected data contents in { .. }");
+ 	for (;;) {
+ 		switch (nextnl()) {
+-		default: err("invalid size specifier %c in data", tokval.chr);
++		default: err("invalid size specifier %c in data", G(tokval).chr);
+ 		case Trbrace: goto Done;
+ 		case Tl: d.type = DL; break;
+ 		case Tw: d.type = DW; break;
+@@ -1143,11 +1117,11 @@ parsedat(void cb(Dat *), Lnk *lnk)
+ 			d.isref = 0;
+ 			memset(&d.u, 0, sizeof d.u);
+ 			if (t == Tflts)
+-				d.u.flts = tokval.flts;
++				d.u.flts = G(tokval).flts;
+ 			else if (t == Tfltd)
+-				d.u.fltd = tokval.fltd;
++				d.u.fltd = G(tokval).fltd;
+ 			else if (t == Tint)
+-				d.u.num = tokval.num;
++				d.u.num = G(tokval).num;
+ 			else if (t == Tglo)
+ 				parsedatref(&d);
+ 			else if (t == Tstr)
+@@ -1188,10 +1162,10 @@ parselnk(Lnk *lnk)
+ 				err("only one section allowed");
+ 			if (next() != Tstr)
+ 				err("section \"name\" expected");
+-			lnk->sec = tokval.str;
++			lnk->sec = G(tokval).str;
+ 			if (peek() == Tstr) {
+ 				next();
+-				lnk->secf = tokval.str;
++				lnk->secf = G(tokval).str;
+ 			}
+ 			break;
+ 		default:
+@@ -1210,12 +1184,12 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+ 	uint n;
+ 
+ 	lexinit();
+-	inf = f;
+-	inpath = path;
+-	lnum = 1;
+-	thead = Txxx;
+-	ntyp = 0;
+-	typ = vnew(0, sizeof typ[0], PHeap);
++	G(inf) = f;
++	G(inpath) = path;
++	G(lnum) = 1;
++	G(thead) = Txxx;
++	G(ntyp) = 0;
++	GC(typ) = vnew(0, sizeof GC(typ)[0], PHeap);
+ 	for (;;) {
+ 		lnk = (Lnk){0};
+ 		switch (parselnk(&lnk)) {
+@@ -1223,7 +1197,7 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+ 			err("top-level definition expected");
+ 		case Tdbgfile:
+ 			expect(Tstr);
+-			dbgfile(tokval.str);
++			dbgfile(G(tokval).str);
+ 			break;
+ 		case Tfunc:
+ 			lnk.align = 16;
+@@ -1236,10 +1210,10 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+ 			parsetyp();
+ 			break;
+ 		case Teof:
+-			for (n=0; n<ntyp; n++)
+-				if (typ[n].nunion)
+-					vfree(typ[n].fields);
+-			vfree(typ);
++			for (n=0; n<G(ntyp); n++)
++				if (GC(typ)[n].nunion)
++					vfree(GC(typ)[n].fields);
++			vfree(GC(typ));
+ 			return;
+ 		}
+ 	}
+@@ -1294,7 +1268,7 @@ void printtyp(Typ* ty, FILE* f) {
+     for (int j = 0; j < NField+1; ++j) {
+       if (fld[j].type == FTyp) {
+         fprintf(f, "    field %d: %s => %s\n", j, field_type_name[fld[j].type],
+-                typ[fld[j].len].name);
++                GC(typ)[fld[j].len].name);
+       } else {
+         fprintf(f, "    field %d: %s len %u\n", j, field_type_name[fld[j].type], fld[j].len);
+       }
+@@ -1330,7 +1304,7 @@ printref(Ref r, Fn *fn, FILE *f)
+ 		fprintf(f, "%04x", r.val);
+ 		break;
+ 	case RType:
+-		fprintf(f, ":%s", typ[r.val].name);
++		fprintf(f, ":%s", GC(typ)[r.val].name);
+ 		break;
+ 	case RMem:
+ 		i = 0;
+@@ -1443,7 +1417,7 @@ printfn(Fn *fn, FILE *f)
+ 				printref(b->jmp.arg, fn, f);
+ 			}
+ 			if (b->jmp.type == Jretc)
+-				fprintf(f, ", :%s", typ[fn->retty].name);
++				fprintf(f, ", :%s", GC(typ)[fn->retty].name);
+ 			fprintf(f, "\n");
+ 			break;
+ 		case Jhlt:
+diff --git a/rega.c b/rega.c
+index 4d2a06b..6f8b5e6 100644
+--- a/rega.c
++++ b/rega.c
+@@ -1,5 +1,7 @@
+ #include "all.h"
+ 
++#define G(x) global_context.rega__##x
++
+ #ifdef TEST_PMOV
+ 	#undef assert
+ 	#define assert(x) assert_test(#x, x)
+@@ -15,23 +17,10 @@ struct RMap {
+ 	int n;
+ };
+ 
+-static bits regu;      /* registers used */
+-static Tmp *tmp;       /* function temporaries */
+-static Mem *mem;       /* function mem references */
+-static struct {
+-	Ref src, dst;
+-	int cls;
+-} pm[Tmp0];            /* parallel move constructed */
+-static int npm;        /* size of pm */
+-static int loop;       /* current loop level */
+-
+-static uint stmov;     /* stats: added moves */
+-static uint stblk;     /* stats: added blocks */
+-
+ static int *
+ hint(int t)
+ {
+-	return &tmp[phicls(t, tmp)].hint.r;
++	return &G(tmp)[phicls(t, G(tmp))].hint.r;
+ }
+ 
+ static void
+@@ -39,11 +28,11 @@ sethint(int t, int r)
+ {
+ 	Tmp *p;
+ 
+-	p = &tmp[phicls(t, tmp)];
+-	if (p->hint.r == -1 || p->hint.w > loop) {
++	p = &G(tmp)[phicls(t, G(tmp))];
++	if (p->hint.r == -1 || p->hint.w > G(loop)) {
+ 		p->hint.r = r;
+-		p->hint.w = loop;
+-		tmp[t].visit = -1;
++		p->hint.w = G(loop);
++		G(tmp)[t].visit = -1;
+ 	}
+ }
+ 
+@@ -75,7 +64,7 @@ rref(RMap *m, int t)
+ 
+ 	r = rfind(m, t);
+ 	if (r == -1) {
+-		s = tmp[t].slot;
++		s = G(tmp)[t].slot;
+ 		assert(s != -1 && "should have spilled");
+ 		return SLOT(s);
+ 	} else
+@@ -86,18 +75,18 @@ static void
+ radd(RMap *m, int t, int r)
+ {
+ 	assert((t >= Tmp0 || t == r) && "invalid temporary");
+-	assert(((T.gpr0 <= r && r < T.gpr0 + T.ngpr)
+-		|| (T.fpr0 <= r && r < T.fpr0 + T.nfpr))
++	assert(((GC(T).gpr0 <= r && r < GC(T).gpr0 + GC(T).ngpr)
++		|| (GC(T).fpr0 <= r && r < GC(T).fpr0 + GC(T).nfpr))
+ 		&& "invalid register");
+ 	assert(!bshas(m->b, t) && "temporary has mapping");
+ 	assert(!bshas(m->b, r) && "register already allocated");
+-	assert(m->n <= T.ngpr+T.nfpr && "too many mappings");
++	assert(m->n <= GC(T).ngpr+GC(T).nfpr && "too many mappings");
+ 	bsset(m->b, t);
+ 	bsset(m->b, r);
+ 	m->t[m->n] = t;
+ 	m->r[m->n] = r;
+ 	m->n++;
+-	regu |= BIT(r);
++	G(regu) |= BIT(r);
+ }
+ 
+ static Ref
+@@ -115,20 +104,20 @@ ralloctry(RMap *m, int t, int try)
+ 		assert(r != -1);
+ 		return TMP(r);
+ 	}
+-	r = tmp[t].visit;
++	r = G(tmp)[t].visit;
+ 	if (r == -1 || bshas(m->b, r))
+ 		r = *hint(t);
+ 	if (r == -1 || bshas(m->b, r)) {
+ 		if (try)
+ 			return R;
+-		regs = tmp[phicls(t, tmp)].hint.m;
++		regs = G(tmp)[phicls(t, G(tmp))].hint.m;
+ 		regs |= m->b->t[0];
+-		if (KBASE(tmp[t].cls) == 0) {
+-			r0 = T.gpr0;
+-			r1 = r0 + T.ngpr;
++		if (KBASE(G(tmp)[t].cls) == 0) {
++			r0 = GC(T).gpr0;
++			r1 = r0 + GC(T).ngpr;
+ 		} else {
+-			r0 = T.fpr0;
+-			r1 = r0 + T.nfpr;
++			r0 = GC(T).fpr0;
++			r1 = r0 + GC(T).nfpr;
+ 		}
+ 		for (r=r0; r<r1; r++)
+ 			if (!(regs & BIT(r)))
+@@ -141,7 +130,7 @@ ralloctry(RMap *m, int t, int try)
+ Found:
+ 	radd(m, t, r);
+ 	sethint(t, r);
+-	tmp[t].visit = r;
++	G(tmp)[t].visit = r;
+ 	h = *hint(t);
+ 	if (h != -1 && h != r)
+ 		m->w[h] = t;
+@@ -159,7 +148,7 @@ rfree(RMap *m, int t)
+ {
+ 	int i, r;
+ 
+-	assert(t >= Tmp0 || !(BIT(t) & T.rglob));
++	assert(t >= Tmp0 || !(BIT(t) & GC(T).rglob));
+ 	if (!bshas(m->b, t))
+ 		return -1;
+ 	for (i=0; m->t[i] != t; i++)
+@@ -182,7 +171,7 @@ mdump(RMap *m)
+ 	for (i=0; i<m->n; i++)
+ 		if (m->t[i] >= Tmp0)
+ 			fprintf(stderr, " (%s, R%d)",
+-				tmp[m->t[i]].name,
++				G(tmp)[m->t[i]].name,
+ 				m->r[i]);
+ 	fprintf(stderr, "\n");
+ }
+@@ -190,12 +179,12 @@ mdump(RMap *m)
+ static void
+ pmadd(Ref src, Ref dst, int k)
+ {
+-	if (npm == Tmp0)
++	if (G(npm) == Tmp0)
+ 		die("cannot have more moves than registers");
+-	pm[npm].src = src;
+-	pm[npm].dst = dst;
+-	pm[npm].cls = k;
+-	npm++;
++	G(pm)[G(npm)].src = src;
++	G(pm)[G(npm)].dst = dst;
++	G(pm)[G(npm)].cls = k;
++	G(npm)++;
+ }
+ 
+ enum PMStat { ToMove, Moving, Moved };
+@@ -208,20 +197,20 @@ pmrec(enum PMStat *status, int i, int *k)
+ 	/* note, this routine might emit
+ 	 * too many large instructions
+ 	 */
+-	if (req(pm[i].src, pm[i].dst)) {
++	if (req(G(pm)[i].src, G(pm)[i].dst)) {
+ 		status[i] = Moved;
+ 		return -1;
+ 	}
+-	assert(KBASE(pm[i].cls) == KBASE(*k));
++	assert(KBASE(G(pm)[i].cls) == KBASE(*k));
+ 	assert((Kw|Kl) == Kl && (Ks|Kd) == Kd);
+-	*k |= pm[i].cls;
+-	for (j=0; j<npm; j++)
+-		if (req(pm[j].dst, pm[i].src))
++	*k |= G(pm)[i].cls;
++	for (j=0; j<G(npm); j++)
++		if (req(G(pm)[j].dst, G(pm)[i].src))
+ 			break;
+-	switch (j == npm ? Moved : status[j]) {
++	switch (j == G(npm) ? Moved : status[j]) {
+ 	case Moving:
+ 		c = j; /* start of cycle */
+-		emit(Oswap, *k, R, pm[i].src, pm[i].dst);
++		emit(Oswap, *k, R, G(pm)[i].src, G(pm)[i].dst);
+ 		break;
+ 	case ToMove:
+ 		status[i] = Moving;
+@@ -231,13 +220,13 @@ pmrec(enum PMStat *status, int i, int *k)
+ 			break;
+ 		}
+ 		if (c != -1) {
+-			emit(Oswap, *k, R, pm[i].src, pm[i].dst);
++			emit(Oswap, *k, R, G(pm)[i].src, G(pm)[i].dst);
+ 			break;
+ 		}
+ 		/* fall through */
+ 	case Moved:
+ 		c = -1;
+-		emit(Ocopy, pm[i].cls, pm[i].dst, pm[i].src, R);
++		emit(Ocopy, G(pm)[i].cls, G(pm)[i].dst, G(pm)[i].src, R);
+ 		break;
+ 	default:
+ 		die("unreachable");
+@@ -252,11 +241,11 @@ pmgen(void)
+ 	int i;
+ 	enum PMStat *status;
+ 
+-	status = alloc(npm * sizeof status[0]);
+-	assert(!npm || status[npm-1] == ToMove);
+-	for (i=0; i<npm; i++)
++	status = alloc(G(npm) * sizeof status[0]);
++	assert(!G(npm) || status[G(npm)-1] == ToMove);
++	for (i=0; i<G(npm); i++)
+ 		if (status[i] == ToMove)
+-			pmrec(status, i, (int[]){pm[i].cls});
++			pmrec(status, i, (int[]){G(pm)[i].cls});
+ }
+ 
+ static void
+@@ -303,20 +292,20 @@ dopm(Blk *b, Ins *i, RMap *m)
+ 	} while (i != b->ins && regcpy(i-1));
+ 	assert(m0.n <= m->n);
+ 	if (i != b->ins && (i-1)->op == Ocall) {
+-		def = T.retregs((i-1)->arg[1], 0) | T.rglob;
+-		for (r=0; T.rsave[r]>=0; r++)
+-			if (!(BIT(T.rsave[r]) & def))
+-				move(T.rsave[r], R, m);
++		def = GC(T).retregs((i-1)->arg[1], 0) | GC(T).rglob;
++		for (r=0; GC(T).rsave[r]>=0; r++)
++			if (!(BIT(GC(T).rsave[r]) & def))
++				move(GC(T).rsave[r], R, m);
+ 	}
+-	for (npm=0, n=0; n<m->n; n++) {
++	for (G(npm)=0, n=0; n<m->n; n++) {
+ 		t = m->t[n];
+-		s = tmp[t].slot;
++		s = G(tmp)[t].slot;
+ 		r1 = m->r[n];
+ 		r = rfind(&m0, t);
+ 		if (r != -1)
+-			pmadd(TMP(r1), TMP(r), tmp[t].cls);
++			pmadd(TMP(r1), TMP(r), G(tmp)[t].cls);
+ 		else if (s != -1)
+-			pmadd(TMP(r1), SLOT(s), tmp[t].cls);
++			pmadd(TMP(r1), SLOT(s), G(tmp)[t].cls);
+ 	}
+ 	for (ip=i; ip<i1; ip++) {
+ 		if (!req(ip->to, R))
+@@ -363,23 +352,23 @@ doblk(Blk *b, RMap *cur)
+ 
+ 	if (rtype(b->jmp.arg) == RTmp)
+ 		b->jmp.arg = ralloc(cur, b->jmp.arg.val);
+-	curi = &insb[NIns];
++	GC(curi) = &GC(insb)[NIns];
+ 	for (i1=&b->ins[b->nins]; i1!=b->ins;) {
+ 		emiti(*--i1);
+-		i = curi;
++		i = GC(curi);
+ 		rf = -1;
+ 		switch (i->op) {
+ 		case Ocall:
+-			rs = T.argregs(i->arg[1], 0) | T.rglob;
+-			for (r=0; T.rsave[r]>=0; r++)
+-				if (!(BIT(T.rsave[r]) & rs))
+-					rfree(cur, T.rsave[r]);
++			rs = GC(T).argregs(i->arg[1], 0) | GC(T).rglob;
++			for (r=0; GC(T).rsave[r]>=0; r++)
++				if (!(BIT(GC(T).rsave[r]) & rs))
++					rfree(cur, GC(T).rsave[r]);
+ 			break;
+ 		case Ocopy:
+ 			if (regcpy(i)) {
+-				curi++;
++				GC(curi)++;
+ 				i1 = dopm(b, i1, cur);
+-				stmov += i+1 - curi;
++				G(stmov) += i+1 - GC(curi);
+ 				continue;
+ 			}
+ 			if (isreg(i->to))
+@@ -390,12 +379,12 @@ doblk(Blk *b, RMap *cur)
+ 			if (!req(i->to, R)) {
+ 				assert(rtype(i->to) == RTmp);
+ 				r = i->to.val;
+-				if (r < Tmp0 && (BIT(r) & T.rglob))
++				if (r < Tmp0 && (BIT(r) & GC(T).rglob))
+ 					break;
+ 				rf = rfree(cur, r);
+ 				if (rf == -1) {
+ 					assert(!isreg(i->to));
+-					curi++;
++					GC(curi)++;
+ 					continue;
+ 				}
+ 				i->to = TMP(rf);
+@@ -405,7 +394,7 @@ doblk(Blk *b, RMap *cur)
+ 		for (x=0, nr=0; x<2; x++)
+ 			switch (rtype(i->arg[x])) {
+ 			case RMem:
+-				m = &mem[i->arg[x].val];
++				m = &G(mem)[i->arg[x].val];
+ 				if (rtype(m->base) == RTmp)
+ 					insert(&m->base, ra, nr++);
+ 				if (rtype(m->index) == RTmp)
+@@ -418,18 +407,18 @@ doblk(Blk *b, RMap *cur)
+ 		for (r=0; r<nr; r++)
+ 			*ra[r] = ralloc(cur, ra[r]->val);
+ 		if (i->op == Ocopy && req(i->to, i->arg[0]))
+-			curi++;
++			GC(curi)++;
+ 
+ 		/* try to change the register of a hinted
+ 		 * temporary if rf is available */
+ 		if (rf != -1 && (t = cur->w[rf]) != 0)
+ 		if (!bshas(cur->b, rf) && *hint(t) == rf
+ 		&& (rt = rfree(cur, t)) != -1) {
+-			tmp[t].visit = -1;
++			G(tmp)[t].visit = -1;
+ 			ralloc(cur, t);
+ 			assert(bshas(cur->b, rf));
+-			emit(Ocopy, tmp[t].cls, TMP(rt), TMP(rf), R);
+-			stmov += 1;
++			emit(Ocopy, G(tmp)[t].cls, TMP(rt), TMP(rf), R);
++			G(stmov) += 1;
+ 			cur->w[rf] = 0;
+ 			for (r=0; r<nr; r++)
+ 				if (req(*ra[r], TMP(rt)))
+@@ -439,8 +428,8 @@ doblk(Blk *b, RMap *cur)
+ 			 * the above loop must be changed */
+ 		}
+ 	}
+-	b->nins = &insb[NIns] - curi;
+-	idup(&b->ins, curi, b->nins);
++	b->nins = &GC(insb)[NIns] - GC(curi);
++	idup(&b->ins, GC(curi), b->nins);
+ }
+ 
+ /* qsort() comparison function to peel
+@@ -464,11 +453,11 @@ carve(const void *a, const void *b)
+ static int
+ prio2(int t1, int t2)
+ {
+-	if ((tmp[t1].visit ^ tmp[t2].visit) < 0)  /* != signs */
+-		return tmp[t1].visit != -1 ? +1 : -1;
++	if ((G(tmp)[t1].visit ^ G(tmp)[t2].visit) < 0)  /* != signs */
++		return G(tmp)[t1].visit != -1 ? +1 : -1;
+ 	if ((*hint(t1) ^ *hint(t2)) < 0)
+ 		return *hint(t1) != -1 ? +1 : -1;
+-	return tmp[t1].cost - tmp[t2].cost;
++	return G(tmp)[t1].cost - G(tmp)[t2].cost;
+ }
+ 
+ /* register allocation
+@@ -486,11 +475,11 @@ rega(Fn *fn)
+ 	Ref src, dst;
+ 
+ 	/* 1. setup */
+-	stmov = 0;
+-	stblk = 0;
+-	regu = 0;
+-	tmp = fn->tmp;
+-	mem = fn->mem;
++	G(stmov) = 0;
++	G(stblk) = 0;
++	G(regu) = 0;
++	G(tmp) = fn->tmp;
++	G(mem) = fn->mem;
+ 	blk = alloc(fn->nblk * sizeof blk[0]);
+ 	end = alloc(fn->nblk * sizeof end[0]);
+ 	beg = alloc(fn->nblk * sizeof beg[0]);
+@@ -501,11 +490,11 @@ rega(Fn *fn)
+ 	bsinit(cur.b, fn->ntmp);
+ 	bsinit(old.b, fn->ntmp);
+ 
+-	loop = INT_MAX;
++	G(loop) = INT_MAX;
+ 	for (t=0; t<fn->ntmp; t++) {
+-		tmp[t].hint.r = t < Tmp0 ? t : -1;
+-		tmp[t].hint.w = loop;
+-		tmp[t].visit = -1;
++		G(tmp)[t].hint.r = t < Tmp0 ? t : -1;
++		G(tmp)[t].hint.w = G(loop);
++		G(tmp)[t].visit = -1;
+ 	}
+ 	for (bp=blk, b=fn->start; b; b=b->link)
+ 		*bp++ = b;
+@@ -522,7 +511,7 @@ rega(Fn *fn)
+ 	for (bp=blk; bp<&blk[fn->nblk]; bp++) {
+ 		b = *bp;
+ 		n = b->id;
+-		loop = b->loop;
++		G(loop) = b->loop;
+ 		cur.n = 0;
+ 		bszero(cur.b);
+ 		memset(cur.w, 0, sizeof cur.w);
+@@ -598,31 +587,31 @@ rega(Fn *fn)
+ 				rl[r] = -1;
+ 		}
+ 
+-		npm = 0;
++		G(npm) = 0;
+ 		for (j=0; j<m->n; j++) {
+ 			t = m->t[j];
+ 			r = m->r[j];
+ 			x = rl[r];
+ 			assert(x != 0 || t < Tmp0 /* todo, ditto */);
+ 			if (x > 0 && !bshas(m->b, x)) {
+-				pmadd(TMP(x), TMP(r), tmp[t].cls);
++				pmadd(TMP(x), TMP(r), G(tmp)[t].cls);
+ 				m->r[j] = x;
+ 				bsset(m->b, x);
+ 			}
+ 		}
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		pmgen();
+-		j = &insb[NIns] - curi;
++		j = &GC(insb)[NIns] - GC(curi);
+ 		if (j == 0)
+ 			continue;
+-		stmov += j;
++		G(stmov) += j;
+ 		s->nins += j;
+ 		i = alloc(s->nins * sizeof(Ins));
+-		icpy(icpy(i, curi, j), s->ins, s->nins-j);
++		icpy(icpy(i, GC(curi), j), s->ins, s->nins-j);
+ 		s->ins = i;
+ 	}
+ 
+-	if (debug['R'])  {
++	if (GC(debug)['R'])  {
+ 		fprintf(stderr, "\n> Register mappings:\n");
+ 		for (n=0; n<fn->nblk; n++) {
+ 			b = fn->rpo[n];
+@@ -639,7 +628,7 @@ rega(Fn *fn)
+ 	for (b=fn->start;; b=b->link) {
+ 		ps = (Blk**[3]){&b->s1, &b->s2, (Blk*[1]){0}};
+ 		for (; (s=**ps); ps++) {
+-			npm = 0;
++			G(npm) = 0;
+ 			for (p=s->phi; p; p=p->link) {
+ 				dst = p->to;
+ 				assert(rtype(dst)==RSlot || rtype(dst)==RTmp);
+@@ -659,11 +648,11 @@ rega(Fn *fn)
+ 			for (t=Tmp0; bsiter(s->in, &t); t++) {
+ 				src = rref(&end[b->id], t);
+ 				dst = rref(&beg[s->id], t);
+-				pmadd(src, dst, tmp[t].cls);
++				pmadd(src, dst, G(tmp)[t].cls);
+ 			}
+-			curi = &insb[NIns];
++			GC(curi) = &GC(insb)[NIns];
+ 			pmgen();
+-			if (curi == &insb[NIns])
++			if (GC(curi) == &GC(insb)[NIns])
+ 				continue;
+ 			b1 = newblk();
+ 			b1->loop = (b->loop+s->loop) / 2;
+@@ -671,10 +660,10 @@ rega(Fn *fn)
+ 			blist = b1;
+ 			fn->nblk++;
+ 			strf(b1->name, "%s_%s", b->name, s->name);
+-			b1->nins = &insb[NIns] - curi;
+-			stmov += b1->nins;
+-			stblk += 1;
+-			idup(&b1->ins, curi, b1->nins);
++			b1->nins = &GC(insb)[NIns] - GC(curi);
++			G(stmov) += b1->nins;
++			G(stblk) += 1;
++			idup(&b1->ins, GC(curi), b1->nins);
+ 			b1->jmp.type = Jjmp;
+ 			b1->s1 = s;
+ 			**ps = b1;
+@@ -686,12 +675,12 @@ rega(Fn *fn)
+ 	}
+ 	for (b=fn->start; b; b=b->link)
+ 		b->phi = 0;
+-	fn->reg = regu;
++	fn->reg = G(regu);
+ 
+-	if (debug['R']) {
++	if (GC(debug)['R']) {
+ 		fprintf(stderr, "\n> Register allocation statistics:\n");
+-		fprintf(stderr, "\tnew moves:  %d\n", stmov);
+-		fprintf(stderr, "\tnew blocks: %d\n", stblk);
++		fprintf(stderr, "\tnew moves:  %d\n", G(stmov));
++		fprintf(stderr, "\tnew blocks: %d\n", G(stblk));
+ 		fprintf(stderr, "\n> After register allocation:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/rv64/abi.c b/rv64/abi.c
+index e31425c..87f38c7 100644
+--- a/rv64/abi.c
++++ b/rv64/abi.c
+@@ -106,7 +106,7 @@ fpstruct(Typ *t, int off, Class *c)
+ 		if (f->type == FPad)
+ 			off += f->len;
+ 		else if (f->type == FTyp) {
+-			if (fpstruct(&typ[f->len], off, c) == -1)
++			if (fpstruct(&GC(typ)[f->len], off, c) == -1)
+ 				return -1;
+ 		}
+ 		else {
+@@ -219,7 +219,7 @@ selret(Blk *b, Fn *fn)
+ 	b->jmp.type = Jret0;
+ 
+ 	if (j == Jretc) {
+-		typclass(&cr, &typ[fn->retty], 1, gpreg, fpreg);
++		typclass(&cr, &GC(typ)[fn->retty], 1, gpreg, fpreg);
+ 		if (cr.class & Cptr) {
+ 			assert(rtype(fn->retr) == RTmp);
+ 			emit(Oblit1, 0, R, INT(cr.type->size), R);
+@@ -282,7 +282,7 @@ argsclass(Ins *i0, Ins *i1, Class *carg, int retptr)
+ 			break;
+ 		case Oparc:
+ 		case Oargc:
+-			t = &typ[i->arg[0].val];
++			t = &GC(typ)[i->arg[0].val];
+ 			typclass(c, t, 1, gp, fp);
+ 			if (c->nfp > 0)
+ 			if (c->nfp >= nfp || c->ngp >= ngp)
+@@ -348,7 +348,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
+ 	cr.class = 0;
+ 
+ 	if (!req(i1->arg[1], R))
+-		typclass(&cr, &typ[i1->arg[1].val], 1, gpreg, fpreg);
++		typclass(&cr, &GC(typ)[i1->arg[1].val], 1, gpreg, fpreg);
+ 
+ 	cty = argsclass(i0, i1, ca, cr.class & Cptr);
+ 	stk = 0;
+@@ -444,9 +444,9 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
+ 				 * as w arguments
+ 				 * (see rv64/isel.c:fixarg)
+ 				 */
+-				curi->op = Ostorel;
+-				curi->arg[0] = newtmp("abi", Kl, fn);
+-				emit(Oextsw, Kl, curi->arg[0], i->arg[0], R);
++				GC(curi)->op = Ostorel;
++				GC(curi)->arg[0] = newtmp("abi", Kl, fn);
++				emit(Oextsw, Kl, GC(curi)->arg[0], i->arg[0], R);
+ 			}
+ 			emit(Oadd, Kl, r1, r, getcon(off, fn));
+ 			off += 8;
+@@ -486,10 +486,10 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 
+ 	ca = alloc((i1-i0) * sizeof ca[0]);
+ 	cr.class = 0;
+-	curi = &insb[NIns];
++	GC(curi) = &GC(insb)[NIns];
+ 
+ 	if (fn->retty >= 0) {
+-		typclass(&cr, &typ[fn->retty], 1, gpreg, fpreg);
++		typclass(&cr, &GC(typ)[fn->retty], 1, gpreg, fpreg);
+ 		if (cr.class & Cptr) {
+ 			fn->retr = newtmp("abi", Kl, fn);
+ 			emit(Ocopy, Kl, fn->retr, TMP(A0), R);
+@@ -600,9 +600,9 @@ rv64_abi(Fn *fn)
+ 		if (!ispar(i->op))
+ 			break;
+ 	p = selpar(fn, b->ins, i);
+-	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
++	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
+ 	i0 = alloc(n * sizeof(Ins));
+-	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
++	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
+ 	ip = icpy(ip, i, &b->ins[b->nins] - i);
+ 	b->nins = n;
+ 	b->ins = i0;
+@@ -615,7 +615,7 @@ rv64_abi(Fn *fn)
+ 			b = fn->start; /* do it last */
+ 		if (b->visit)
+ 			continue;
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		selret(b, fn);
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			switch ((--i)->op) {
+@@ -642,11 +642,11 @@ rv64_abi(Fn *fn)
+ 		if (b == fn->start)
+ 			for (; il; il=il->link)
+ 				emiti(il->i);
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	} while (b != fn->start);
+ 
+-	if (debug['A']) {
++	if (GC(debug)['A']) {
+ 		fprintf(stderr, "\n> After ABI lowering:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/rv64/emit.c b/rv64/emit.c
+index 39b55ea..2eec69e 100644
+--- a/rv64/emit.c
++++ b/rv64/emit.c
+@@ -1,5 +1,7 @@
+ #include "all.h"
+ 
++#define G(x) global_context.rv64_emit__##x
++
+ enum {
+ 	Ki = -1, /* matches Kw and Kl */
+ 	Ka = -2, /* matches all classes */
+@@ -441,7 +443,6 @@ emitins(Ins *i, Fn *fn, FILE *f)
+ void
+ rv64_emitfn(Fn *fn, FILE *f)
+ {
+-	static int id0;
+ 	int lbl, neg, off, frame, *pr, r;
+ 	Blk *b, *s;
+ 	Ins *i;
+@@ -494,7 +495,7 @@ rv64_emitfn(Fn *fn, FILE *f)
+ 
+ 	for (lbl=0, b=fn->start; b; b=b->link) {
+ 		if (lbl || b->npred > 1)
+-			fprintf(f, ".L%d:\n", id0+b->id);
++			fprintf(f, ".L%d:\n", G(rv64_emitfn_id0)+b->id);
+ 		for (i=b->ins; i!=&b->ins[b->nins]; i++)
+ 			emitins(i, fn, f);
+ 		lbl = 1;
+@@ -537,7 +538,7 @@ rv64_emitfn(Fn *fn, FILE *f)
+ 		case Jjmp:
+ 		Jmp:
+ 			if (b->s1 != b->link)
+-				fprintf(f, "\tj .L%d\n", id0+b->s1->id);
++				fprintf(f, "\tj .L%d\n", G(rv64_emitfn_id0)+b->s1->id);
+ 			else
+ 				lbl = 0;
+ 			break;
+@@ -554,11 +555,11 @@ rv64_emitfn(Fn *fn, FILE *f)
+ 				"\tb%sz %s, .L%d\n",
+ 				neg ? "ne" : "eq",
+ 				rname[b->jmp.arg.val],
+-				id0+b->s2->id
++				G(rv64_emitfn_id0)+b->s2->id
+ 			);
+ 			goto Jmp;
+ 		}
+ 	}
+-	id0 += fn->nblk;
++	G(rv64_emitfn_id0) += fn->nblk;
+ 	elf_emitfnfin(fn->name, f);
+ }
+diff --git a/rv64/isel.c b/rv64/isel.c
+index 99cc158..c5e22f5 100644
+--- a/rv64/isel.c
++++ b/rv64/isel.c
+@@ -44,7 +44,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+ 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+ 			vgrow(&fn->con, ++fn->ncon);
+ 			c = &fn->con[fn->ncon-1];
+-			sprintf(buf, "\"%sfp%d\"", T.asloc, n);
++			sprintf(buf, "\"%sfp%d\"", GC(T).asloc, n);
+ 			*c = (Con){.type = CAddr};
+ 			c->sym.id = intern(buf);
+ 			emit(Oload, k, r1, CON(c-fn->con), R);
+@@ -105,7 +105,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+ 		r = newtmp("isel", k, fn);
+ 		emit(Oreqz, i.cls, i.to, r, R);
+ 		emit(Oxor, k, r, i.arg[0], i.arg[1]);
+-		icmp = curi;
++		icmp = GC(curi);
+ 		fixarg(&icmp->arg[0], k, icmp, fn);
+ 		fixarg(&icmp->arg[1], k, icmp, fn);
+ 		return;
+@@ -113,7 +113,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+ 		r = newtmp("isel", k, fn);
+ 		emit(Ornez, i.cls, i.to, r, R);
+ 		emit(Oxor, k, r, i.arg[0], i.arg[1]);
+-		icmp = curi;
++		icmp = GC(curi);
+ 		fixarg(&icmp->arg[0], k, icmp, fn);
+ 		fixarg(&icmp->arg[1], k, icmp, fn);
+ 		return;
+@@ -141,11 +141,11 @@ selcmp(Ins i, int k, int op, Fn *fn)
+ 		emit(Oand, i.cls, i.to, r0, r1);
+ 		op = KWIDE(k) ? Oceqd : Oceqs;
+ 		emit(op, i.cls, r0, i.arg[0], i.arg[0]);
+-		icmp = curi;
++		icmp = GC(curi);
+ 		fixarg(&icmp->arg[0], k, icmp, fn);
+ 		fixarg(&icmp->arg[1], k, icmp, fn);
+ 		emit(op, i.cls, r1, i.arg[1], i.arg[1]);
+-		icmp = curi;
++		icmp = GC(curi);
+ 		fixarg(&icmp->arg[0], k, icmp, fn);
+ 		fixarg(&icmp->arg[1], k, icmp, fn);
+ 		return;
+@@ -166,7 +166,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+ 	if (neg)
+ 		negate(&i.to, fn);
+ 	emiti(i);
+-	icmp = curi;
++	icmp = GC(curi);
+ 	fixarg(&icmp->arg[0], k, icmp, fn);
+ 	fixarg(&icmp->arg[1], k, icmp, fn);
+ }
+@@ -178,7 +178,7 @@ sel(Ins i, Fn *fn)
+ 	int ck, cc;
+ 
+ 	if (INRANGE(i.op, Oalloc, Oalloc1)) {
+-		i0 = curi - 1;
++		i0 = GC(curi) - 1;
+ 		salloc(i.to, i.arg[0], fn);
+ 		fixarg(&i0->arg[0], Kl, i0, fn);
+ 		return;
+@@ -189,7 +189,7 @@ sel(Ins i, Fn *fn)
+ 	}
+ 	if (i.op != Onop) {
+ 		emiti(i);
+-		i0 = curi; /* fixarg() can change curi */
++		i0 = GC(curi); /* fixarg() can change curi */
+ 		fixarg(&i0->arg[0], argcls(&i, 0), i0, fn);
+ 		fixarg(&i0->arg[1], argcls(&i, 1), i0, fn);
+ 	}
+@@ -234,7 +234,7 @@ rv64_isel(Fn *fn)
+ 			}
+ 
+ 	for (b=fn->start; b; b=b->link) {
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
+ 			for (p=(*sb)->phi; p; p=p->link) {
+ 				for (n=0; p->blk[n] != b; n++)
+@@ -244,11 +244,11 @@ rv64_isel(Fn *fn)
+ 		seljmp(b, fn);
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			sel(*--i, fn);
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	}
+ 
+-	if (debug['I']) {
++	if (GC(debug)['I']) {
+ 		fprintf(stderr, "\n> After instruction selection:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/simpl.c b/simpl.c
+index 5b16f54..bf8bc78 100644
+--- a/simpl.c
++++ b/simpl.c
+@@ -1,5 +1,7 @@
+ #include "all.h"
+ 
++#define G(x) global_context.simpl__##x
++
+ static void
+ blit(Ref sd[2], int sz, Fn *fn)
+ {
+@@ -72,10 +74,10 @@ ins(Ins **pi, int *new, Blk *b, Fn *fn)
+ 		assert(i > b->ins);
+ 		assert((i-1)->op == Oblit0);
+ 		if (!*new) {
+-			curi = &insb[NIns];
++			GC(curi) = &GC(insb)[NIns];
+ 			ni = &b->ins[b->nins] - (i+1);
+-			curi -= ni;
+-			icpy(curi, i+1, ni);
++			GC(curi) -= ni;
++			icpy(GC(curi), i+1, ni);
+ 			*new = 1;
+ 		}
+ 		blit((i-1)->arg, rsval(i->arg[0]), fn);
+@@ -119,8 +121,8 @@ simpl(Fn *fn)
+ 			ins(&i, &new, b, fn);
+ 		}
+ 		if (new) {
+-			b->nins = &insb[NIns] - curi;
+-			idup(&b->ins, curi, b->nins);
++			b->nins = &GC(insb)[NIns] - GC(curi);
++			idup(&b->ins, GC(curi), b->nins);
+ 		}
+ 	}
+ }
+diff --git a/spill.c b/spill.c
+index 2ce1d4f..fc14aa0 100644
+--- a/spill.c
++++ b/spill.c
+@@ -1,5 +1,7 @@
+ #include "all.h"
+ 
++#define G(x) global_context.spill__##x
++
+ static void
+ aggreg(Blk *hd, Blk *b)
+ {
+@@ -47,7 +49,7 @@ fillcost(Fn *fn)
+ 	Phi *p;
+ 
+ 	loopiter(fn, aggreg);
+-	if (debug['S']) {
++	if (GC(debug)['S']) {
+ 		fprintf(stderr, "\n> Loop information:\n");
+ 		for (b=fn->start; b; b=b->link) {
+ 			for (a=0; a<b->npred; ++a)
+@@ -84,7 +86,7 @@ fillcost(Fn *fn)
+ 		}
+ 		tmpuse(b->jmp.arg, 1, n, fn);
+ 	}
+-	if (debug['S']) {
++	if (GC(debug)['S']) {
+ 		fprintf(stderr, "\n> Spill costs:\n");
+ 		for (n=Tmp0; n<fn->ntmp; n++)
+ 			fprintf(stderr, "\t%-10s %d\n",
+@@ -94,21 +96,13 @@ fillcost(Fn *fn)
+ 	}
+ }
+ 
+-static BSet *fst; /* temps to prioritize in registers (for tcmp1) */
+-static Tmp *tmp;  /* current temporaries (for tcmpX) */
+-static int ntmp;  /* current # of temps (for limit) */
+-static int locs;  /* stack size used by locals */
+-static int slot4; /* next slot of 4 bytes */
+-static int slot8; /* ditto, 8 bytes */
+-static BSet mask[2][1]; /* class masks */
+-
+ static int
+ tcmp0(const void *pa, const void *pb)
+ {
+ 	uint ca, cb;
+ 
+-	ca = tmp[*(int *)pa].cost;
+-	cb = tmp[*(int *)pb].cost;
++	ca = G(tmp)[*(int *)pa].cost;
++	cb = G(tmp)[*(int *)pb].cost;
+ 	return (cb < ca) ? -1 : (cb > ca);
+ }
+ 
+@@ -117,7 +111,7 @@ tcmp1(const void *pa, const void *pb)
+ {
+ 	int c;
+ 
+-	c = bshas(fst, *(int *)pb) - bshas(fst, *(int *)pa);
++	c = bshas(G(fst), *(int *)pb) - bshas(G(fst), *(int *)pa);
+ 	return c ? c : tcmp0(pa, pb);
+ }
+ 
+@@ -127,7 +121,7 @@ slot(int t)
+ 	int s;
+ 
+ 	assert(t >= Tmp0 && "cannot spill register");
+-	s = tmp[t].slot;
++	s = G(tmp)[t].slot;
+ 	if (s == -1) {
+ 		/* specific to NAlign == 3 */
+ 		/* nice logic to pack stack slots
+@@ -136,21 +130,21 @@ slot(int t)
+ 		 *
+ 		 * invariant: slot4 <= slot8
+ 		 */
+-		if (KWIDE(tmp[t].cls)) {
+-			s = slot8;
+-			if (slot4 == slot8)
+-				slot4 += 2;
+-			slot8 += 2;
++		if (KWIDE(G(tmp)[t].cls)) {
++			s = G(slot8);
++			if (G(slot4) == G(slot8))
++				G(slot4) += 2;
++			G(slot8) += 2;
+ 		} else {
+-			s = slot4;
+-			if (slot4 == slot8) {
+-				slot8 += 2;
+-				slot4 += 1;
++			s = G(slot4);
++			if (G(slot4) == G(slot8)) {
++				G(slot8) += 2;
++				G(slot4) += 1;
+ 			} else
+-				slot4 = slot8;
++				G(slot4) = G(slot8);
+ 		}
+-		s += locs;
+-		tmp[t].slot = s;
++		s += G(locs);
++		G(tmp)[t].slot = s;
+ 	}
+ 	return SLOT(s);
+ }
+@@ -164,33 +158,32 @@ slot(int t)
+ static void
+ limit(BSet *b, int k, BSet *f)
+ {
+-	static int *tarr, maxt;
+ 	int i, t, nt;
+ 
+ 	nt = bscount(b);
+ 	if (nt <= k)
+ 		return;
+-	if (nt > maxt) {
+-		free(tarr);
+-		tarr = emalloc(nt * sizeof tarr[0]);
+-		maxt = nt;
++	if (nt > G(limit_maxt)) {
++		free(G(limit_tarr));
++		G(limit_tarr) = emalloc(nt * sizeof G(limit_tarr)[0]);
++		G(limit_maxt) = nt;
+ 	}
+ 	for (i=0, t=0; bsiter(b, &t); t++) {
+ 		bsclr(b, t);
+-		tarr[i++] = t;
++		G(limit_tarr)[i++] = t;
+ 	}
+ 	if (nt > 1) {
+ 		if (!f)
+-			qsort(tarr, nt, sizeof tarr[0], tcmp0);
++			qsort(G(limit_tarr), nt, sizeof G(limit_tarr)[0], tcmp0);
+ 		else {
+-			fst = f;
+-			qsort(tarr, nt, sizeof tarr[0], tcmp1);
++			G(fst) = f;
++			qsort(G(limit_tarr), nt, sizeof G(limit_tarr)[0], tcmp1);
+ 		}
+ 	}
+ 	for (i=0; i<k && i<nt; i++)
+-		bsset(b, tarr[i]);
++		bsset(b, G(limit_tarr)[i]);
+ 	for (; i<nt; i++)
+-		slot(tarr[i]);
++		slot(G(limit_tarr)[i]);
+ }
+ 
+ /* spills temporaries to fit the
+@@ -204,12 +197,12 @@ limit2(BSet *b1, int k1, int k2, BSet *f)
+ {
+ 	BSet b2[1];
+ 
+-	bsinit(b2, ntmp); /* todo, free those */
++	bsinit(b2, G(ntmp)); /* todo, free those */
+ 	bscopy(b2, b1);
+-	bsinter(b1, mask[0]);
+-	bsinter(b2, mask[1]);
+-	limit(b1, T.ngpr - k1, f);
+-	limit(b2, T.nfpr - k2, f);
++	bsinter(b1, G(mask)[0]);
++	bsinter(b2, G(mask)[1]);
++	limit(b1, GC(T).ngpr - k1, f);
++	limit(b2, GC(T).nfpr - k2, f);
+ 	bsunion(b1, b2);
+ }
+ 
+@@ -219,7 +212,7 @@ sethint(BSet *u, bits r)
+ 	int t;
+ 
+ 	for (t=Tmp0; bsiter(u, &t); t++)
+-		tmp[phicls(t, tmp)].hint.m |= r;
++		G(tmp)[phicls(t, G(tmp))].hint.m |= r;
+ }
+ 
+ /* reloads temporaries in u that are
+@@ -232,14 +225,14 @@ reloads(BSet *u, BSet *v)
+ 
+ 	for (t=Tmp0; bsiter(u, &t); t++)
+ 		if (!bshas(v, t))
+-			emit(Oload, tmp[t].cls, TMP(t), slot(t), R);
++			emit(Oload, G(tmp)[t].cls, TMP(t), slot(t), R);
+ }
+ 
+ static void
+ store(Ref r, int s)
+ {
+ 	if (s != -1)
+-		emit(Ostorew + tmp[r.val].cls, 0, R, r, SLOT(s));
++		emit(Ostorew + G(tmp)[r.val].cls, 0, R, r, SLOT(s));
+ }
+ 
+ static int
+@@ -256,7 +249,7 @@ dopm(Blk *b, Ins *i, BSet *v)
+ 	Ins *i1;
+ 	bits r;
+ 
+-	bsinit(u, ntmp); /* todo, free those */
++	bsinit(u, G(ntmp)); /* todo, free those */
+ 	/* consecutive copies from
+ 	 * registers need to be handled
+ 	 * as one large instruction
+@@ -274,17 +267,17 @@ dopm(Blk *b, Ins *i, BSet *v)
+ 		if (!req(i->to, R))
+ 		if (bshas(v, t)) {
+ 			bsclr(v, t);
+-			store(i->to, tmp[t].slot);
++			store(i->to, G(tmp)[t].slot);
+ 		}
+ 		bsset(v, i->arg[0].val);
+ 	} while (i != b->ins && regcpy(i-1));
+ 	bscopy(u, v);
+ 	if (i != b->ins && (i-1)->op == Ocall) {
+-		v->t[0] &= ~T.retregs((i-1)->arg[1], 0);
+-		limit2(v, T.nrsave[0], T.nrsave[1], 0);
+-		for (n=0, r=0; T.rsave[n]>=0; n++)
+-			r |= BIT(T.rsave[n]);
+-		v->t[0] |= T.argregs((i-1)->arg[1], 0);
++		v->t[0] &= ~GC(T).retregs((i-1)->arg[1], 0);
++		limit2(v, GC(T).nrsave[0], GC(T).nrsave[1], 0);
++		for (n=0, r=0; GC(T).rsave[n]>=0; n++)
++			r |= BIT(GC(T).rsave[n]);
++		v->t[0] |= GC(T).argregs((i-1)->arg[1], 0);
+ 	} else {
+ 		limit2(v, 0, 0, 0);
+ 		r = v->t[0];
+@@ -306,7 +299,7 @@ merge(BSet *u, Blk *bu, BSet *v, Blk *bv)
+ 		bsunion(u, v);
+ 	else
+ 		for (t=0; bsiter(v, &t); t++)
+-			if (tmp[t].slot == -1)
++			if (G(tmp)[t].slot == -1)
+ 				bsset(u, t);
+ }
+ 
+@@ -334,23 +327,23 @@ spill(Fn *fn)
+ 	Mem *m;
+ 	bits r;
+ 
+-	tmp = fn->tmp;
+-	ntmp = fn->ntmp;
+-	bsinit(u, ntmp);
+-	bsinit(v, ntmp);
+-	bsinit(w, ntmp);
+-	bsinit(mask[0], ntmp);
+-	bsinit(mask[1], ntmp);
+-	locs = fn->slot;
+-	slot4 = 0;
+-	slot8 = 0;
+-	for (t=0; t<ntmp; t++) {
++	G(tmp) = fn->tmp;
++	G(ntmp) = fn->ntmp;
++	bsinit(u, G(ntmp));
++	bsinit(v, G(ntmp));
++	bsinit(w, G(ntmp));
++	bsinit(G(mask)[0], G(ntmp));
++	bsinit(G(mask)[1], G(ntmp));
++	G(locs) = fn->slot;
++	G(slot4) = 0;
++	G(slot8) = 0;
++	for (t=0; t<G(ntmp); t++) {
+ 		k = 0;
+-		if (t >= T.fpr0 && t < T.fpr0 + T.nfpr)
++		if (t >= GC(T).fpr0 && t < GC(T).fpr0 + GC(T).nfpr)
+ 			k = 1;
+ 		if (t >= Tmp0)
+-			k = KBASE(tmp[t].cls);
+-		bsset(mask[k], t);
++			k = KBASE(G(tmp)[t].cls);
++		bsset(G(mask)[k], t);
+ 	}
+ 
+ 	for (bp=&fn->rpo[fn->nblk]; bp!=fn->rpo;) {
+@@ -360,7 +353,7 @@ spill(Fn *fn)
+ 
+ 		/* 1. find temporaries in registers at
+ 		 * the end of the block (put them in v) */
+-		curi = 0;
++		GC(curi) = 0;
+ 		s1 = b->s1;
+ 		s2 = b->s2;
+ 		hd = 0;
+@@ -372,11 +365,11 @@ spill(Fn *fn)
+ 		if (hd) {
+ 			/* back-edge */
+ 			bszero(v);
+-			hd->gen->t[0] |= T.rglob; /* don't spill registers */
++			hd->gen->t[0] |= GC(T).rglob; /* don't spill registers */
+ 			for (k=0; k<2; k++) {
+-				n = k == 0 ? T.ngpr : T.nfpr;
++				n = k == 0 ? GC(T).ngpr : GC(T).nfpr;
+ 				bscopy(u, b->out);
+-				bsinter(u, mask[k]);
++				bsinter(u, G(mask)[k]);
+ 				bscopy(w, u);
+ 				bsinter(u, hd->gen);
+ 				bsdiff(w, hd->gen);
+@@ -404,7 +397,7 @@ spill(Fn *fn)
+ 		} else {
+ 			bscopy(v, b->out);
+ 			if (rtype(b->jmp.arg) == RCall)
+-				v->t[0] |= T.retregs(b->jmp.arg, 0);
++				v->t[0] |= GC(T).retregs(b->jmp.arg, 0);
+ 		}
+ 		for (t=Tmp0; bsiter(b->out, &t); t++)
+ 			if (!bshas(v, t))
+@@ -414,7 +407,7 @@ spill(Fn *fn)
+ 		/* 2. process the block instructions */
+ 		if (rtype(b->jmp.arg) == RTmp) {
+ 			t = b->jmp.arg.val;
+-			assert(KBASE(tmp[t].cls) == 0);
++			assert(KBASE(G(tmp)[t].cls) == 0);
+ 			lvarg[0] = bshas(v, t);
+ 			bsset(v, t);
+ 			bscopy(u, v);
+@@ -426,7 +419,7 @@ spill(Fn *fn)
+ 			}
+ 			reloads(u, v);
+ 		}
+-		curi = &insb[NIns];
++		GC(curi) = &GC(insb)[NIns];
+ 		for (i=&b->ins[b->nins]; i!=b->ins;) {
+ 			i--;
+ 			if (regcpy(i)) {
+@@ -447,7 +440,7 @@ spill(Fn *fn)
+ 					bsset(w, t);
+ 				}
+ 			}
+-			j = T.memargs(i->op);
++			j = GC(T).memargs(i->op);
+ 			for (n=0; n<2; n++)
+ 				if (rtype(i->arg[n]) == RMem)
+ 					j--;
+@@ -490,7 +483,7 @@ spill(Fn *fn)
+ 			reloads(u, v);
+ 			if (!req(i->to, R)) {
+ 				t = i->to.val;
+-				store(i->to, tmp[t].slot);
++				store(i->to, G(tmp)[t].slot);
+ 				if (t >= Tmp0)
+ 					/* in case i->to was a
+ 					 * dead temporary */
+@@ -502,31 +495,31 @@ spill(Fn *fn)
+ 				sethint(v, r);
+ 		}
+ 		if (b == fn->start)
+-			assert(v->t[0] == (T.rglob | fn->reg));
++			assert(v->t[0] == (GC(T).rglob | fn->reg));
+ 		else
+-			assert(v->t[0] == T.rglob);
++			assert(v->t[0] == GC(T).rglob);
+ 
+ 		for (p=b->phi; p; p=p->link) {
+ 			assert(rtype(p->to) == RTmp);
+ 			t = p->to.val;
+ 			if (bshas(v, t)) {
+ 				bsclr(v, t);
+-				store(p->to, tmp[t].slot);
++				store(p->to, G(tmp)[t].slot);
+ 			} else if (bshas(b->in, t))
+ 				/* only if the phi is live */
+ 				p->to = slot(p->to.val);
+ 		}
+ 		bscopy(b->in, v);
+-		b->nins = &insb[NIns] - curi;
+-		idup(&b->ins, curi, b->nins);
++		b->nins = &GC(insb)[NIns] - GC(curi);
++		idup(&b->ins, GC(curi), b->nins);
+ 	}
+ 
+ 	/* align the locals to a 16 byte boundary */
+ 	/* specific to NAlign == 3 */
+-	slot8 += slot8 & 3;
+-	fn->slot += slot8;
++	G(slot8) += G(slot8) & 3;
++	fn->slot += G(slot8);
+ 
+-	if (debug['S']) {
++	if (GC(debug)['S']) {
+ 		fprintf(stderr, "\n> Block information:\n");
+ 		for (b=fn->start; b; b=b->link) {
+ 			fprintf(stderr, "\t%-10s (% 5d) ", b->name, b->loop);
+diff --git a/ssa.c b/ssa.c
+index 929301e..4b1ad7a 100644
+--- a/ssa.c
++++ b/ssa.c
+@@ -1,6 +1,8 @@
+ #include "all.h"
+ #include <stdarg.h>
+ 
++#define G(x) global_context.ssa__##x
++
+ static void
+ adduse(Tmp *tmp, int ty, Blk *b, ...)
+ {
+@@ -202,23 +204,20 @@ phiins(Fn *fn)
+ 	free(blist);
+ }
+ 
+-typedef struct Name Name;
+ struct Name {
+ 	Ref r;
+ 	Blk *b;
+ 	Name *up;
+ };
+ 
+-static Name *namel;
+-
+ static Name *
+ nnew(Ref r, Blk *b, Name *up)
+ {
+ 	Name *n;
+ 
+-	if (namel) {
+-		n = namel;
+-		namel = n->up;
++	if (G(namel)) {
++		n = G(namel);
++		G(namel) = n->up;
+ 	} else
+ 		/* could use alloc, here
+ 		 * but namel should be reset
+@@ -233,8 +232,8 @@ nnew(Ref r, Blk *b, Name *up)
+ static void
+ nfree(Name *n)
+ {
+-	n->up = namel;
+-	namel = n;
++	n->up = G(namel);
++	G(namel) = n;
+ }
+ 
+ static void
+@@ -322,10 +321,10 @@ ssa(Fn *fn)
+ 
+ 	nt = fn->ntmp;
+ 	stk = emalloc(nt * sizeof stk[0]);
+-	d = debug['L'];
+-	debug['L'] = 0;
++	d = GC(debug)['L'];
++	GC(debug)['L'] = 0;
+ 	filldom(fn);
+-	if (debug['N']) {
++	if (GC(debug)['N']) {
+ 		fprintf(stderr, "\n> Dominators:\n");
+ 		for (b1=fn->start; b1; b1=b1->link) {
+ 			if (!b1->dom)
+@@ -345,9 +344,9 @@ ssa(Fn *fn)
+ 			stk[nt] = n->up;
+ 			nfree(n);
+ 		}
+-	debug['L'] = d;
++	GC(debug)['L'] = d;
+ 	free(stk);
+-	if (debug['N']) {
++	if (GC(debug)['N']) {
+ 		fprintf(stderr, "\n> After SSA construction:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/util.c b/util.c
+index 1a71030..296aaaa 100644
+--- a/util.c
++++ b/util.c
+@@ -1,9 +1,10 @@
+ #include "all.h"
+ #include <stdarg.h>
+ 
++#define G(x) global_context.util__##x
++
+ typedef struct Bitset Bitset;
+ typedef struct Vec Vec;
+-typedef struct Bucket Bucket;
+ 
+ struct Vec {
+ 	ulong mag;
+@@ -17,28 +18,11 @@ struct Vec {
+ 	} align[];
+ };
+ 
+-struct Bucket {
+-	uint nstr;
+-	char **str;
+-};
+-
+ enum {
+ 	VMin = 2,
+ 	VMag = 0xcabba9e,
+-	NPtr = 256,
+-	IBits = 12,
+-	IMask = (1<<IBits) - 1,
+ };
+ 
+-Typ *typ;
+-Ins insb[NIns], *curi;
+-
+-static void *ptr[NPtr];
+-static void **pool = ptr;
+-static int nptr = 1;
+-
+-static Bucket itbl[IMask+1]; /* string interning table */
+-
+ uint32_t
+ hash(char *s)
+ {
+@@ -80,13 +64,13 @@ alloc(size_t n)
+ 
+ 	if (n == 0)
+ 		return 0;
+-	if (nptr >= NPtr) {
+-		pp = emalloc(NPtr * sizeof(void *));
+-		pp[0] = pool;
+-		pool = pp;
+-		nptr = 1;
++	if (G(nptr) >= util__NPtr) {
++		pp = emalloc(util__NPtr * sizeof(void *));
++		pp[0] = G(pool);
++		G(pool) = pp;
++		G(nptr) = 1;
+ 	}
+-	return pool[nptr++] = emalloc(n);
++	return G(pool)[G(nptr)++] = emalloc(n);
+ }
+ 
+ void
+@@ -95,16 +79,16 @@ freeall(void)
+ 	void **pp;
+ 
+ 	for (;;) {
+-		for (pp = &pool[1]; pp < &pool[nptr]; pp++)
++		for (pp = &G(pool)[1]; pp < &G(pool)[G(nptr)]; pp++)
+ 			free(*pp);
+-		pp = pool[0];
++		pp = G(pool)[0];
+ 		if (!pp)
+ 			break;
+-		free(pool);
+-		pool = pp;
+-		nptr = NPtr;
++		free(G(pool));
++		G(pool) = pp;
++		G(nptr) = util__NPtr;
+ 	}
+-	nptr = 1;
++	G(nptr) = 1;
+ }
+ 
+ void *
+@@ -171,15 +155,15 @@ intern(char *s)
+ 	uint32_t h;
+ 	uint i, n;
+ 
+-	h = hash(s) & IMask;
+-	b = &itbl[h];
++	h = hash(s) & util__IMask;
++	b = &G(itbl)[h];
+ 	n = b->nstr;
+ 
+ 	for (i=0; i<n; i++)
+ 		if (strcmp(s, b->str[i]) == 0)
+-			return h + (i<<IBits);
++			return h + (i<<util__IBits);
+ 
+-	if (n == 1<<(32-IBits))
++	if (n == 1<<(32-util__IBits))
+ 		die("interning table overflow");
+ 	if (n == 0)
+ 		b->str = vnew(1, sizeof b->str[0], PHeap);
+@@ -189,14 +173,14 @@ intern(char *s)
+ 	b->str[n] = emalloc(strlen(s)+1);
+ 	b->nstr = n + 1;
+ 	strcpy(b->str[n], s);
+-	return h + (n<<IBits);
++	return h + (n<<util__IBits);
+ }
+ 
+ char *
+ str(uint32_t id)
+ {
+-	assert(id>>IBits < itbl[id&IMask].nstr);
+-	return itbl[id&IMask].str[id>>IBits];
++	assert(id>>util__IBits < G(itbl)[id&util__IMask].nstr);
++	return G(itbl)[id&util__IMask].str[id>>util__IBits];
+ }
+ 
+ int
+@@ -238,9 +222,9 @@ argcls(Ins *i, int n)
+ void
+ emit(int op, int k, Ref to, Ref arg0, Ref arg1)
+ {
+-	if (curi == insb)
++	if (GC(curi) == GC(insb))
+ 		die("emit, too many instructions");
+-	*--curi = (Ins){
++	*--GC(curi) = (Ins){
+ 		.op = op, .cls = k,
+ 		.to = to, .arg = {arg0, arg1}
+ 	};
+@@ -337,14 +321,13 @@ phicls(int t, Tmp *tmp)
+ Ref
+ newtmp(char *prfx, int k,  Fn *fn)
+ {
+-	static int n;
+ 	int t;
+ 
+ 	t = fn->ntmp++;
+ 	vgrow(&fn->tmp, fn->ntmp);
+ 	memset(&fn->tmp[t], 0, sizeof(Tmp));
+ 	if (prfx)
+-		strf(fn->tmp[t].name, "%s.%d", prfx, ++n);
++		strf(fn->tmp[t].name, "%s.%d", prfx, ++G(newtmp_n));
+ 	fn->tmp[t].cls = k;
+ 	fn->tmp[t].slot = -1;
+ 	fn->tmp[t].nuse = +1;
+-- 
+2.47.2.vfs.0.1
+

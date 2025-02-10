@@ -711,6 +711,7 @@ def main():
                     continue
                 out.write(line)
                 out.write("\n")
+            out.write("#undef G\n")
             out.write("/*** END FILE: %s ***/\n" % file)
 
         out.write(instr_defns)
