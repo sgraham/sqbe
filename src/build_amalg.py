@@ -395,8 +395,7 @@ def staticize_main_data(contents):
     for line in contents.splitlines():
         if (
             line.startswith("extern Target T")
-            or line.startswith("Target T;")
-            or line.startswith("char debug[")
+            or line.startswith("GlobalContext global_context")
         ):
             line = "static " + line.replace("extern ", "")
         result.append(line)
@@ -440,6 +439,7 @@ def staticize_prototypes(contents):
             line = "static " + line
         elif (
             line.startswith("extern Target T")
+            or line.startswith("extern GlobalContext global_context")
             or line.startswith("extern char debug")
             or line.startswith("extern Typ *")
             or line.startswith("extern Ins ")
@@ -820,6 +820,7 @@ def main():
         # And that the the only exported symbols from sqbe are those we expect
         # (prefixed by `sq_`).
         symsp = subprocess.run(["readelf", "-s", "sqbe.o"], capture_output=True)
+        os.remove("in_c_test.o")
         os.remove("sqbe.o")
         os.remove("in_cpp")
         syms = str(symsp.stdout, encoding="utf-8").splitlines()
