@@ -1,5 +1,8 @@
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
 #endif  // _WIN32
 
 static PState _ps;
@@ -37,27 +40,24 @@ static uint64_t os_page_size(void) {
 #else  // ^^^ _WIN32 / else vvv
 
 static void* os_mem_reserve(uint64_t size) {
-  (void)size;
-  abort();
-  return NULL;
+  void* result = mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (result == MAP_FAILED) {
+    result = NULL;
+  }
+  return result;
 }
 
 static bool os_mem_commit(void* ptr, uint64_t size) {
-  (void)ptr;
-  (void)size;
-  abort();
-  return false;
+  mprotect(ptr, size, PROT_READ|PROT_WRITE);
+  return true;
 }
 
 static void os_mem_release(void* ptr, uint64_t size) {
-  (void)ptr;
-  (void)size;
-  abort();
+  munmap(ptr, size);
 }
 
 static uint64_t os_page_size(void) {
-  abort();
-  return 0;
+  return sysconf(_SC_PAGE_SIZE);
 }
 
 #endif
