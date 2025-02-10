@@ -1,4 +1,4 @@
-From 5bc9481bbcd71cf146a9e628bdef119684d92ced Mon Sep 17 00:00:00 2001
+From ae8405d885bb6fc2c73052e1e2649b83ae3ba512 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
 Subject: [PATCH] Context-ize global and (most) function-static variables
@@ -43,7 +43,7 @@ be maintained as-is because they're used to return created strings.)
  25 files changed, 883 insertions(+), 819 deletions(-)
 
 diff --git a/all.h b/all.h
-index 7402867..1eb2906 100644
+index 7402867..58e77f1 100644
 --- a/all.h
 +++ b/all.h
 @@ -33,6 +33,12 @@ typedef struct Dat Dat;
@@ -209,7 +209,7 @@ index 7402867..1eb2906 100644
 +// `typ`, `insb`, and `curi`, `debug`, and `T`.
 +#define GC(x) global_context.x
 +
-+extern void reinit_global_context(GlobalContext* ctx);
++void reinit_global_context(GlobalContext* ctx);
  
  /* util.c */
  typedef enum {
@@ -1836,7 +1836,7 @@ index 6f40cc7..a443c85 100644
  		printfn(fn, stderr);
  	}
 diff --git a/main.c b/main.c
-index 81604e4..e5778ca 100644
+index 81604e4..8715ad4 100644
 --- a/main.c
 +++ b/main.c
 @@ -3,22 +3,21 @@
@@ -1864,7 +1864,7 @@ index 81604e4..e5778ca 100644
 +	.util__nptr = 1,
  };
  
-+static void
++void
 +reinit_global_context(GlobalContext* ctx) {
 +	memset(ctx, 0, sizeof *ctx);
 +  ctx->util__pool = ctx->util__ptr;

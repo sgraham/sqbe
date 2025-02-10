@@ -1,0 +1,39 @@
+get rid of all malloc/free
+- check if emalloc/free are even paired now?
+  => -fsanitize=address and ASAN_OPTIONS=detect_leaks=1 is clean for `make
+  check` on linux so should be ~good
+- two main lifetimes per-fn and global, vnew() uses Pool which is just to keep a
+  linked list of them, still actually calls calloc for underlying memory
+- for nested functions, it's not quite(?) enough to push/pop GlobalContext
+  because there's stuff that's per sq_init (i.e. per translation unit) rather
+  than per-function. maybe just start with a full GlobalContext and the new one
+  will need to copy some stuff over from the parent one (Target, etc.)
+- insb is the main size of GlobalContext -- do we want all allocations to be
+  tied to GlobalContext too? probably because the implementation doesn't want to
+  know about contexts at all, so it's going to want to allocate/free.
+- want to share Typ across though, hmm
+- maybe get grouped into two arenas first (with asan poisons), and do nested
+  functions later
+
+
+setjmp on init, longjmp/zap on error
+replace err() and die_()
+
+
+sqbe_impl.c has various static/state to merge with GlobalContext somehow
+
+
+current includes are:
+#include <assert.h> (only if SQ_ASSERT not predef)
+#include <ctype.h>  // possibly unused
+#include <inttypes.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>  // probably the stickiest, emit, errors, etc.
+#include <stdlib.h>  // calloc, abs, qsort, abort, alloca, exit, free
+#include <string.h>
+
+not sure whether stdint etc is worth removing, but various functions probably
+can be pretty easily macro optioned

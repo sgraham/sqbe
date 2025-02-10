@@ -1,5 +1,3 @@
-#include "sqbe.h"
-
 static PState _ps;
 
 // Blk lifetimes are per-func
@@ -112,7 +110,7 @@ static Blk* _sqblock_to_internal_blk(SqBlock block) {
 void sq_init(SqTarget target, FILE* output, const char* debug_names) {
   SQ_ASSERT(sq_initialized == SQIS_UNINITIALIZED);
 
-  (void)qbe_main_reinit_global_context;
+  (void)reinit_global_context;
 
   _dbg_name_counter = 0;
 
