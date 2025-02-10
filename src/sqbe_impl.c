@@ -1,3 +1,7 @@
+#if defined(_WIN32)
+#include <windows.h>
+#endif  // _WIN32
+
 static PState _ps;
 
 // Blk lifetimes are per-func
@@ -8,6 +12,147 @@ static int _num_blocks;
 // Lnk lifetimes are sq_init() scoped
 static Lnk _linkage_arena[1<<10];
 static int _num_linkages;
+
+#if defined(_WIN32)
+
+static void* os_mem_reserve(uint64_t size) {
+  return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
+}
+
+static bool os_mem_commit(void* ptr, uint64_t size) {
+  return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) != 0;
+}
+
+static void os_mem_release(void* ptr, uint64_t size) {
+  (void)size;
+  VirtualFree(ptr, 0, MEM_RELEASE);
+}
+
+static uint64_t os_page_size(void) {
+  SYSTEM_INFO sysInfo;
+  GetSystemInfo(&sysInfo);
+  return sysInfo.dwPageSize;
+}
+
+#else  // ^^^ _WIN32 / else vvv
+
+static void* os_mem_reserve(uint64_t size) {
+  (void)size;
+  abort();
+  return NULL;
+}
+
+static bool os_mem_commit(void* ptr, uint64_t size) {
+  (void)ptr;
+  (void)size;
+  abort();
+  return false;
+}
+
+static void os_mem_release(void* ptr, uint64_t size) {
+  (void)ptr;
+  (void)size;
+  abort();
+}
+
+static uint64_t os_page_size(void) {
+  abort();
+  return 0;
+}
+
+#endif
+
+
+#define SQ_ARENA_HEADER_SIZE 128
+typedef struct Arena {
+  uint64_t commit_chunk_size;
+  uint64_t cur_pos;
+  uint64_t cur_commit;
+  uint64_t cur_reserve;
+} Arena;
+
+#if __clang__
+#  define SQ_BRANCH_EXPECT(expr, val) __builtin_expect((expr), (val))
+#else
+#  define SQ_BRANCH_EXPECT(expr, val) (expr)
+#endif
+
+#define SQ_BRANCH_LIKELY(expr) SQ_BRANCH_EXPECT(expr, 1)
+#define SQ_BRANCH_UNLIKELY(expr) SQ_BRANCH_EXPECT(expr, 0)
+#define SQ_MIN(x, y) ((x) <= (y) ? (x) : (y))
+#define SQ_MAX(x, y) ((x) >= (y) ? (x) : (y))
+#define SQ_CLAMP_MAX(x, max) SQ_MIN(x, max)
+#define SQ_CLAMP_MIN(x, min) SQ_MAX(x, min)
+#define SQ_ALIGN_DOWN(n, a) ((n) & ~((a)-1))
+#define SQ_ALIGN_UP(n, a) SQ_ALIGN_DOWN((n) + (a)-1, (a))
+MAKESURE(arena_struct_too_large, sizeof(Arena) < SQ_ARENA_HEADER_SIZE);
+
+static Arena* _global_arena;
+static Arena* _fn_arena;
+
+static Arena* arena_create(uint64_t provided_reserve_size, uint64_t provided_commit_size) {
+  uint64_t commit_size = ALIGN_UP(provided_commit_size, os_page_size());
+  uint64_t reserve_size = ALIGN_UP(provided_reserve_size, os_page_size());
+
+  void* base = os_mem_reserve(reserve_size);
+  SQ_ASSERT(base);
+  if (!os_mem_commit(base, commit_size)) {
+    die("couldn't commit %zu", commit_size);
+  }
+
+  Arena* arena = base;
+  arena->commit_chunk_size = commit_size;
+  arena->cur_pos = SQ_ARENA_HEADER_SIZE;
+  arena->cur_commit = commit_size;
+  arena->cur_reserve = reserve_size;
+
+  // TODO: ASAN
+
+  return arena;
+}
+
+static void arena_destroy(Arena* arena) {
+  os_mem_release(arena, arena->cur_reserve);
+}
+
+static void* arena_push(Arena* arena, size_t size, size_t align) {
+  uint64_t pos_pre = ALIGN_UP(arena->cur_pos, align);
+  uint64_t pos_post = pos_pre + size;
+
+  // Extend commit, if necessary.
+  if (arena->cur_commit < pos_post) {
+    uint64_t commit_post_aligned = pos_post + arena->commit_chunk_size - 1;
+    commit_post_aligned -= commit_post_aligned % arena->commit_chunk_size;
+    uint64_t commit_post_clamped = SQ_CLAMP_MAX(commit_post_aligned, arena->cur_reserve);
+    uint64_t commit_size = commit_post_clamped - arena->cur_commit;
+    unsigned char* commit_ptr = (unsigned char*)arena + arena->cur_commit;
+    os_mem_commit(commit_ptr, commit_size);
+    arena->cur_commit = commit_post_clamped;
+  }
+
+  void* result = NULL;
+  if (arena->cur_commit >= pos_post) {
+    result = (unsigned char*)arena + pos_pre;
+    arena->cur_pos = pos_post;
+  }
+
+  if (SQ_BRANCH_UNLIKELY(result == NULL)) {
+    die("allocation failure");
+  }
+
+  return result;
+}
+
+static uint64_t arena_pos(Arena* arena) {
+  return arena->cur_pos;
+}
+
+static void arena_pop_to(Arena* arena, uint64_t pos) {
+  uint64_t clamped_pos = SQ_CLAMP_MIN(SQ_ARENA_HEADER_SIZE, pos);
+  arena->cur_pos = clamped_pos;
+
+  // TODO: ASAN
+}
 
 typedef enum SqInitStatus {
   SQIS_UNINITIALIZED = 0,
@@ -111,6 +256,13 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
   SQ_ASSERT(sq_initialized == SQIS_UNINITIALIZED);
 
   (void)reinit_global_context;
+  (void)arena_create;
+  (void)arena_destroy;
+  (void)arena_push;
+  (void)arena_pos;
+  (void)arena_pop_to;
+  (void)_fn_arena;
+  (void)_global_arena;
 
   _dbg_name_counter = 0;
 
@@ -241,9 +393,9 @@ SqRef sq_func_param_named(SqType type, const char* name) {
   if (k == Kc) {
     *GC(curi) = (Ins){Oparc, Kl, r, {TYPE(ty)}};
   } else if (k >= Ksb) {
-    *GC(curi) = (Ins){Oparsb + (k - Ksb), Kw, r, {R}};
+    *GC(curi) = (Ins){Oparsb + (k - Ksb), Kw, r, {NULL_R}};
   } else {
-    *GC(curi) = (Ins){Opar, k, r, {R}};
+    *GC(curi) = (Ins){Opar, k, r, {NULL_R}};
   }
   ++GC(curi);
   return _internal_ref_to_sqref(r);
@@ -362,7 +514,7 @@ void sq_i_ret(SqRef val) {
     G(curb)->jmp.type = Jret0;
   } else if (G(rcls) != K0) {
     Ref r = _sqref_to_internal_ref(val);
-    if (req(r, R)) {
+    if (req(r, NULL_R)) {
       err("invalid return value");
     }
     G(curb)->jmp.arg = r;
@@ -384,15 +536,15 @@ SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
     int k = _sqtype_to_cls_and_ty(cas[i].type, &ty);
     Ref r = _sqref_to_internal_ref(cas[i].value);
     // TODO: env
-    if (k == K0 && req(r, R)) {
+    if (k == K0 && req(r, NULL_R)) {
       // This is our hacky special case for where '...' would appear in the call.
       *GC(curi) = (Ins){.op = Oargv};
     } else if (k == Kc) {
-      *GC(curi) = (Ins){Oargc, Kl, R, {TYPE(ty), r}};
+      *GC(curi) = (Ins){Oargc, Kl, NULL_R, {TYPE(ty), r}};
     } else if (k >= Ksb) {
-      *GC(curi) = (Ins){Oargsb + (k - Ksb), Kw, R, {r}};
+      *GC(curi) = (Ins){Oargsb + (k - Ksb), Kw, NULL_R, {r}};
     } else {
-      *GC(curi) = (Ins){Oarg, k, R, {r}};
+      *GC(curi) = (Ins){Oarg, k, NULL_R, {r}};
     }
     ++GC(curi);
   }
@@ -484,7 +636,7 @@ void sq_i_jmp(SqBlock block) {
 
 void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
   Ref r = _sqref_to_internal_ref(cond);
-  if (req(r, R)) {
+  if (req(r, NULL_R)) {
     err("invalid argument for jnz jump");
   }
   G(curb)->jmp.type = Jjnz;
@@ -544,7 +696,7 @@ static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
   GC(curi)->cls = SQ_TYPE_W;
-  GC(curi)->to = R;
+  GC(curi)->to = NULL_R;
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
   GC(curi)->arg[1] = _sqref_to_internal_ref(arg1);
   ++GC(curi);
@@ -559,7 +711,7 @@ static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef
   GC(curi)->cls = size_class.u;
   GC(curi)->to = into;
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
-  GC(curi)->arg[1] = R;
+  GC(curi)->arg[1] = NULL_R;
   ++GC(curi);
   _ps = PIns;
 }
