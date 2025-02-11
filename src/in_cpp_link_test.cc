@@ -1,6 +1,7 @@
 #include "sqbe.h"
 
 int main() {
-  sq_init(SQ_TARGET_DEFAULT, stdout, "");
+  SqConfiguration config = SQ_CONFIGURATION_DEFAULT;
+  sq_init(&config);
   sq_shutdown();
 }
