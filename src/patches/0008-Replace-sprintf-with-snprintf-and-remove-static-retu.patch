@@ -1,0 +1,184 @@
+From 2be1a8ab20c589bba330d136a47581176d6a6e45 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Mon, 10 Feb 2025 17:44:43 -0800
+Subject: [PATCH] Replace sprintf with snprintf and remove static return
+ buffers
+
+ASAN builds complain about sprintf being deprecated (at least on Mac) and it's
+pretty trivial to just use snprintf anyway.
+
+Additionally, there were two places that were printing into a buffer to return
+register names, and then returning that (so that the caller could avoid
+declaring a temporary I guess). Since they're just for register names, just
+make a few silly lookup tables to avoid the problem. (This would have been a
+footgun later for multi-context/multi-thread use).
+---
+ amd64/emit.c | 10 ++++++----
+ amd64/isel.c |  2 +-
+ arm64/emit.c | 37 +++++++++++++++++++++++++++++--------
+ arm64/isel.c |  2 +-
+ parse.c      |  2 +-
+ rv64/emit.c  |  2 +-
+ rv64/isel.c  |  2 +-
+ 7 files changed, 40 insertions(+), 17 deletions(-)
+
+diff --git a/amd64/emit.c b/amd64/emit.c
+index 32732c6..56fef5a 100644
+--- a/amd64/emit.c
++++ b/amd64/emit.c
+@@ -204,15 +204,17 @@ emitcon(Con *con, E *e)
+ 	}
+ }
+ 
++static char* xmm_regs[] = {
++    "xmm0", "xmm1", "xmm2",  "xmm3",  "xmm4",  "xmm5",  "xmm6",  "xmm7",
++    "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
++};
++
+ static char *
+ regtoa(int reg, int sz)
+ {
+-	static char buf[6];
+-
+ 	assert(reg <= XMM15);
+ 	if (reg >= XMM0) {
+-		sprintf(buf, "xmm%d", reg-XMM0);
+-		return buf;
++    return xmm_regs[reg-XMM0];
+ 	} else
+ 		return rname[reg][sz];
+ }
+diff --git a/amd64/isel.c b/amd64/isel.c
+index 85585cc..8a9bb92 100644
+--- a/amd64/isel.c
++++ b/amd64/isel.c
+@@ -92,7 +92,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+ 		 * add symbol prefixes on the apple
+ 		 * target variant
+ 		 */
+-		sprintf(buf, "\"%sfp%d\"", GC(T).asloc, n);
++		snprintf(buf, sizeof(buf), "\"%sfp%d\"", GC(T).asloc, n);
+ 		a.offset.sym.id = intern(buf);
+ 		fn->mem[fn->nmem-1] = a;
+ 	}
+diff --git a/arm64/emit.c b/arm64/emit.c
+index 645529f..5cd72f0 100644
+--- a/arm64/emit.c
++++ b/arm64/emit.c
+@@ -111,32 +111,53 @@ static struct {
+ 	{ NOp, 0, 0 }
+ };
+ 
++static char* w_regs[] = {
++    "w0",  "w1",  "w2",  "w3",  "w4",  "w5",  "w6",  "w7",  "w8",  "w9",  "w10",
++    "w11", "w12", "w13", "w14", "w15", "w16", "w17", "w18", "w19", "w20", "w21",
++    "w22", "w23", "w24", "w25", "w26", "w27", "w28", "w29", "w30",
++};
++
++static char* x_regs[] = {
++    "x0",  "x1",  "x2",  "x3",  "x4",  "x5",  "x6",  "x7",  "x8",  "x9",  "x10",
++    "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21",
++    "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30",
++};
++
++static char* s_regs[] = {
++    "s0",  "s1",  "s2",  "s3",  "s4",  "s5",  "s6",  "s7",  "s8",  "s9",  "s10",
++    "s11", "s12", "s13", "s14", "s15", "s16", "s17", "s18", "s19", "s20", "s21",
++    "s22", "s23", "s24", "s25", "s26", "s27", "s28", "s29", "s30",
++};
++
++static char* d_regs[] = {
++    "d0",  "d1",  "d2",  "d3",  "d4",  "d5",  "d6",  "d7",  "d8",  "d9",  "d10",
++    "d11", "d12", "d13", "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21",
++    "d22", "d23", "d24", "d25", "d26", "d27", "d28", "d29", "d30",
++};
++
+ static char *
+ rname(int r, int k)
+ {
+-	static char buf[4];
+-
+ 	if (r == SP) {
+ 		assert(k == Kl);
+-		sprintf(buf, "sp");
++    return "sp";
+ 	}
+ 	else if (R0 <= r && r <= LR)
+ 		switch (k) {
+ 		default: die("invalid class");
+-		case Kw: sprintf(buf, "w%d", r-R0); break;
++		case Kw: return w_regs[r-R0]; break;
+ 		case Kx:
+-		case Kl: sprintf(buf, "x%d", r-R0); break;
++		case Kl: return x_regs[r-R0]; break;
+ 		}
+ 	else if (V0 <= r && r <= V30)
+ 		switch (k) {
+ 		default: die("invalid class");
+-		case Ks: sprintf(buf, "s%d", r-V0); break;
++		case Ks: return s_regs[r-V0]; break;
+ 		case Kx:
+-		case Kd: sprintf(buf, "d%d", r-V0); break;
++		case Kd: return d_regs[r-V0]; break;
+ 		}
+ 	else
+ 		die("invalid register");
+-	return buf;
+ }
+ 
+ static uint64_t
+diff --git a/arm64/isel.c b/arm64/isel.c
+index 9cf3a03..32a9202 100644
+--- a/arm64/isel.c
++++ b/arm64/isel.c
+@@ -112,7 +112,7 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
+ 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+ 			vgrow(&fn->con, ++fn->ncon);
+ 			c = &fn->con[fn->ncon-1];
+-			sprintf(buf, "\"%sfp%d\"", GC(T).asloc, n);
++			snprintf(buf, sizeof(buf), "\"%sfp%d\"", GC(T).asloc, n);
+ 			*c = (Con){.type = CAddr};
+ 			c->sym.id = intern(buf);
+ 			r2 = newtmp("isel", Kl, fn);
+diff --git a/parse.c b/parse.c
+index b9dd1e3..4c91d59 100644
+--- a/parse.c
++++ b/parse.c
+@@ -355,7 +355,7 @@ expect(int t)
+ 		return;
+ 	s1 = ttoa[t] ? ttoa[t] : "??";
+ 	s2 = ttoa[t1] ? ttoa[t1] : "??";
+-	sprintf(buf, "%s expected, got %s instead", s1, s2);
++	snprintf(buf, sizeof(buf), "%s expected, got %s instead", s1, s2);
+ 	err(buf);
+ }
+ 
+diff --git a/rv64/emit.c b/rv64/emit.c
+index 81fb65a..ed24e7e 100644
+--- a/rv64/emit.c
++++ b/rv64/emit.c
+@@ -235,7 +235,7 @@ loadaddr(Con *c, char *rn, FILE *f)
+ 
+ 	if (c->sym.type == SThr) {
+ 		if (c->bits.i)
+-			sprintf(off, "+%"PRIi64, c->bits.i);
++			snprintf(off, sizeof(off), "+%"PRIi64, c->bits.i);
+ 		else
+ 			off[0] = 0;
+ 		fprintf(f, "\tlui %s, %%tprel_hi(%s)%s\n",
+diff --git a/rv64/isel.c b/rv64/isel.c
+index 8863b91..7976639 100644
+--- a/rv64/isel.c
++++ b/rv64/isel.c
+@@ -44,7 +44,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+ 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+ 			vgrow(&fn->con, ++fn->ncon);
+ 			c = &fn->con[fn->ncon-1];
+-			sprintf(buf, "\"%sfp%d\"", GC(T).asloc, n);
++			snprintf(buf, sizeof(buf), "\"%sfp%d\"", GC(T).asloc, n);
+ 			*c = (Con){.type = CAddr};
+ 			c->sym.id = intern(buf);
+ 			emit(Oload, k, r1, CON(c-fn->con), NULL_R);
+-- 
+2.39.5 (Apple Git-154)
+

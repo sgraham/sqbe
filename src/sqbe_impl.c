@@ -220,13 +220,13 @@ static int _dbg_name_counter;
 static Dat _curd;
 static Lnk _curd_lnk;
 
-static void _gen_dbg_name(char* into, const char* prefix) {
-  sprintf(into, "%s_%d", prefix ? prefix : "", _dbg_name_counter++);
+static void _gen_dbg_name(char* into, size_t len, const char* prefix) {
+  snprintf(into, len, "%s_%d", prefix ? prefix : "", _dbg_name_counter++);
 }
 
-#define SQ_NAMED_IF_DEBUG(into, provided) \
-  if (global_context.main__dbg) {         \
-    _gen_dbg_name(into, provided);        \
+#define SQ_NAMED_IF_DEBUG(into, provided)        \
+  if (global_context.main__dbg) {                \
+    _gen_dbg_name(into, sizeof(into), provided); \
   }
 
 #define SQ_COUNTOF(a) (sizeof(a) / sizeof(a[0]))
@@ -304,11 +304,7 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
   SQ_ASSERT(sq_initialized == SQIS_UNINITIALIZED);
 
   (void)reinit_global_context;
-  (void)arena_create;
-  (void)arena_destroy;
-  (void)arena_push;
   (void)arena_pos;
-  (void)arena_pop_to;
   _fn_arena = arena_create(64 << 20, 64 << 10);
   _global_arena = arena_create(64 << 20, 64 << 10);
 
