@@ -49,5 +49,8 @@ int main(int argc, char** argv) {
 
   sq_func_end();
 
-  sq_shutdown();
+  if (!sq_shutdown()) {
+    return 1;
+  }
+  return 0;
 }

@@ -623,6 +623,7 @@ def main():
                 contents = remove_function(contents, "void *", "alloc")
                 contents = remove_function(contents, "void", "freeall")
                 contents = remove_function(contents, "void", "qbe_free")
+                contents = remove_function(contents, "void", "die_")
 
             if file == "parse.c":
                 contents = remove_function(contents, "void", "parse")

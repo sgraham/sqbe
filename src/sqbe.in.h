@@ -38,6 +38,9 @@ typedef enum SqTarget {
   SQ_TARGET_RV64,         //
 } SqTarget;
 
+
+typedef int (*SqOutputFn)(const char* fmt, va_list ap);
+
 typedef struct SqConfiguration {
   // SQ_TARGET_DEFAULT for compiling for the current (host) platform, otherwise
   // specify the target to cross-compile to.
@@ -69,18 +72,26 @@ typedef struct SqConfiguration {
   unsigned int function_commit_chunk_size;
   unsigned int max_compiler_global_reserve;
   unsigned int global_commit_chunk_size;
+
+  // Customizable output, all error messages, etc. will be vectored through this
+  // function. If NULL, goes to stdout.
+  SqOutputFn output_function;
 } SqConfiguration;
 
-#define SQ_CONFIGURATION_DEFAULT                                                       \
-  (SqConfiguration) {                                                                  \
-    .target = SQ_TARGET_DEFAULT, .output = stdout, .debug_flags = "",                  \
-    .max_blocks_per_function = 2048, .max_linkage_definitions = 256,                   \
-    .max_compiler_function_reserve = 64 << 20, .function_commit_chunk_size = 64 << 10, \
-    .max_compiler_global_reserve = 64 << 20, .global_commit_chunk_size = 64 << 10      \
-  }
+#define SQ_CONFIGURATION_DEFAULT                                \
+  ((SqConfiguration){.target = SQ_TARGET_DEFAULT,               \
+                     .output = stdout,                          \
+                     .debug_flags = "",                         \
+                     .max_blocks_per_function = 2048,           \
+                     .max_linkage_definitions = 256,            \
+                     .max_compiler_function_reserve = 64 << 20, \
+                     .function_commit_chunk_size = 64 << 10,    \
+                     .max_compiler_global_reserve = 64 << 20,   \
+                     .global_commit_chunk_size = 64 << 10,      \
+                     .output_function = NULL})
 
 void sq_init(SqConfiguration* config);
-void sq_shutdown(void);
+bool sq_shutdown(void);
 
 SqLinkage sq_linkage_create(int alignment,
                             bool exported,

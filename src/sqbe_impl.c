@@ -5,6 +5,20 @@
 #include <unistd.h>
 #endif  // _WIN32
 
+#include <setjmp.h>
+
+static jmp_buf _main_jmpbuf;
+
+static SqOutputFn _output_func;
+
+static int usermsgf(const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int ret = _output_func(fmt, ap);
+  va_end(ap);
+  return ret;
+}
+
 static PState _ps;
 
 static Blk* _block_pool;
@@ -207,6 +221,7 @@ typedef enum SqInitStatus {
   SQIS_UNINITIALIZED = 0,
   SQIS_INITIALIZED_EMIT_FIN = 1,
   SQIS_INITIALIZED_NO_FIN = 2,
+  SQIS_ERROR = 3,
 } SqInitStatus;
 static SqInitStatus sq_initialized;
 
@@ -233,19 +248,39 @@ static void _gen_dbg_name(char* into, size_t len, const char* prefix) {
 #define SQ_COUNTOF(a) (sizeof(a) / sizeof(a[0]))
 #define SQ_COUNTOFI(a) ((int)(sizeof(a) / sizeof(a[0])))
 
+#define SQ_BAIL_ON_ERROR_VOID()       \
+  do {                                \
+    if (sq_initialized == SQIS_ERROR) \
+      return;                         \
+  } while (0)
+
+#define SQ_BAIL_ON_ERROR_FALSE()      \
+  do {                                \
+    if (sq_initialized == SQIS_ERROR) \
+      return false;                   \
+  } while (0)
+
 #ifdef _MSC_VER
 #  define alloca _alloca
 #endif
 
-static void err(char* s, ...) {
-  va_list args;
-  va_start(args, s);
-  fprintf(stderr, "libqbe: ");
-  vfprintf(stderr, s, args);
-  fprintf(stderr, "\n");
-  va_end(args);
-  // TODO: setjmp/longjmp w/ clean up
-  exit(1);
+static void err(char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  _output_func(fmt, ap);
+  va_end(ap);
+  usermsgf("\n");
+  longjmp(_main_jmpbuf, 1);
+}
+
+static void die_(char* file, char* fmt, ...) {
+  usermsgf("%s: internal error: ", file);
+  va_list ap;
+  va_start(ap, fmt);
+  _output_func(fmt, ap);
+  va_end(ap);
+  usermsgf("\n");
+  abort();
 }
 
 SqLinkage sq_linkage_create(int alignment,
@@ -298,6 +333,11 @@ static int _sqtype_to_cls_and_ty(SqType type, int* ty) {
   }
 }
 
+static int _default_output_fn(const char* fmt, va_list ap) {
+  int ret = vfprintf(stdout, fmt, ap);
+  return ret;
+}
+
 static Blk* _sqblock_to_internal_blk(SqBlock block) {
   SQ_ASSERT(block.u < _num_blocks);
   return &_block_pool[block.u];
@@ -322,6 +362,8 @@ void sq_init(SqConfiguration* config) {
   _max_linkages = config->max_linkage_definitions;
   _num_linkages = 0;
   _linkage_pool = arena_push(_global_arena, sizeof(Lnk) * _max_linkages, _Alignof(Lnk));
+
+  _output_func = config->output_function ? config->output_function : _default_output_fn;
 
   _dbg_name_counter = 0;
 
@@ -399,19 +441,25 @@ void sq_init(SqConfiguration* config) {
   sq_initialized = global_context.main__dbg ? SQIS_INITIALIZED_NO_FIN : SQIS_INITIALIZED_EMIT_FIN;
 }
 
-void sq_shutdown(void) {
-  SQ_ASSERT(sq_initialized != SQIS_UNINITIALIZED);
-  if (sq_initialized == SQIS_INITIALIZED_EMIT_FIN) {
-    GC(T).emitfin(global_context.main__outf);
-  }
-
-  // TODO: pool flushes, etc
-  sq_initialized = SQIS_UNINITIALIZED;
+static void _clear_initialized_state(SqInitStatus status) {
+  sq_initialized = status;
 
   arena_destroy(_fn_arena);
   arena_destroy(_global_arena);
   _dbg_name_counter = 0;
   _num_linkages = 0;
+}
+
+bool sq_shutdown(void) {
+  SQ_BAIL_ON_ERROR_FALSE();
+
+  SQ_ASSERT(sq_initialized != SQIS_UNINITIALIZED);
+  if (sq_initialized == SQIS_INITIALIZED_EMIT_FIN) {
+    GC(T).emitfin(global_context.main__outf);
+  }
+
+  _clear_initialized_state(SQIS_UNINITIALIZED);
+  return true;
 }
 
 SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
@@ -492,6 +540,11 @@ SqRef sq_const_double(double d) {
 // than directly a Ref because Con Refs are stored per function (so when calling
 // the function, we need to create a new one in the caller).
 SqSymbol sq_func_end(void) {
+  if (setjmp(_main_jmpbuf) != 0) {
+    _clear_initialized_state(SQIS_ERROR);
+    return (SqSymbol){0};
+  }
+
   if (!G(curb)) {
     err("empty function");
   }
