@@ -38,25 +38,48 @@ typedef enum SqTarget {
   SQ_TARGET_RV64,         //
 } SqTarget;
 
-/*
-debug_flags string can contain the following characters to cause QBE to output
-information to stderr while compiling. NOTE: no final assembly will be emitted
-if string other than "" is specified.
-- P: parsing
-- M: memory optimization
-- N: ssa construction
-- C: copy elimination
-- F: constant folding
-- A: abi lowering
-- I: instruction selection
-- L: liveness
-- S: spilling
-- R: reg. allocation
-- T: types
-*/
-void sq_init(SqTarget target /*=SQ_TARGET_DEFAULT*/,
-             FILE* output /*=stdout*/,
-             const char* debug_flags /*=""*/);
+typedef struct SqConfiguration {
+  // SQ_TARGET_DEFAULT for compiling for the current (host) platform, otherwise
+  // specify the target to cross-compile to.
+  SqTarget target;
+
+  // Where the final assembler is written to.
+  FILE* output;
+
+  // debug_flags string can contain the following characters to cause QBE to output
+  // information to stderr while compiling. NOTE: no final assembly will be emitted
+  // if string other than "" is specified.
+  // - P: parsing
+  // - M: memory optimization
+  // - N: ssa construction
+  // - C: copy elimination
+  // - F: constant folding
+  // - A: abi lowering
+  // - I: instruction selection
+  // - L: liveness
+  // - S: spilling
+  // - R: reg. allocation
+  // - T: types
+  const char* debug_flags;
+
+  // TODO: document, mostly the defaults should be fine though.
+  size_t max_blocks_per_function;
+  size_t max_linkage_definitions;
+  size_t max_compiler_function_reserve;
+  size_t function_commit_chunk_size;
+  size_t max_compiler_global_reserve;
+  size_t global_commit_chunk_size;
+} SqConfiguration;
+
+#define SQ_CONFIGURATION_DEFAULT                                                       \
+  (SqConfiguration) {                                                                  \
+    .target = SQ_TARGET_DEFAULT, .output = stdout, .debug_flags = "",                  \
+    .max_blocks_per_function = 2048, .max_linkage_definitions = 256,                   \
+    .max_compiler_function_reserve = 64 << 20, .function_commit_chunk_size = 64 << 10, \
+    .max_compiler_global_reserve = 64 << 20, .global_commit_chunk_size = 64 << 10      \
+  }
+
+void sq_init(SqConfiguration* config);
 void sq_shutdown(void);
 
 SqLinkage sq_linkage_create(int alignment,

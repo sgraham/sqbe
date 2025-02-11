@@ -7,14 +7,13 @@
 
 static PState _ps;
 
-// Blk lifetimes are per-func
-// This array is ~2M, perhaps sq_init arg to size this?
-static Blk _block_arena[8<<10];
-static int _num_blocks;
+static Blk* _block_pool;
+static size_t _num_blocks;
+static size_t _max_blocks;
 
-// Lnk lifetimes are sq_init() scoped
-static Lnk _linkage_arena[1<<10];
-static int _num_linkages;
+static Lnk* _linkage_pool;
+static size_t _num_linkages;
+static size_t _max_linkages;
 
 #if defined(_WIN32)
 
@@ -167,9 +166,11 @@ static void* arena_push(Arena* arena, size_t size, size_t align) {
   return result;
 }
 
+#if 0
 static uint64_t arena_pos(Arena* arena) {
   return arena->cur_pos;
 }
+#endif
 
 static void arena_pop_to(Arena* arena, uint64_t pos) {
   uint64_t clamped_pos = SQ_CLAMP_MIN(SQ_ARENA_HEADER_SIZE, pos);
@@ -253,9 +254,9 @@ SqLinkage sq_linkage_create(int alignment,
                             bool common,
                             const char* section_name,
                             const char* section_flags) {
-  SQ_ASSERT(_num_linkages < SQ_COUNTOFI(_linkage_arena));
+  SQ_ASSERT(_num_linkages < _max_linkages);
   SqLinkage ret = {_num_linkages++};
-  _linkage_arena[ret.u] = (Lnk){
+  _linkage_pool[ret.u] = (Lnk){
       .export = exported,
       .thread = tls,
       .common = common,
@@ -267,7 +268,8 @@ SqLinkage sq_linkage_create(int alignment,
 }
 
 static Lnk _linkage_to_internal_lnk(SqLinkage linkage) {
-  return _linkage_arena[linkage.u];
+  SQ_ASSERT(linkage.u < _num_linkages);
+  return _linkage_pool[linkage.u];
 }
 
 MAKESURE(ref_sizes_match, sizeof(SqRef) == sizeof(Ref));
@@ -297,16 +299,29 @@ static int _sqtype_to_cls_and_ty(SqType type, int* ty) {
 }
 
 static Blk* _sqblock_to_internal_blk(SqBlock block) {
-  return &_block_arena[block.u];
+  SQ_ASSERT(block.u < _num_blocks);
+  return &_block_pool[block.u];
 }
 
-void sq_init(SqTarget target, FILE* output, const char* debug_names) {
+void sq_init(SqConfiguration* config) {
   SQ_ASSERT(sq_initialized == SQIS_UNINITIALIZED);
 
-  (void)reinit_global_context;
-  (void)arena_pos;
-  _fn_arena = arena_create(64 << 20, 64 << 10);
-  _global_arena = arena_create(64 << 20, 64 << 10);
+  reinit_global_context(&global_context);
+
+  _fn_arena =
+      arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
+  _global_arena =
+      arena_create(config->max_compiler_global_reserve, config->global_commit_chunk_size);
+
+  // Don't think there's any need to make these separate from the main fn/global
+  // arenas. Blk are Fn scoped, Lnk are global.
+  _max_blocks = config->max_blocks_per_function;
+  _num_blocks = 0;
+  _block_pool = arena_push(_fn_arena, sizeof(Blk) * _max_blocks, _Alignof(Blk));
+
+  _max_linkages = config->max_linkage_definitions;
+  _num_linkages = 0;
+  _linkage_pool = arena_push(_global_arena, sizeof(Lnk) * _max_linkages, _Alignof(Lnk));
 
   _dbg_name_counter = 0;
 
@@ -321,7 +336,7 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
 
   (void)qbe_main_dbgfile;  // TODO
 
-  switch (target) {
+  switch (config->target) {
     case SQ_TARGET_AMD64_APPLE:
       GC(T) = T_amd64_apple;
       break;
@@ -367,10 +382,10 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
     }
   }
 
-  global_context.main__outf = output;
+  global_context.main__outf = config->output;
 
   memset(GC(debug), 0, sizeof(GC(debug)));
-  for (const char* d = debug_names; *d; ++d) {
+  for (const char* d = config->debug_flags; *d; ++d) {
     GC(debug)[(int)*d] = 1;
   }
 
@@ -380,7 +395,7 @@ void sq_init(SqTarget target, FILE* output, const char* debug_names) {
   vgrow(&GC(typ), _ntyp + SQ_TYPE_0 + 1);
   _ntyp += SQ_TYPE_0 + 1;
 
-  global_context.main__dbg = debug_names[0] != 0;
+  global_context.main__dbg = config->debug_flags[0] != 0;
   sq_initialized = global_context.main__dbg ? SQIS_INITIALIZED_NO_FIN : SQIS_INITIALIZED_EMIT_FIN;
 }
 
@@ -527,7 +542,7 @@ SqRef sq_extern(const char* name) {
 }
 
 SqBlock sq_block_declare_named(const char* name) {
-  SQ_ASSERT(_num_blocks < SQ_COUNTOFI(_block_arena));
+  SQ_ASSERT(_num_blocks < _max_blocks);
   SqBlock ret = {_num_blocks++};
   Blk* blk = _sqblock_to_internal_blk(ret);
   memset(blk, 0, sizeof(Blk));
