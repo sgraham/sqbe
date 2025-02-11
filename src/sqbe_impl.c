@@ -8,12 +8,12 @@
 static PState _ps;
 
 static Blk* _block_pool;
-static size_t _num_blocks;
-static size_t _max_blocks;
+static unsigned int _num_blocks;
+static unsigned int _max_blocks;
 
 static Lnk* _linkage_pool;
-static size_t _num_linkages;
-static size_t _max_linkages;
+static unsigned int _num_linkages;
+static unsigned int _max_linkages;
 
 #if defined(_WIN32)
 

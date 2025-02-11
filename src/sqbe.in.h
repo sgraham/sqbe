@@ -63,12 +63,12 @@ typedef struct SqConfiguration {
   const char* debug_flags;
 
   // TODO: document, mostly the defaults should be fine though.
-  size_t max_blocks_per_function;
-  size_t max_linkage_definitions;
-  size_t max_compiler_function_reserve;
-  size_t function_commit_chunk_size;
-  size_t max_compiler_global_reserve;
-  size_t global_commit_chunk_size;
+  unsigned int max_blocks_per_function;
+  unsigned int max_linkage_definitions;
+  unsigned int max_compiler_function_reserve;
+  unsigned int function_commit_chunk_size;
+  unsigned int max_compiler_global_reserve;
+  unsigned int global_commit_chunk_size;
 } SqConfiguration;
 
 #define SQ_CONFIGURATION_DEFAULT                                                       \
