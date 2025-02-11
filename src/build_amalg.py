@@ -448,7 +448,8 @@ def main():
     if not os.path.exists(QBE_ROOT):
         subprocess.check_call(["git", "clone", "git://c9x.me/qbe.git"])
 
-    subprocess.check_call(["git", "fetch", "origin"], cwd=QBE_ROOT)
+    if len(sys.argv) > 1 and sys.argv[1] == "--fetch":
+        subprocess.check_call(["git", "fetch", "origin"], cwd=QBE_ROOT)
     subprocess.check_call(["git", "checkout", "origin/master"], cwd=QBE_ROOT)
     for patch in sorted(glob.glob("patches/*.patch")):
         subprocess.check_call(["git", "am", os.path.join("..", patch)], cwd=QBE_ROOT)

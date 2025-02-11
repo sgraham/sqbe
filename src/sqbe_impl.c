@@ -71,10 +71,32 @@ typedef struct Arena {
   uint64_t cur_reserve;
 } Arena;
 
-#if __clang__
+#if defined(__clang__)
 #  define SQ_BRANCH_EXPECT(expr, val) __builtin_expect((expr), (val))
 #else
 #  define SQ_BRANCH_EXPECT(expr, val) (expr)
+#endif
+
+#if defined(_WIN32)
+#  if defined(__SANITIZE_ADDRESS__)
+#    define SQ_ASAN_ENABLED 1
+#  endif
+#elif defined(__clang__)
+#  if defined(__has_feature)
+#    if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+#      define SQ_ASAN_ENABLED 1
+#    endif
+#  endif
+#endif
+
+#if defined(SQ_ASAN_ENABLED)
+void __asan_poison_memory_region(void const volatile *addr, size_t size);
+void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+#  define SQ_ASAN_POISON_REGION(addr, size) __asan_poison_memory_region((addr), (size))
+#  define SQ_ASAN_UNPOISON_REGION(addr, size) __asan_unpoison_memory_region((addr), (size))
+#else
+#  define SQ_ASAN_POISON_REGION(addr, size) ((void)(addr), (void)(size))
+#  define SQ_ASAN_UNPOISON_REGION(addr, size) ((void)(addr), (void)(size))
 #endif
 
 #define SQ_BRANCH_LIKELY(expr) SQ_BRANCH_EXPECT(expr, 1)
@@ -106,7 +128,8 @@ static Arena* arena_create(uint64_t provided_reserve_size, uint64_t provided_com
   arena->cur_commit = commit_size;
   arena->cur_reserve = reserve_size;
 
-  // TODO: ASAN
+  SQ_ASAN_POISON_REGION(base, commit_size);
+  SQ_ASAN_UNPOISON_REGION(base, SQ_ARENA_HEADER_SIZE);
 
   return arena;
 }
@@ -134,6 +157,7 @@ static void* arena_push(Arena* arena, size_t size, size_t align) {
   if (arena->cur_commit >= pos_post) {
     result = (unsigned char*)arena + pos_pre;
     arena->cur_pos = pos_post;
+    SQ_ASAN_UNPOISON_REGION(result, size);
   }
 
   if (SQ_BRANCH_UNLIKELY(result == NULL)) {
@@ -149,9 +173,10 @@ static uint64_t arena_pos(Arena* arena) {
 
 static void arena_pop_to(Arena* arena, uint64_t pos) {
   uint64_t clamped_pos = SQ_CLAMP_MIN(SQ_ARENA_HEADER_SIZE, pos);
-  arena->cur_pos = clamped_pos;
 
-  // TODO: ASAN
+  SQ_ASAN_POISON_REGION((unsigned char*)arena + clamped_pos, arena->cur_pos - clamped_pos);
+
+  arena->cur_pos = clamped_pos;
 }
 
 void* emalloc(size_t n) {

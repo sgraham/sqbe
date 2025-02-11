@@ -33,7 +33,7 @@ else:
 
     def test_cc(in_file, out_bin):
         proc = subprocess.run(
-            ["clang", "-I../src", in_file, "-o", out_bin], check=True
+            ["clang", "-fsanitize=address", "-I../src", in_file, "-o", out_bin], check=True
         )
 
 
@@ -86,7 +86,10 @@ def do_test(f):
     sys.stdout.flush()
     expected = get_expected_output(f)
     test_cc(f, "tmp.exe")
-    subprocess.run(["./tmp.exe", "tmp.s"], check=True)
+    env = None
+    if sys.platform == 'darwin':
+        env = {"MallocNanoZone": "0"}
+    subprocess.run(["./tmp.exe", "tmp.s"], check=True, env=env)
     gen_cc("tmp.s", "gen.exe")
     proc = subprocess.run(
         ["./gen.exe"], capture_output=True, check=True, universal_newlines=True
