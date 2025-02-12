@@ -11,7 +11,7 @@ static jmp_buf _main_jmpbuf;
 
 static SqOutputFn _output_func;
 
-static int usermsgf(const char* fmt, ...) {
+static int sq_usermsgf(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   int ret = _output_func(fmt, ap);
@@ -77,12 +77,12 @@ static uint64_t os_page_size(void) {
 
 
 #define SQ_ARENA_HEADER_SIZE 128
-typedef struct Arena {
+typedef struct SqArena {
   uint64_t commit_chunk_size;
   uint64_t cur_pos;
   uint64_t cur_commit;
   uint64_t cur_reserve;
-} Arena;
+} SqArena;
 
 #if defined(__clang__)
 #  define SQ_BRANCH_EXPECT(expr, val) __builtin_expect((expr), (val))
@@ -120,12 +120,12 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #define SQ_CLAMP_MIN(x, min) SQ_MAX(x, min)
 #define SQ_ALIGN_DOWN(n, a) ((n) & ~((a)-1))
 #define SQ_ALIGN_UP(n, a) SQ_ALIGN_DOWN((n) + (a)-1, (a))
-MAKESURE(arena_struct_too_large, sizeof(Arena) < SQ_ARENA_HEADER_SIZE);
+MAKESURE(arena_struct_too_large, sizeof(SqArena) < SQ_ARENA_HEADER_SIZE);
 
-static Arena* _global_arena;
-static Arena* _fn_arena;
+static SqArena* _global_arena;
+static SqArena* _fn_arena;
 
-static Arena* arena_create(uint64_t provided_reserve_size, uint64_t provided_commit_size) {
+static SqArena* arena_create(uint64_t provided_reserve_size, uint64_t provided_commit_size) {
   uint64_t commit_size = ALIGN_UP(provided_commit_size, os_page_size());
   uint64_t reserve_size = ALIGN_UP(provided_reserve_size, os_page_size());
 
@@ -135,7 +135,7 @@ static Arena* arena_create(uint64_t provided_reserve_size, uint64_t provided_com
     die("couldn't commit %zu", commit_size);
   }
 
-  Arena* arena = base;
+  SqArena* arena = base;
   arena->commit_chunk_size = commit_size;
   arena->cur_pos = SQ_ARENA_HEADER_SIZE;
   arena->cur_commit = commit_size;
@@ -147,11 +147,11 @@ static Arena* arena_create(uint64_t provided_reserve_size, uint64_t provided_com
   return arena;
 }
 
-static void arena_destroy(Arena* arena) {
+static void arena_destroy(SqArena* arena) {
   os_mem_release(arena, arena->cur_reserve);
 }
 
-static void* arena_push(Arena* arena, size_t size, size_t align) {
+static void* arena_push(SqArena* arena, size_t size, size_t align) {
   uint64_t pos_pre = ALIGN_UP(arena->cur_pos, align);
   uint64_t pos_post = pos_pre + size;
 
@@ -181,12 +181,12 @@ static void* arena_push(Arena* arena, size_t size, size_t align) {
 }
 
 #if 0
-static uint64_t arena_pos(Arena* arena) {
+static uint64_t arena_pos(SqArena* arena) {
   return arena->cur_pos;
 }
 #endif
 
-static void arena_pop_to(Arena* arena, uint64_t pos) {
+static void arena_pop_to(SqArena* arena, uint64_t pos) {
   uint64_t clamped_pos = SQ_CLAMP_MIN(SQ_ARENA_HEADER_SIZE, pos);
 
   SQ_ASAN_POISON_REGION((unsigned char*)arena + clamped_pos, arena->cur_pos - clamped_pos);
@@ -277,17 +277,17 @@ static void err(char* fmt, ...) {
   va_start(ap, fmt);
   _output_func(fmt, ap);
   va_end(ap);
-  usermsgf("\n");
+  sq_usermsgf("\n");
   longjmp(_main_jmpbuf, 1);
 }
 
 static void die_(char* file, char* fmt, ...) {
-  usermsgf("%s: internal error: ", file);
+  sq_usermsgf("%s: internal error: ", file);
   va_list ap;
   va_start(ap, fmt);
   _output_func(fmt, ap);
   va_end(ap);
-  usermsgf("\n");
+  sq_usermsgf("\n");
   abort();
 }
 
