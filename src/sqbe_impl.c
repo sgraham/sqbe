@@ -120,12 +120,12 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #define SQ_CLAMP_MIN(x, min) SQ_MAX(x, min)
 #define SQ_ALIGN_DOWN(n, a) ((n) & ~((a)-1))
 #define SQ_ALIGN_UP(n, a) SQ_ALIGN_DOWN((n) + (a)-1, (a))
-MAKESURE(arena_struct_too_large, sizeof(SqArena) < SQ_ARENA_HEADER_SIZE);
+MAKESURE(sq_arena_struct_too_large, sizeof(SqArena) < SQ_ARENA_HEADER_SIZE);
 
 static SqArena* _global_arena;
 static SqArena* _fn_arena;
 
-static SqArena* arena_create(uint64_t provided_reserve_size, uint64_t provided_commit_size) {
+static SqArena* sq_arena_create(uint64_t provided_reserve_size, uint64_t provided_commit_size) {
   uint64_t commit_size = ALIGN_UP(provided_commit_size, os_page_size());
   uint64_t reserve_size = ALIGN_UP(provided_reserve_size, os_page_size());
 
@@ -147,11 +147,11 @@ static SqArena* arena_create(uint64_t provided_reserve_size, uint64_t provided_c
   return arena;
 }
 
-static void arena_destroy(SqArena* arena) {
+static void sq_arena_destroy(SqArena* arena) {
   os_mem_release(arena, arena->cur_reserve);
 }
 
-static void* arena_push(SqArena* arena, size_t size, size_t align) {
+static void* sq_arena_push(SqArena* arena, size_t size, size_t align) {
   uint64_t pos_pre = ALIGN_UP(arena->cur_pos, align);
   uint64_t pos_post = pos_pre + size;
 
@@ -181,12 +181,12 @@ static void* arena_push(SqArena* arena, size_t size, size_t align) {
 }
 
 #if 0
-static uint64_t arena_pos(SqArena* arena) {
+static uint64_t sq_arena_pos(SqArena* arena) {
   return arena->cur_pos;
 }
 #endif
 
-static void arena_pop_to(SqArena* arena, uint64_t pos) {
+static void sq_arena_pop_to(SqArena* arena, uint64_t pos) {
   uint64_t clamped_pos = SQ_CLAMP_MIN(SQ_ARENA_HEADER_SIZE, pos);
 
   SQ_ASAN_POISON_REGION((unsigned char*)arena + clamped_pos, arena->cur_pos - clamped_pos);
@@ -195,7 +195,7 @@ static void arena_pop_to(SqArena* arena, uint64_t pos) {
 }
 
 void* emalloc(size_t n) {
-  void* p = arena_push(_global_arena, n, 8);
+  void* p = sq_arena_push(_global_arena, n, 8);
   memset(p, 0, n);
   return p;
 }
@@ -204,13 +204,13 @@ void* alloc(size_t n) {
   if (n == 0) {
     return NULL;
   }
-  void* p = arena_push(_fn_arena, n, 8);
+  void* p = sq_arena_push(_fn_arena, n, 8);
   memset(p, 0, n);
   return p;
 }
 
 void freeall(void) {
-  arena_pop_to(_fn_arena, 0);
+  sq_arena_pop_to(_fn_arena, 0);
 }
 
 void qbe_free(void* ptr) {
@@ -357,19 +357,19 @@ void sq_init(SqConfiguration* config) {
   reinit_global_context(&global_context);
 
   _fn_arena =
-      arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
+      sq_arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
   _global_arena =
-      arena_create(config->max_compiler_global_reserve, config->global_commit_chunk_size);
+      sq_arena_create(config->max_compiler_global_reserve, config->global_commit_chunk_size);
 
   // Don't think there's any need to make these separate from the main fn/global
   // arenas. Blk are Fn scoped, Lnk are global.
   _max_blocks = config->max_blocks_per_function;
   _num_blocks = 0;
-  _block_pool = arena_push(_fn_arena, sizeof(Blk) * _max_blocks, _Alignof(Blk));
+  _block_pool = sq_arena_push(_fn_arena, sizeof(Blk) * _max_blocks, _Alignof(Blk));
 
   _max_linkages = config->max_linkage_definitions;
   _num_linkages = 0;
-  _linkage_pool = arena_push(_global_arena, sizeof(Lnk) * _max_linkages, _Alignof(Lnk));
+  _linkage_pool = sq_arena_push(_global_arena, sizeof(Lnk) * _max_linkages, _Alignof(Lnk));
 
   _output_func = config->output_function ? config->output_function : _default_output_fn;
 
@@ -452,8 +452,8 @@ void sq_init(SqConfiguration* config) {
 static void _clear_initialized_state(SqInitStatus status) {
   sq_initialized = status;
 
-  arena_destroy(_fn_arena);
-  arena_destroy(_global_arena);
+  sq_arena_destroy(_fn_arena);
+  sq_arena_destroy(_global_arena);
   _dbg_name_counter = 0;
   _num_linkages = 0;
 }
@@ -578,7 +578,7 @@ SqSymbol sq_func_end(void) {
 
   G(curf) = NULL;
 
-  arena_pop_to(_fn_arena, 0);
+  sq_arena_pop_to(_fn_arena, 0);
 
   return ret;
 }
