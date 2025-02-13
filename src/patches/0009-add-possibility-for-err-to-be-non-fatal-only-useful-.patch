@@ -1,4 +1,4 @@
-From b5ccfe6b84f0a7d3ec648f27b2677e9028efc062 Mon Sep 17 00:00:00 2001
+From 925c4a746725560da34ccce512e7094493a0d67c Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
 Subject: [PATCH] add possibility for err to be non-fatal, only useful in
@@ -10,12 +10,12 @@ Subject: [PATCH] add possibility for err to be non-fatal, only useful in
  amd64/sysv.c   |  8 +++--
  amd64/winabi.c |  5 ++-
  arm64/abi.c    |  5 +++
- fold.c         | 13 ++++++--
+ fold.c         | 15 ++++++---
  main.c         |  5 +++
  parse.c        | 83 ++++++++++++++++++++++++++------------------------
  rv64/abi.c     | 14 +++++++--
  rv64/isel.c    |  5 ++-
- 10 files changed, 101 insertions(+), 51 deletions(-)
+ 10 files changed, 102 insertions(+), 52 deletions(-)
 
 diff --git a/all.h b/all.h
 index 0b85898..572bfff 100644
@@ -206,7 +206,7 @@ index 9df56e7..355b664 100644
  			switch ((--i)->op) {
  			default:
 diff --git a/fold.c b/fold.c
-index 4088bee..e4368c1 100644
+index 4088bee..7274ba5 100644
 --- a/fold.c
 +++ b/fold.c
 @@ -99,8 +99,10 @@ visitins(Ins *i, Fn *fn)
@@ -241,7 +241,13 @@ index 4088bee..e4368c1 100644
  				break;
  			case UJmp:
  				visitjmp(b, n, fn);
-@@ -514,8 +519,10 @@ opfold(int op, int cls, Con *cl, Con *cr, Fn *fn)
+@@ -509,13 +514,15 @@ static int
+ opfold(int op, int cls, Con *cl, Con *cr, Fn *fn)
+ {
+ 	Ref r;
+-	Con c;
++	Con c = {0};
+ 
  	if (cls == Kw || cls == Kl) {
  		if (foldint(&c, op, cls == Kl, cl, cr))
  			return Bot;

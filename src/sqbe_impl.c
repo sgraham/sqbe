@@ -8,25 +8,53 @@
 #define SQ_ERR_CHECK(ret) { if (GC(in_error)) return ret; }
 #define SQ_ERR_CHECK_VOID() { if (GC(in_error)) return; }
 
-static SqOutputFn _output_func;
+typedef struct SqArena SqArena;
+
+typedef enum SqInitStatus {
+  SQIS_UNINITIALIZED = 0,
+  SQIS_INITIALIZED_EMIT_FIN = 1,
+  SQIS_INITIALIZED_NO_FIN = 2,
+} SqInitStatus;
+
+typedef struct SqContext {
+  SqInitStatus initialized;
+
+  SqOutputFn output_func;
+  PState ps;
+
+  Blk* block_pool;
+  unsigned int num_blocks;
+  unsigned int max_blocks;
+
+  Lnk* linkage_pool;
+  unsigned int num_linkages;
+  unsigned int max_linkages;
+
+  SqArena* global_arena;
+  SqArena* fn_arena;
+
+  uint ntyp;
+  Typ* curty;
+  int curty_build_n;
+  uint64_t curty_build_sz;
+  int curty_build_al;
+
+  int dbg_name_counter;
+
+  Dat curd;
+  Lnk curd_lnk;
+} SqContext;
+
+#define SQC(x) g_sq_context.x
+static SqContext g_sq_context;
 
 static int sq_usermsgf(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  int ret = _output_func(fmt, ap);
+  int ret = SQC(output_func)(fmt, ap);
   va_end(ap);
   return ret;
 }
-
-static PState _ps;
-
-static Blk* _block_pool;
-static unsigned int _num_blocks;
-static unsigned int _max_blocks;
-
-static Lnk* _linkage_pool;
-static unsigned int _num_linkages;
-static unsigned int _max_linkages;
 
 #if defined(_WIN32)
 
@@ -74,14 +102,13 @@ static uint64_t os_page_size(void) {
 
 #endif
 
-
 #define SQ_ARENA_HEADER_SIZE 128
-typedef struct SqArena {
+struct SqArena {
   uint64_t commit_chunk_size;
   uint64_t cur_pos;
   uint64_t cur_commit;
   uint64_t cur_reserve;
-} SqArena;
+};
 
 #if defined(__clang__)
 #  define SQ_BRANCH_EXPECT(expr, val) __builtin_expect((expr), (val))
@@ -121,10 +148,7 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #define SQ_ALIGN_UP(n, a) SQ_ALIGN_DOWN((n) + (a)-1, (a))
 MAKESURE(sq_arena_struct_too_large, sizeof(SqArena) < SQ_ARENA_HEADER_SIZE);
 
-static SqArena* _global_arena;
-static SqArena* _fn_arena;
-
-static SqArena* sq_arena_create(uint64_t provided_reserve_size, uint64_t provided_commit_size) {
+static SqArena* _sq_arena_create(uint64_t provided_reserve_size, uint64_t provided_commit_size) {
   uint64_t commit_size = ALIGN_UP(provided_commit_size, os_page_size());
   uint64_t reserve_size = ALIGN_UP(provided_reserve_size, os_page_size());
 
@@ -146,11 +170,11 @@ static SqArena* sq_arena_create(uint64_t provided_reserve_size, uint64_t provide
   return arena;
 }
 
-static void sq_arena_destroy(SqArena* arena) {
+static void _sq_arena_destroy(SqArena* arena) {
   os_mem_release(arena, arena->cur_reserve);
 }
 
-static void* sq_arena_push(SqArena* arena, size_t size, size_t align) {
+static void* _sq_arena_push(SqArena* arena, size_t size, size_t align) {
   uint64_t pos_pre = ALIGN_UP(arena->cur_pos, align);
   uint64_t pos_post = pos_pre + size;
 
@@ -180,12 +204,12 @@ static void* sq_arena_push(SqArena* arena, size_t size, size_t align) {
 }
 
 #if 0
-static uint64_t sq_arena_pos(SqArena* arena) {
+static uint64_t _sq_arena_pos(SqArena* arena) {
   return arena->cur_pos;
 }
 #endif
 
-static void sq_arena_pop_to(SqArena* arena, uint64_t pos) {
+static void _sq_arena_pop_to(SqArena* arena, uint64_t pos) {
   uint64_t clamped_pos = SQ_CLAMP_MIN(SQ_ARENA_HEADER_SIZE, pos);
 
   SQ_ASAN_POISON_REGION((unsigned char*)arena + clamped_pos, arena->cur_pos - clamped_pos);
@@ -194,7 +218,7 @@ static void sq_arena_pop_to(SqArena* arena, uint64_t pos) {
 }
 
 void* emalloc(size_t n) {
-  void* p = sq_arena_push(_global_arena, n, 8);
+  void* p = _sq_arena_push(SQC(global_arena), n, 8);
   memset(p, 0, n);
   return p;
 }
@@ -203,40 +227,21 @@ void* alloc(size_t n) {
   if (n == 0) {
     return NULL;
   }
-  void* p = sq_arena_push(_fn_arena, n, 8);
+  void* p = _sq_arena_push(SQC(fn_arena), n, 8);
   memset(p, 0, n);
   return p;
 }
 
 void freeall(void) {
-  sq_arena_pop_to(_fn_arena, 0);
+  _sq_arena_pop_to(SQC(fn_arena), 0);
 }
 
 void qbe_free(void* ptr) {
   (void)ptr;  // Nothing until arena_destroy.
 }
 
-typedef enum SqInitStatus {
-  SQIS_UNINITIALIZED = 0,
-  SQIS_INITIALIZED_EMIT_FIN = 1,
-  SQIS_INITIALIZED_NO_FIN = 2,
-  SQIS_ERROR = 3,
-} SqInitStatus;
-static SqInitStatus sq_initialized;
-
-static uint _ntyp;
-static Typ* _curty;
-static int _curty_build_n;
-static uint64_t _curty_build_sz;
-static int _curty_build_al;
-
-static int _dbg_name_counter;
-
-static Dat _curd;
-static Lnk _curd_lnk;
-
 static void _gen_dbg_name(char* into, size_t len, const char* prefix) {
-  snprintf(into, len, "%s_%d", prefix ? prefix : "", _dbg_name_counter++);
+  snprintf(into, len, "%s_%d", prefix ? prefix : "", SQC(dbg_name_counter)++);
 }
 
 #define SQ_NAMED_IF_DEBUG(into, provided)        \
@@ -251,20 +256,27 @@ static void _gen_dbg_name(char* into, size_t len, const char* prefix) {
 #  define alloca _alloca
 #endif
 
+static void _clear_initialized_state(void) {
+  _sq_arena_destroy(SQC(fn_arena));
+  _sq_arena_destroy(SQC(global_arena));
+  memset(&g_sq_context, 0, sizeof(SqContext));
+}
+
 static void err_(char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  _output_func(fmt, ap);
+  SQC(output_func)(fmt, ap);
   va_end(ap);
   sq_usermsgf("\n");
   GC(in_error) = true;
+  _clear_initialized_state();
 }
 
 static void die_(char* file, char* fmt, ...) {
   sq_usermsgf("%s: internal error: ", file);
   va_list ap;
   va_start(ap, fmt);
-  _output_func(fmt, ap);
+  SQC(output_func)(fmt, ap);
   va_end(ap);
   sq_usermsgf("\n");
   SQ_TRAP();
@@ -277,9 +289,9 @@ SqLinkage sq_linkage_create(int alignment,
                             const char* section_name,
                             const char* section_flags) {
   SQ_ERR_CHECK((SqLinkage){0});
-  SQ_ASSERT(_num_linkages < _max_linkages);
-  SqLinkage ret = {_num_linkages++};
-  _linkage_pool[ret.u] = (Lnk){
+  SQ_ASSERT(SQC(num_linkages) < SQC(max_linkages));
+  SqLinkage ret = {SQC(num_linkages)++};
+  SQC(linkage_pool)[ret.u] = (Lnk){
       .export = exported,
       .thread = tls,
       .common = common,
@@ -291,8 +303,8 @@ SqLinkage sq_linkage_create(int alignment,
 }
 
 static Lnk _linkage_to_internal_lnk(SqLinkage linkage) {
-  SQ_ASSERT(linkage.u < _num_linkages);
-  return _linkage_pool[linkage.u];
+  SQ_ASSERT(linkage.u < SQC(num_linkages));
+  return SQC(linkage_pool)[linkage.u];
 }
 
 MAKESURE(ref_sizes_match, sizeof(SqRef) == sizeof(Ref));
@@ -327,35 +339,32 @@ static int _default_output_fn(const char* fmt, va_list ap) {
 }
 
 static Blk* _sqblock_to_internal_blk(SqBlock block) {
-  SQ_ASSERT(block.u < _num_blocks);
-  return &_block_pool[block.u];
+  SQ_ASSERT(block.u < SQC(num_blocks));
+  return &SQC(block_pool)[block.u];
 }
 
 void sq_init(SqConfiguration* config) {
-  SQ_ASSERT(sq_initialized == SQIS_UNINITIALIZED);
+  SQ_ASSERT(SQC(initialized) == SQIS_UNINITIALIZED);
 
   reinit_global_context(&global_context);
+  memset(&g_sq_context, 0, sizeof(SqContext));
 
-  _fn_arena =
-      sq_arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
-  _global_arena =
-      sq_arena_create(config->max_compiler_global_reserve, config->global_commit_chunk_size);
+  SQC(fn_arena) =
+      _sq_arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
+  SQC(global_arena) =
+      _sq_arena_create(config->max_compiler_global_reserve, config->global_commit_chunk_size);
 
   // Don't think there's any need to make these separate from the main fn/global
   // arenas. Blk are Fn scoped, Lnk are global.
-  _max_blocks = config->max_blocks_per_function;
-  _num_blocks = 0;
-  _block_pool = sq_arena_push(_fn_arena, sizeof(Blk) * _max_blocks, _Alignof(Blk));
+  SQC(max_blocks) = config->max_blocks_per_function;
+  SQC(block_pool) = _sq_arena_push(SQC(fn_arena), sizeof(Blk) * SQC(max_blocks), _Alignof(Blk));
 
-  _max_linkages = config->max_linkage_definitions;
-  _num_linkages = 0;
-  _linkage_pool = sq_arena_push(_global_arena, sizeof(Lnk) * _max_linkages, _Alignof(Lnk));
+  SQC(max_linkages) = config->max_linkage_definitions;
+  SQC(linkage_pool) =
+      _sq_arena_push(SQC(global_arena), sizeof(Lnk) * SQC(max_linkages), _Alignof(Lnk));
 
-  _output_func = config->output_function ? config->output_function : _default_output_fn;
+  SQC(output_func) = config->output_function ? config->output_function : _default_output_fn;
 
-  _dbg_name_counter = 0;
-
-  _num_linkages = 0;
   // These have to match the header for sq_linkage_default/export.
   SqLinkage def = sq_linkage_create(8, false, false, false, NULL, NULL);
   SQ_ASSERT(def.u == 0);
@@ -419,34 +428,25 @@ void sq_init(SqConfiguration* config) {
     GC(debug)[(int)*d] = 1;
   }
 
-  _ntyp = 0;
+  SQC(ntyp) = 0;
   GC(typ) = vnew(0, sizeof(GC(typ)[0]), PHeap);
   // Reserve the ids of the basic types so the .u values can be used as TypeKinds.
-  vgrow(&GC(typ), _ntyp + SQ_TYPE_0 + 1);
-  _ntyp += SQ_TYPE_0 + 1;
+  vgrow(&GC(typ), SQC(ntyp) + SQ_TYPE_0 + 1);
+  SQC(ntyp) += SQ_TYPE_0 + 1;
 
   global_context.main__dbg = config->debug_flags[0] != 0;
-  sq_initialized = global_context.main__dbg ? SQIS_INITIALIZED_NO_FIN : SQIS_INITIALIZED_EMIT_FIN;
-}
-
-static void _clear_initialized_state(SqInitStatus status) {
-  sq_initialized = status;
-
-  sq_arena_destroy(_fn_arena);
-  sq_arena_destroy(_global_arena);
-  _dbg_name_counter = 0;
-  _num_linkages = 0;
+  SQC(initialized) = global_context.main__dbg ? SQIS_INITIALIZED_NO_FIN : SQIS_INITIALIZED_EMIT_FIN;
 }
 
 bool sq_shutdown(void) {
   SQ_ERR_CHECK(false);
 
-  SQ_ASSERT(sq_initialized != SQIS_UNINITIALIZED);
-  if (sq_initialized == SQIS_INITIALIZED_EMIT_FIN) {
+  SQ_ASSERT(SQC(initialized) != SQIS_UNINITIALIZED);
+  if (SQC(initialized) == SQIS_INITIALIZED_EMIT_FIN) {
     GC(T).emitfin(global_context.main__outf);
   }
 
-  _clear_initialized_state(SQIS_UNINITIALIZED);
+  _clear_initialized_state();
   return true;
 }
 
@@ -459,7 +459,7 @@ SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
 #define G(x) global_context.parse__##x
 
   G(curb) = 0;
-  _num_blocks = 0;
+  SQC(num_blocks) = 0;
   GC(curi) = GC(insb);
   G(curf) = alloc(sizeof *G(curf));
   G(curf)->ntmp = 0;
@@ -481,7 +481,7 @@ SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
   G(blink) = &G(curf)->start;
   G(rcls) = _sqtype_to_cls_and_ty(return_type, &G(curf)->retty);
   strncpy(G(curf)->name, name, NString - 1);
-  _ps = PLbl;
+  SQC(ps) = PLbl;
 
   return sq_block_declare_and_start();
 }
@@ -545,7 +545,7 @@ SqSymbol sq_func_end(void) {
   }
   G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
   G(curf)->nmem = 0;
-  G(curf)->nblk = _num_blocks;
+  G(curf)->nblk = SQC(num_blocks);
   G(curf)->rpo = 0;
   for (Blk* b = G(curf)->start; b; b = b->link) {
     SQ_ASSERT(b->dlink == 0);
@@ -561,7 +561,7 @@ SqSymbol sq_func_end(void) {
 
   G(curf) = NULL;
 
-  sq_arena_pop_to(_fn_arena, 0);
+  _sq_arena_pop_to(SQC(fn_arena), 0);
 
   return ret;
 }
@@ -594,8 +594,8 @@ SqRef sq_extern(const char* name) {
 
 SqBlock sq_block_declare_named(const char* name) {
   SQ_ERR_CHECK((SqBlock){0});
-  SQ_ASSERT(_num_blocks < _max_blocks);
-  SqBlock ret = {_num_blocks++};
+  SQ_ASSERT(SQC(num_blocks) < SQC(max_blocks));
+  SqBlock ret = {SQC(num_blocks)++};
   Blk* blk = _sqblock_to_internal_blk(ret);
   memset(blk, 0, sizeof(Blk));
   blk->id = ret.u;
@@ -617,7 +617,7 @@ void sq_block_start(SqBlock block) {
   *G(blink) = b;
   G(curb) = b;
   G(plink) = &G(curb)->phi;
-  _ps = PPhi;
+  SQC(ps) = PPhi;
 }
 
 SqBlock sq_block_declare_and_start_named(const char* name) {
@@ -629,7 +629,7 @@ SqBlock sq_block_declare_and_start_named(const char* name) {
 
 void sq_i_ret(SqRef val) {
   SQ_ERR_CHECK_VOID();
-  SQ_ASSERT(_ps == PIns || _ps == PPhi);
+  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
   G(curb)->jmp.type = Jretw + G(rcls);
   if (val.u == 0) {
     G(curb)->jmp.type = Jret0;
@@ -641,7 +641,7 @@ void sq_i_ret(SqRef val) {
     G(curb)->jmp.arg = r;
   }
   qbe_parse_closeblk();
-  _ps = PLbl;
+  SQC(ps) = PLbl;
 }
 
 void sq_i_ret_void(void) {
@@ -651,7 +651,7 @@ void sq_i_ret_void(void) {
 
 SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
   SQ_ERR_CHECK((SqRef){0});
-  SQ_ASSERT(_ps == PIns || _ps == PPhi);
+  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
   // args are inserted into instrs first, then the call
   for (int i = 0; i < num_args; ++i) {
     SQ_ASSERT(GC(curi) - GC(insb) < NIns);
@@ -695,7 +695,7 @@ SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
     GC(curi)->to = tmp;
     ++GC(curi);
   }
-  _ps = PIns;
+  SQC(ps) = PIns;
   return _internal_ref_to_sqref(tmp);
 }
 
@@ -760,7 +760,7 @@ SqRef sq_i_call6(SqType result,
 void sq_i_jmp(SqBlock block) {
   SQ_ERR_CHECK_VOID();
 
-  SQ_ASSERT(_ps == PIns || _ps == PPhi);
+  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
   G(curb)->jmp.type = Jjmp;
   G(curb)->s1 = _sqblock_to_internal_blk(block);
   qbe_parse_closeblk();
@@ -781,7 +781,7 @@ void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
 
 SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
   SQ_ERR_CHECK((SqRef){0});
-  if (_ps != PPhi || G(curb) == G(curf)->start) {
+  if (SQC(ps) != PPhi || G(curb) == G(curf)->start) {
     err_("unexpected phi instruction");
     return (SqRef){0};
   }
@@ -802,14 +802,14 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
   phi->narg = i;
   *G(plink) = phi;
   G(plink) = &phi->link;
-  _ps = PPhi;
+  SQC(ps) = PPhi;
   return _internal_ref_to_sqref(tmp);
 }
 
 static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK_VOID();
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
-  SQ_ASSERT(_ps == PIns || _ps == PPhi);
+  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
   GC(curi)->cls = size_class.u;
@@ -817,7 +817,7 @@ static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
   GC(curi)->arg[1] = _sqref_to_internal_ref(arg1);
   ++GC(curi);
-  _ps = PIns;
+  SQC(ps) = PIns;
 }
 
 static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef arg1) {
@@ -830,7 +830,7 @@ static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef a
 
 static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK_VOID();
-  SQ_ASSERT(_ps == PIns || _ps == PPhi);
+  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
   GC(curi)->cls = SQ_TYPE_W;
@@ -838,13 +838,13 @@ static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
   GC(curi)->arg[1] = _sqref_to_internal_ref(arg1);
   ++GC(curi);
-  _ps = PIns;
+  SQC(ps) = PIns;
 }
 
 static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0) {
   SQ_ERR_CHECK_VOID();
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
-  SQ_ASSERT(_ps == PIns || _ps == PPhi);
+  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
   GC(curi)->cls = size_class.u;
@@ -852,7 +852,7 @@ static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
   GC(curi)->arg[1] = NULL_R;
   ++GC(curi);
-  _ps = PIns;
+  SQC(ps) = PIns;
 }
 
 static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
@@ -865,81 +865,81 @@ static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
 
 void sq_data_start(SqLinkage linkage, const char* name) {
   SQ_ERR_CHECK_VOID();
-  _curd_lnk = _linkage_to_internal_lnk(linkage);
-  if (_curd_lnk.align == 0) {
-    _curd_lnk.align = 8;
+  SQC(curd_lnk) = _linkage_to_internal_lnk(linkage);
+  if (SQC(curd_lnk).align == 0) {
+    SQC(curd_lnk).align = 8;
   }
 
-  _curd = (Dat){0};
-  _curd.type = DStart;
-  _curd.name = (char*)name;
-  _curd.lnk = &_curd_lnk;
-  qbe_main_data(&_curd);
+  SQC(curd) = (Dat){0};
+  SQC(curd).type = DStart;
+  SQC(curd).name = (char*)name;
+  SQC(curd).lnk = &SQC(curd_lnk);
+  qbe_main_data(&SQC(curd));
   // qbe_main_data need ret_on_err, but they're all tailcalls anyway.
 }
 
 void sq_data_byte(uint8_t val) {
   SQ_ERR_CHECK_VOID();
-  _curd.isref = 0;
-  _curd.isstr = 0;
-  _curd.type = DB;
-  _curd.u.num = val;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 0;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DB;
+  SQC(curd).u.num = val;
+  qbe_main_data(&SQC(curd));
 }
 
 void sq_data_half(uint16_t val) {
   SQ_ERR_CHECK_VOID();
-  _curd.isref = 0;
-  _curd.isstr = 0;
-  _curd.type = DH;
-  _curd.u.num = val;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 0;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DH;
+  SQC(curd).u.num = val;
+  qbe_main_data(&SQC(curd));
 }
 
 void sq_data_word(uint32_t val) {
   SQ_ERR_CHECK_VOID();
-  _curd.isref = 0;
-  _curd.isstr = 0;
-  _curd.type = DW;
-  _curd.u.num = val;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 0;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DW;
+  SQC(curd).u.num = val;
+  qbe_main_data(&SQC(curd));
 }
 
 void sq_data_long(uint64_t val) {
   SQ_ERR_CHECK_VOID();
-  _curd.isref = 0;
-  _curd.isstr = 0;
-  _curd.type = DL;
-  _curd.u.num = val;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 0;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DL;
+  SQC(curd).u.num = val;
+  qbe_main_data(&SQC(curd));
 }
 
 void sq_data_single(float val) {
   SQ_ERR_CHECK_VOID();
-  _curd.isref = 0;
-  _curd.isstr = 0;
-  _curd.type = DW;
-  _curd.u.flts = val;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 0;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DW;
+  SQC(curd).u.flts = val;
+  qbe_main_data(&SQC(curd));
 }
 
 void sq_data_double(double val) {
   SQ_ERR_CHECK_VOID();
-  _curd.isref = 0;
-  _curd.isstr = 0;
-  _curd.type = DL;
-  _curd.u.fltd = val;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 0;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DL;
+  SQC(curd).u.fltd = val;
+  qbe_main_data(&SQC(curd));
 }
 
 void sq_data_ref(SqSymbol ref, int64_t offset) {
   SQ_ERR_CHECK_VOID();
-  _curd.isref = 1;
-  _curd.isstr = 0;
-  _curd.type = DL;
-  _curd.u.ref.name = str(ref.u);
-  _curd.u.ref.off = offset;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 1;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DL;
+  SQC(curd).u.ref.name = str(ref.u);
+  SQC(curd).u.ref.off = offset;
+  qbe_main_data(&SQC(curd));
 }
 
 static size_t _str_repr(const char* str, char* into) {
@@ -994,8 +994,8 @@ static size_t _str_repr(const char* str, char* into) {
 
 void sq_data_string(const char* str) {
   SQ_ERR_CHECK_VOID();
-  _curd.type = DB;
-  _curd.isstr = 1;
+  SQC(curd).type = DB;
+  SQC(curd).isstr = 1;
   // QBE sneakily avoids de-escaping in the tokenizer and re-escaping during
   // emission by just not handling escapes at all and relying on the input
   // format for string escapes being the same as the assembler's. Because we're
@@ -1005,20 +1005,20 @@ void sq_data_string(const char* str) {
   size_t len2 = _str_repr(str, escaped);
   SQ_ASSERT(len == len2);
   (void)len2;
-  _curd.u.str = (char*)escaped;
-  qbe_main_data(&_curd);
+  SQC(curd).u.str = (char*)escaped;
+  qbe_main_data(&SQC(curd));
 }
 
 SqSymbol sq_data_end(void) {
   SQ_ERR_CHECK((SqSymbol){0});
-  _curd.isref = 0;
-  _curd.isstr = 0;
-  _curd.type = DEnd;
-  qbe_main_data(&_curd);
+  SQC(curd).isref = 0;
+  SQC(curd).isstr = 0;
+  SQC(curd).type = DEnd;
+  qbe_main_data(&SQC(curd));
 
-  SqSymbol ret = {intern(_curd.name)};
-  _curd = (Dat){0};
-  _curd_lnk = (Lnk){0};
+  SqSymbol ret = {intern(SQC(curd).name)};
+  SQC(curd) = (Dat){0};
+  SQC(curd_lnk) = (Lnk){0};
   return ret;
 }
 
@@ -1032,32 +1032,32 @@ SqSymbol sq_data_end(void) {
 // size/alignment for additional values).
 void sq_type_struct_start(const char* name, int align) {
   SQ_ERR_CHECK_VOID();
-  vgrow(&GC(typ), _ntyp + 1);
-  _curty = &GC(typ)[_ntyp++];
-  _curty->isdark = 0;
-  _curty->isunion = 0;
-  _curty->align = -1;
-  _curty_build_n = 0;
+  vgrow(&GC(typ), SQC(ntyp) + 1);
+  SQC(curty) = &GC(typ)[SQC(ntyp)++];
+  SQC(curty)->isdark = 0;
+  SQC(curty)->isunion = 0;
+  SQC(curty)->align = -1;
+  SQC(curty_build_n) = 0;
 
   if (align > 0) {
     int al;
     for (al = 0; align /= 2; al++)
       ;
-    _curty->align = al;
+    SQC(curty)->align = al;
   }
 
-  _curty->size = 0;
-  strcpy(_curty->name, name);
-  _curty->fields = vnew(1, sizeof _curty->fields[0], PHeap);
-  _curty->nunion = 1;
+  SQC(curty)->size = 0;
+  strcpy(SQC(curty)->name, name);
+  SQC(curty)->fields = vnew(1, sizeof SQC(curty)->fields[0], PHeap);
+  SQC(curty)->nunion = 1;
 
-  _curty_build_sz = 0;
-  _curty_build_al = _curty->align;
+  SQC(curty_build_sz) = 0;
+  SQC(curty_build_al) = SQC(curty)->align;
 }
 
 void sq_type_add_field_with_count(SqType field, uint32_t count) {
   SQ_ERR_CHECK_VOID();
-  Field* fld = _curty->fields[0];
+  Field* fld = SQC(curty)->fields[0];
 
   Typ* ty1;
   uint64_t s;
@@ -1115,25 +1115,25 @@ void sq_type_add_field_with_count(SqType field, uint32_t count) {
       break;
   }
 
-  if (a > _curty_build_al) {
-    _curty_build_al = a;
+  if (a > SQC(curty_build_al)) {
+    SQC(curty_build_al) = a;
   }
   a = (1 << a) - 1;
-  a = ((_curty_build_sz + a) & ~a) - _curty_build_sz;
+  a = ((SQC(curty_build_sz) + a) & ~a) - SQC(curty_build_sz);
   if (a) {
-    if (_curty_build_n < NField) {
-      fld[_curty_build_n].type = FPad;
-      fld[_curty_build_n].len = a;
-      _curty_build_n++;
+    if (SQC(curty_build_n) < NField) {
+      fld[SQC(curty_build_n)].type = FPad;
+      fld[SQC(curty_build_n)].len = a;
+      SQC(curty_build_n)++;
     }
   }
-  _curty_build_sz += a + count * s;
+  SQC(curty_build_sz) += a + count * s;
   if (type == FTyp) {
     s = field.u;
   }
-  for (; count > 0 && _curty_build_n < NField; count--, _curty_build_n++) {
-    fld[_curty_build_n].type = type;
-    fld[_curty_build_n].len = s;
+  for (; count > 0 && SQC(curty_build_n) < NField; count--, SQC(curty_build_n)++) {
+    fld[SQC(curty_build_n)].type = type;
+    fld[SQC(curty_build_n)].len = s;
   }
 }
 
@@ -1144,22 +1144,22 @@ void sq_type_add_field(SqType field) {
 
 SqType sq_type_struct_end(void) {
   SQ_ERR_CHECK((SqType){0});
-  Field* fld = _curty->fields[0];
-  fld[_curty_build_n].type = FEnd;
-  int a = 1 << _curty_build_al;
-  if (_curty_build_sz < _curty->size) {
-    _curty_build_sz = _curty->size;
+  Field* fld = SQC(curty)->fields[0];
+  fld[SQC(curty_build_n)].type = FEnd;
+  int a = 1 << SQC(curty_build_al);
+  if (SQC(curty_build_sz) < SQC(curty)->size) {
+    SQC(curty_build_sz) = SQC(curty)->size;
   }
-  _curty->size = (_curty_build_sz + a - 1) & -a;
-  _curty->align = _curty_build_al;
+  SQC(curty)->size = (SQC(curty_build_sz) + a - 1) & -a;
+  SQC(curty)->align = SQC(curty_build_al);
   if (GC(debug)['T']) {
     fprintf(stderr, "\n> Parsed type:\n");
-    printtyp(_curty, stderr);
+    printtyp(SQC(curty), stderr);
   }
-  SqType ret = {_curty - GC(typ)};
-  _curty = NULL;
-  _curty_build_n = 0;
-  _curty_build_sz = 0;
-  _curty_build_al = 0;
+  SqType ret = {SQC(curty) - GC(typ)};
+  SQC(curty) = NULL;
+  SQC(curty_build_n) = 0;
+  SQC(curty_build_sz) = 0;
+  SQC(curty_build_al) = 0;
   return ret;
 }
