@@ -1,0 +1,706 @@
+From b5ccfe6b84f0a7d3ec648f27b2677e9028efc062 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Thu, 13 Feb 2025 09:53:46 -0800
+Subject: [PATCH] add possibility for err to be non-fatal, only useful in
+ library context
+
+---
+ all.h          |  9 +++++-
+ amd64/isel.c   |  5 ++-
+ amd64/sysv.c   |  8 +++--
+ amd64/winabi.c |  5 ++-
+ arm64/abi.c    |  5 +++
+ fold.c         | 13 ++++++--
+ main.c         |  5 +++
+ parse.c        | 83 ++++++++++++++++++++++++++------------------------
+ rv64/abi.c     | 14 +++++++--
+ rv64/isel.c    |  5 ++-
+ 10 files changed, 101 insertions(+), 51 deletions(-)
+
+diff --git a/all.h b/all.h
+index 0b85898..572bfff 100644
+--- a/all.h
++++ b/all.h
+@@ -7,6 +7,11 @@
+ 
+ #define MAKESURE(what, x) typedef char make_sure_##what[(x)?1:-1]
+ #define die(...) die_(__FILE__, __VA_ARGS__)
++#define err(...) do { err_(__VA_ARGS__); return; } while(0);
++#define err_i(...) do { err_(__VA_ARGS__); return 0; } while(0);
++#define err_null(...) do { err_(__VA_ARGS__); return NULL; } while(0);
++#define ret_on_err() do { if (GC(in_error)) return; } while(0);
++#define ret_on_err_i() do { if (GC(in_error)) return 0; } while(0);
+ 
+ typedef unsigned char uchar;
+ typedef unsigned int uint;
+@@ -591,6 +596,8 @@ typedef struct GlobalContext {
+ 	// ['T'] = 0, /* types */
+ 	Ins *curi;
+ 
++  int in_error;
++
+ } GlobalContext;
+ 
+ extern GlobalContext global_context;
+@@ -666,7 +673,7 @@ void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
+ void printfn(Fn *, FILE *);
+ void printtyp(Typ*, FILE *);
+ void printref(Ref, Fn *, FILE *);
+-void err(char *, ...) __attribute__((noreturn));
++void err_(char *, ...);
+ 
+ /* abi.c */
+ void elimsb(Fn *);
+diff --git a/amd64/isel.c b/amd64/isel.c
+index 8a9bb92..a62723b 100644
+--- a/amd64/isel.c
++++ b/amd64/isel.c
+@@ -339,6 +339,7 @@ sel(Ins i, Num *tn, Fn *fn)
+ 		emit(Oor, Kl, tmp[3], tmp[0], tmp[2]);
+ 		emit(Oshr, Kl, tmp[2], i.arg[0], tmp[1]);
+ 		sel(*GC(curi)++, 0, fn);
++		ret_on_err();
+ 		emit(Oshr, Kl, tmp[1], i.arg[0], getcon(63, fn));
+ 		fixarg(&GC(curi)->arg[0], Kl, GC(curi), fn);
+ 		emit(Oand, Kl, tmp[0], i.arg[0], getcon(1, fn));
+@@ -826,8 +827,10 @@ amd64_isel(Fn *fn)
+ 		memset(num, 0, n * sizeof num[0]);
+ 		anumber(num, b, fn->con);
+ 		seljmp(b, fn);
+-		for (i=&b->ins[b->nins]; i!=b->ins;)
++		for (i=&b->ins[b->nins]; i!=b->ins;) {
+ 			sel(*--i, num, fn);
++			ret_on_err();
++		}
+ 		b->nins = &GC(insb)[NIns] - GC(curi);
+ 		idup(&b->ins, GC(curi), b->nins);
+ 	}
+diff --git a/amd64/sysv.c b/amd64/sysv.c
+index 975171d..6cdbfa4 100644
+--- a/amd64/sysv.c
++++ b/amd64/sysv.c
+@@ -215,7 +215,7 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
+ 		}
+ 
+ 	if (varc && envc)
+-		err("sysv abi does not support variadic env calls");
++		err_i("sysv abi does not support variadic env calls");
+ 
+ 	return ((varc|envc) << 12) | ((6-nint) << 4) | ((8-nsse) << 8);
+ }
+@@ -318,6 +318,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
+ 		ca = argsclass(i0, i1, ac, Oarg, &aret, &env);
+ 	} else
+ 		ca = argsclass(i0, i1, ac, Oarg, 0, &env);
++	ret_on_err();
+ 
+ 	for (stk=0, a=&ac[i1-i0]; a>ac;)
+ 		if ((--a)->inmem) {
+@@ -443,6 +444,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 		fa = argsclass(i0, i1, ac, Opar, &aret, &env);
+ 	} else
+ 		fa = argsclass(i0, i1, ac, Opar, 0, &env);
++	ret_on_err_i();
+ 	fn->reg = amd64_sysv_argregs(CALL(fa), 0);
+ 
+ 	for (i=i0, a=ac; i<i1; i++, a++) {
+@@ -471,7 +473,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 		switch (a->inmem) {
+ 		case 1:
+ 			if (a->align > 4)
+-				err("sysv abi requires alignments of 16 or less");
++				err_i("sysv abi requires alignments of 16 or less");
+ 			if (a->align == 4)
+ 				s = (s+3) & -4;
+ 			fn->tmp[i->to.val].slot = -s;
+@@ -669,6 +671,7 @@ amd64_sysv_abi(Fn *fn)
+ 		if (!ispar(i->op))
+ 			break;
+ 	fa = selpar(fn, b->ins, i);
++	ret_on_err();
+ 	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
+ 	i0 = alloc(n * sizeof(Ins));
+ 	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
+@@ -696,6 +699,7 @@ amd64_sysv_abi(Fn *fn)
+ 					if (!isarg((i0-1)->op))
+ 						break;
+ 				selcall(fn, i0, i, &ral);
++				ret_on_err();
+ 				i = i0;
+ 				break;
+ 			case Ovastart:
+diff --git a/amd64/winabi.c b/amd64/winabi.c
+index d4d8b39..8fb5745 100755
+--- a/amd64/winabi.c
++++ b/amd64/winabi.c
+@@ -300,7 +300,7 @@ static Ins* lower_call(Fn* func,
+     // only have (potentially) 8 bytes to add to stack_usage here.
+     if (arg->style == APS_InlineOnStack) {
+       if (arg->align > 4) {
+-        err("win abi cannot pass alignments > 16");
++        err_null("win abi cannot pass alignments > 16");
+       }
+       stack_usage += arg->size;
+     } else if (arg->style == APS_CopyAndPointerOnStack) {
+@@ -562,6 +562,7 @@ static void lower_args_for_block(Fn* func,
+       switch (instr->op) {
+         case Ocall:
+           instr = lower_call(func, block, instr, pextra_alloc);
++          ret_on_err();
+           break;
+         case Ovastart:
+           lower_vastart(func, param_reg_usage, instr->arg[0]);
+@@ -744,8 +745,10 @@ void amd64_winabi_abi(Fn* func) {
+   ExtraAlloc* extra_alloc = NULL;
+   for (Blk* block = func->start->link; block; block = block->link) {
+     lower_args_for_block(func, block, &param_reg_usage, &extra_alloc);
++    ret_on_err();
+   }
+   lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
++  ret_on_err();
+ 
+   if (GC(debug)['A']) {
+     fprintf(stderr, "\n> After ABI lowering:\n");
+diff --git a/arm64/abi.c b/arm64/abi.c
+index 9df56e7..355b664 100644
+--- a/arm64/abi.c
++++ b/arm64/abi.c
+@@ -188,6 +188,7 @@ selret(Blk *b, Fn *fn)
+ 
+ 	if (j == Jretc) {
+ 		typclass(&cr, &GC(typ)[fn->retty], gpreg, fpreg);
++		ret_on_err();
+ 		if (cr.class & Cptr) {
+ 			assert(rtype(fn->retr) == RTmp);
+ 			emit(Oblit1, 0, NULL_R, INT(cr.t->size), NULL_R);
+@@ -267,6 +268,7 @@ argsclass(Ins *i0, Ins *i1, Class *carg)
+ 		case Oparc:
+ 		case Oargc:
+ 			typclass(c, &GC(typ)[i->arg[0].val], gp, fp);
++			ret_on_err_i();
+ 			if (c->ngp <= ngp) {
+ 				if (c->nfp <= nfp) {
+ 					ngp -= c->ngp;
+@@ -394,6 +396,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
+ 
+ 	if (!req(i1->arg[1], NULL_R)) {
+ 		typclass(&cr, &GC(typ)[i1->arg[1].val], gpreg, fpreg);
++		ret_on_err();
+ 		stkblob(i1->to, &cr, fn, ilp);
+ 		cty |= (cr.nfp << 2) | cr.ngp;
+ 		if (cr.class & Cptr) {
+@@ -499,6 +502,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 
+ 	if (fn->retty >= 0) {
+ 		typclass(&cr, &GC(typ)[fn->retty], gpreg, fpreg);
++		if (GC(in_error)) { return (Params){0}; }
+ 		if (cr.class & Cptr) {
+ 			fn->retr = newtmp("abi", Kl, fn);
+ 			emit(Ocopy, Kl, fn->retr, TMP(R8), NULL_R);
+@@ -760,6 +764,7 @@ arm64_abi(Fn *fn)
+ 			continue;
+ 		GC(curi) = &GC(insb)[NIns];
+ 		selret(b, fn);
++		ret_on_err();
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			switch ((--i)->op) {
+ 			default:
+diff --git a/fold.c b/fold.c
+index 4088bee..e4368c1 100644
+--- a/fold.c
++++ b/fold.c
+@@ -99,8 +99,10 @@ visitins(Ins *i, Fn *fn)
+ 			v = Bot;
+ 		else if (l == Top || r == Top)
+ 			v = Top;
+-		else
++		else {
+ 			v = opfold(i->op, i->cls, &fn->con[l], &fn->con[r], fn);
++			ret_on_err();
++		}
+ 	} else
+ 		v = Bot;
+ 	/* fprintf(stderr, "\nvisiting %s (%p)", optab[i->op].name, (void *)i); */
+@@ -210,8 +212,10 @@ fold(Fn *fn)
+ 			for (p=b->phi; p; p=p->link)
+ 				visitphi(p, n, fn);
+ 			if (b->visit == 0) {
+-				for (i=b->ins; i<&b->ins[b->nins]; i++)
++				for (i=b->ins; i<&b->ins[b->nins]; i++) {
+ 					visitins(i, fn);
++					ret_on_err();
++				}
+ 				visitjmp(b, n, fn);
+ 			}
+ 			b->visit++;
+@@ -231,6 +235,7 @@ fold(Fn *fn)
+ 				break;
+ 			case UIns:
+ 				visitins(u->u.ins, fn);
++				ret_on_err();
+ 				break;
+ 			case UJmp:
+ 				visitjmp(b, n, fn);
+@@ -514,8 +519,10 @@ opfold(int op, int cls, Con *cl, Con *cr, Fn *fn)
+ 	if (cls == Kw || cls == Kl) {
+ 		if (foldint(&c, op, cls == Kl, cl, cr))
+ 			return Bot;
+-	} else
++	} else {
+ 		foldflt(&c, op, cls == Kd, cl, cr);
++		ret_on_err_i();
++	}
+ 	if (!KWIDE(cls))
+ 		c.bits.i &= 0xffffffff;
+ 	r = newcon(&c, fn);
+diff --git a/main.c b/main.c
+index a6cefa7..708b93d 100644
+--- a/main.c
++++ b/main.c
+@@ -38,6 +38,7 @@ data(Dat *d)
+ 	if (G(dbg))
+ 		return;
+ 	emitdat(d, G(outf));
++  ret_on_err();
+ 	if (d->type == DEnd) {
+ 		fputs("/* end data */\n\n", G(outf));
+ 		freeall();
+@@ -60,10 +61,12 @@ func(Fn *fn)
+ 	fillpreds(fn);
+ 	filluse(fn);
+ 	promote(fn);
++	ret_on_err();
+ 	filluse(fn);
+ 	ssa(fn);
+ 	filluse(fn);
+ 	ssacheck(fn);
++	ret_on_err();
+ 	fillalias(fn);
+ 	loadopt(fn);
+ 	filluse(fn);
+@@ -71,6 +74,7 @@ func(Fn *fn)
+ 	coalesce(fn);
+ 	filluse(fn);
+ 	ssacheck(fn);
++	ret_on_err();
+ 	copy(fn);
+ 	filluse(fn);
+ 	fold(fn);
+@@ -79,6 +83,7 @@ func(Fn *fn)
+ 	fillpreds(fn);
+ 	filluse(fn);
+ 	GC(T).isel(fn);
++	ret_on_err();
+ 	fillrpo(fn);
+ 	filllive(fn);
+ 	fillloop(fn);
+diff --git a/parse.c b/parse.c
+index 4c91d59..9ef6a4a 100644
+--- a/parse.c
++++ b/parse.c
+@@ -142,7 +142,7 @@ enum {
+ };
+ 
+ void
+-err(char *s, ...)
++err_(char *s, ...)
+ {
+ 	va_list ap;
+ 
+@@ -151,6 +151,7 @@ err(char *s, ...)
+ 	vfprintf(stderr, s, ap);
+ 	fprintf(stderr, "\n");
+ 	va_end(ap);
++  GC(in_error) = 1;
+ 	exit(1);
+ }
+ 
+@@ -271,7 +272,7 @@ lex(void)
+ 		for (i=1;; i++) {
+ 			c = fgetc(G(inf));
+ 			if (c == EOF)
+-				err("unterminated string");
++				err_i("unterminated string");
+ 			vgrow(&G(tokval).str, i+2);
+ 			G(tokval).str[i] = c;
+ 			if (c == '"' && !esc) {
+@@ -283,11 +284,11 @@ lex(void)
+ 	}
+ Alpha:
+ 	if (!isalpha(c) && c != '.' && c != '_')
+-		err("invalid character %c (%d)", c, c);
++		err_i("invalid character %c (%d)", c, c);
+ 	i = 0;
+ 	do {
+ 		if (i >= NString-1)
+-			err("identifier too long");
++			err_i("identifier too long");
+ 		G(lex_tok)[i++] = c;
+ 		c = fgetc(G(inf));
+ 	} while (isalpha(c) || c == '$' || c == '.' || c == '_' || isdigit(c));
+@@ -299,7 +300,7 @@ Alpha:
+ 	}
+ 	t = G(lexh)[hash(G(lex_tok))*K >> parse__M];
+ 	if (t == Txxx || strcmp(kwmap[t], G(lex_tok)) != 0) {
+-		err("unknown keyword %s", G(lex_tok));
++		err_i("unknown keyword %s", G(lex_tok));
+ 		return Txxx;
+ 	}
+ 	return t;
+@@ -431,7 +432,7 @@ findtyp(int i)
+ 	while (--i >= 0)
+ 		if (strcmp(G(tokval).str, GC(typ)[i].name) == 0)
+ 			return i;
+-	err("undefined type :%s", G(tokval).str);
++	err_i("undefined type :%s", G(tokval).str);
+ }
+ 
+ static int
+@@ -439,7 +440,7 @@ parsecls(int *tyn)
+ {
+ 	switch (next()) {
+ 	default:
+-		err("invalid class specifier");
++		err_i("invalid class specifier");
+ 	case Ttyp:
+ 		*tyn = findtyp(G(ntyp));
+ 		return Kc;
+@@ -473,13 +474,13 @@ parserefl(int arg)
+ 	expect(Tlparen);
+ 	while (peek() != Trparen) {
+ 		if (GC(curi) - GC(insb) >= NIns)
+-			err("too many instructions");
++			err_i("too many instructions");
+ 		if (!arg && vararg)
+-			err("no parameters allowed after '...'");
++			err_i("no parameters allowed after '...'");
+ 		switch (peek()) {
+ 		case Tdots:
+ 			if (vararg)
+-				err("only one '...' allowed");
++				err_i("only one '...' allowed");
+ 			vararg = 1;
+ 			if (arg) {
+ 				*GC(curi) = (Ins){.op = Oargv};
+@@ -489,7 +490,7 @@ parserefl(int arg)
+ 			goto Next;
+ 		case Tenv:
+ 			if (hasenv)
+-				err("only one environment allowed");
++				err_i("only one environment allowed");
+ 			hasenv = 1;
+ 			env = 1;
+ 			next();
+@@ -502,9 +503,9 @@ parserefl(int arg)
+ 		}
+ 		r = parseref();
+ 		if (req(r, NULL_R))
+-			err("invalid argument");
++			err_i("invalid argument");
+ 		if (!arg && rtype(r) != RTmp)
+-			err("invalid function parameter");
++			err_i("invalid function parameter");
+ 		if (env)
+ 			if (arg)
+ 				*GC(curi) = (Ins){Oarge, k, NULL_R, {r}};
+@@ -562,6 +563,8 @@ closeblk(void)
+ 	GC(curi) = GC(insb);
+ }
+ 
++#define err_ps(...) do { err_(__VA_ARGS__); return (PState){0}; } while(0)
++
+ static PState
+ parseline(PState ps)
+ {
+@@ -575,7 +578,7 @@ parseline(PState ps)
+ 
+ 	t = nextnl();
+ 	if (ps == PLbl && t != Tlbl && t != Trbrace)
+-		err("label or } expected");
++		err_ps("label or } expected");
+ 	switch (t) {
+ 	case Ttmp:
+ 		r = tmpref(G(tokval).str);
+@@ -594,7 +597,7 @@ parseline(PState ps)
+ 			op = t;
+ 			break;
+ 		}
+-		err("label, instruction or jump expected");
++		err_ps("label, instruction or jump expected");
+ 	case Trbrace:
+ 		return PEnd;
+ 	case Tlbl:
+@@ -605,7 +608,7 @@ parseline(PState ps)
+ 			G(curb)->s1 = b;
+ 		}
+ 		if (b->jmp.type != Jxxx)
+-			err("multiple definitions of block @%s", b->name);
++			err_ps("multiple definitions of block @%s", b->name);
+ 		*G(blink) = b;
+ 		G(curb) = b;
+ 		G(plink) = &G(curb)->phi;
+@@ -618,7 +621,7 @@ parseline(PState ps)
+ 		else if (G(rcls) != K0) {
+ 			r = parseref();
+ 			if (req(r, NULL_R))
+-				err("invalid return value");
++				err_ps("invalid return value");
+ 			G(curb)->jmp.arg = r;
+ 		}
+ 		goto Close;
+@@ -629,7 +632,7 @@ parseline(PState ps)
+ 		G(curb)->jmp.type = Jjnz;
+ 		r = parseref();
+ 		if (req(r, NULL_R))
+-			err("invalid argument for jnz jump");
++			err_ps("invalid argument for jnz jump");
+ 		G(curb)->jmp.arg = r;
+ 		expect(Tcomma);
+ 	Jump:
+@@ -641,7 +644,7 @@ parseline(PState ps)
+ 			G(curb)->s2 = findblk(G(tokval).str);
+ 		}
+ 		if (G(curb)->s1 == G(curf)->start || G(curb)->s2 == G(curf)->start)
+-			err("invalid jump to the start block");
++			err_ps("invalid jump to the start block");
+ 		goto Close;
+ 	case Thlt:
+ 		G(curb)->jmp.type = Jhlt;
+@@ -656,13 +659,13 @@ parseline(PState ps)
+ 		expect(Tint);
+ 		arg[0] = INT(G(tokval).num);
+ 		if (arg[0].val != G(tokval).num)
+-			err("line number too big");
++			err_ps("line number too big");
+ 		if (peek() == Tcomma) {
+ 			next();
+ 			expect(Tint);
+ 			arg[1] = INT(G(tokval).num);
+ 			if (arg[1].val != G(tokval).num)
+-				err("column number too big");
++				err_ps("column number too big");
+ 		} else
+ 			arg[1] = INT(0);
+ 		goto Ins;
+@@ -688,34 +691,34 @@ parseline(PState ps)
+ 	if (op == Talloc1 || op == Talloc2)
+ 		op = Oalloc;
+ 	if (op == Ovastart && !G(curf)->vararg)
+-		err("cannot use vastart in non-variadic function");
++		err_ps("cannot use vastart in non-variadic function");
+ 	if (k >= Ksb)
+-		err("size class must be w, l, s, or d");
++		err_ps("size class must be w, l, s, or d");
+ 	i = 0;
+ 	if (peek() != Tnl)
+ 		for (;;) {
+ 			if (i == NPred)
+-				err("too many arguments");
++				err_ps("too many arguments");
+ 			if (op == Tphi) {
+ 				expect(Tlbl);
+ 				blk[i] = findblk(G(tokval).str);
+ 			}
+ 			arg[i] = parseref();
+ 			if (req(arg[i], NULL_R))
+-				err("invalid instruction argument");
++				err_ps("invalid instruction argument");
+ 			i++;
+ 			t = peek();
+ 			if (t == Tnl)
+ 				break;
+ 			if (t != Tcomma)
+-				err(", or end of line expected");
++				err_ps(", or end of line expected");
+ 			next();
+ 		}
+ 	next();
+ 	switch (op) {
+ 	case Tphi:
+ 		if (ps != PPhi || G(curb) == G(curf)->start)
+-			err("unexpected phi instruction");
++			err_ps("unexpected phi instruction");
+ 		phi = alloc(sizeof *phi);
+ 		phi->to = r;
+ 		phi->cls = k;
+@@ -729,30 +732,30 @@ parseline(PState ps)
+ 		return PPhi;
+ 	case Tblit:
+ 		if (GC(curi) - GC(insb) >= NIns-1)
+-			err("too many instructions");
++			err_ps("too many instructions");
+ 		memset(GC(curi), 0, 2 * sizeof(Ins));
+ 		GC(curi)->op = Oblit0;
+ 		GC(curi)->arg[0] = arg[0];
+ 		GC(curi)->arg[1] = arg[1];
+ 		GC(curi)++;
+ 		if (rtype(arg[2]) != RCon)
+-			err("blit size must be constant");
++			err_ps("blit size must be constant");
+ 		c = &G(curf)->con[arg[2].val];
+ 		r = INT(c->bits.i);
+ 		if (c->type != CBits
+ 		|| rsval(r) < 0
+ 		|| rsval(r) != c->bits.i)
+-			err("invalid blit size");
++			err_ps("invalid blit size");
+ 		GC(curi)->op = Oblit1;
+ 		GC(curi)->arg[0] = r;
+ 		GC(curi)++;
+ 		return PIns;
+ 	default:
+ 		if (op >= NPubOp)
+-			err("invalid instruction");
++			err_ps("invalid instruction");
+ 	Ins:
+ 		if (GC(curi) - GC(insb) >= NIns)
+-			err("too many instructions");
++			err_ps("too many instructions");
+ 		GC(curi)->op = op;
+ 		GC(curi)->cls = k;
+ 		GC(curi)->to = r;
+@@ -893,19 +896,19 @@ parsefn(Lnk *lnk)
+ 	else
+ 		G(rcls) = K0;
+ 	if (next() != Tglo)
+-		err("function name expected");
++		err_null("function name expected");
+ 	strncpy(G(curf)->name, G(tokval).str, NString-1);
+ 	G(curf)->vararg = parserefl(0);
+ 	if (nextnl() != Tlbrace)
+-		err("function body must start with {");
++		err_null("function body must start with {");
+ 	ps = PLbl;
+ 	do
+ 		ps = parseline(ps);
+ 	while (ps != PEnd);
+ 	if (!G(curb))
+-		err("empty function");
++		err_null("empty function");
+ 	if (G(curb)->jmp.type == Jxxx)
+-		err("last block misses jump");
++		err_null("last block misses jump");
+ 	G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
+ 	G(curf)->nmem = 0;
+ 	G(curf)->nblk = G(nblk);
+@@ -1159,9 +1162,9 @@ parselnk(Lnk *lnk)
+ 			break;
+ 		case Tsection:
+ 			if (lnk->sec)
+-				err("only one section allowed");
++				err_i("only one section allowed");
+ 			if (next() != Tstr)
+-				err("section \"name\" expected");
++				err_i("section \"name\" expected");
+ 			lnk->sec = G(tokval).str;
+ 			if (peek() == Tstr) {
+ 				next();
+@@ -1170,9 +1173,9 @@ parselnk(Lnk *lnk)
+ 			break;
+ 		default:
+ 			if (t == Tfunc && lnk->thread)
+-				err("only data may have thread linkage");
++				err_i("only data may have thread linkage");
+ 			if (haslnk && t != Tdata && t != Tfunc)
+-				err("only data and function have linkage");
++				err_i("only data and function have linkage");
+ 			return t;
+ 		}
+ }
+diff --git a/rv64/abi.c b/rv64/abi.c
+index 580197d..2a62d9b 100644
+--- a/rv64/abi.c
++++ b/rv64/abi.c
+@@ -220,6 +220,7 @@ selret(Blk *b, Fn *fn)
+ 
+ 	if (j == Jretc) {
+ 		typclass(&cr, &GC(typ)[fn->retty], 1, gpreg, fpreg);
++		ret_on_err();
+ 		if (cr.class & Cptr) {
+ 			assert(rtype(fn->retr) == RTmp);
+ 			emit(Oblit1, 0, NULL_R, INT(cr.type->size), NULL_R);
+@@ -284,9 +285,12 @@ argsclass(Ins *i0, Ins *i1, Class *carg, int retptr)
+ 		case Oargc:
+ 			t = &GC(typ)[i->arg[0].val];
+ 			typclass(c, t, 1, gp, fp);
++			ret_on_err_i();
+ 			if (c->nfp > 0)
+-			if (c->nfp >= nfp || c->ngp >= ngp)
++			if (c->nfp >= nfp || c->ngp >= ngp) {
+ 				typclass(c, t, 0, gp, fp);
++				ret_on_err_i();
++			}
+ 			assert(c->nfp <= nfp);
+ 			if (c->ngp <= ngp) {
+ 				ngp -= c->ngp;
+@@ -347,8 +351,10 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
+ 	ca = alloc((i1-i0) * sizeof ca[0]);
+ 	cr.class = 0;
+ 
+-	if (!req(i1->arg[1], NULL_R))
++	if (!req(i1->arg[1], NULL_R)) {
+ 		typclass(&cr, &GC(typ)[i1->arg[1].val], 1, gpreg, fpreg);
++		ret_on_err();
++	}
+ 
+ 	cty = argsclass(i0, i1, ca, cr.class & Cptr);
+ 	stk = 0;
+@@ -490,6 +496,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
+ 
+ 	if (fn->retty >= 0) {
+ 		typclass(&cr, &GC(typ)[fn->retty], 1, gpreg, fpreg);
++		if (GC(in_error)) { return (Params){0}; }
+ 		if (cr.class & Cptr) {
+ 			fn->retr = newtmp("abi", Kl, fn);
+ 			emit(Ocopy, Kl, fn->retr, TMP(A0), NULL_R);
+@@ -600,6 +607,7 @@ rv64_abi(Fn *fn)
+ 		if (!ispar(i->op))
+ 			break;
+ 	p = selpar(fn, b->ins, i);
++	ret_on_err();
+ 	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
+ 	i0 = alloc(n * sizeof(Ins));
+ 	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
+@@ -617,6 +625,7 @@ rv64_abi(Fn *fn)
+ 			continue;
+ 		GC(curi) = &GC(insb)[NIns];
+ 		selret(b, fn);
++		ret_on_err();
+ 		for (i=&b->ins[b->nins]; i!=b->ins;)
+ 			switch ((--i)->op) {
+ 			default:
+@@ -627,6 +636,7 @@ rv64_abi(Fn *fn)
+ 					if (!isarg((i0-1)->op))
+ 						break;
+ 				selcall(fn, i0, i, &il);
++				ret_on_err();
+ 				i = i0;
+ 				break;
+ 			case Ovastart:
+diff --git a/rv64/isel.c b/rv64/isel.c
+index 7976639..16cf379 100644
+--- a/rv64/isel.c
++++ b/rv64/isel.c
+@@ -180,6 +180,7 @@ sel(Ins i, Fn *fn)
+ 	if (INRANGE(i.op, Oalloc, Oalloc1)) {
+ 		i0 = GC(curi) - 1;
+ 		salloc(i.to, i.arg[0], fn);
++		ret_on_err();
+ 		fixarg(&i0->arg[0], Kl, i0, fn);
+ 		return;
+ 	}
+@@ -242,8 +243,10 @@ rv64_isel(Fn *fn)
+ 				fixarg(&p->arg[n], p->cls, 0, fn);
+ 			}
+ 		seljmp(b, fn);
+-		for (i=&b->ins[b->nins]; i!=b->ins;)
++		for (i=&b->ins[b->nins]; i!=b->ins;) {
+ 			sel(*--i, fn);
++			ret_on_err();
++		}
+ 		b->nins = &GC(insb)[NIns] - GC(curi);
+ 		idup(&b->ins, GC(curi), b->nins);
+ 	}
+-- 
+2.47.2.vfs.0.1
+

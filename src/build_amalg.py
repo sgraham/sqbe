@@ -494,6 +494,11 @@ def main():
 #define SQ_NO_RETURN __attribute__((noreturn))
 #endif
 
+#ifndef SQ_TRAP
+#include <stdlib.h>
+#define SQ_TRAP() abort()
+#endif
+
 #ifndef SQ_ASSERT
 #include <assert.h>
 #define SQ_ASSERT(x) assert(x)
@@ -511,7 +516,8 @@ def main():
                 contents = namespace_static_funcs(ns, file, contents)
                 contents = label_renames(contents)
                 contents = staticize_targets(contents)
-                contents = rename_asserts(contents)
+
+            contents = rename_asserts(contents)
 
             if file == "arm64/all.h" or file.startswith("arm64/"):
                 contents = arm64_reg_rename(contents)
@@ -661,7 +667,7 @@ def main():
                 contents = remove_function(
                     contents, "static int", "qbe_parse_parserefl"
                 )
-                contents = remove_function(contents, "void", "err")
+                contents = remove_function(contents, "void", "err_")
                 contents = remove_function(contents, "static int", "qbe_parse_findtyp")
                 contents = remove_function(contents, "static int", "qbe_parse_parsecls")
                 contents = remove_function(contents, "static Ref", "qbe_parse_parseref")

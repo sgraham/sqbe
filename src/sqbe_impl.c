@@ -5,9 +5,8 @@
 #include <unistd.h>
 #endif  // _WIN32
 
-#include <setjmp.h>
-
-static jmp_buf _main_jmpbuf;
+#define SQ_ERR_CHECK(ret) { if (GC(in_error)) return ret; }
+#define SQ_ERR_CHECK_VOID() { if (GC(in_error)) return; }
 
 static SqOutputFn _output_func;
 
@@ -248,37 +247,17 @@ static void _gen_dbg_name(char* into, size_t len, const char* prefix) {
 #define SQ_COUNTOF(a) (sizeof(a) / sizeof(a[0]))
 #define SQ_COUNTOFI(a) ((int)(sizeof(a) / sizeof(a[0])))
 
-#define SQ_ERR_CHECK(ret)                   \
-  do {                                      \
-    if (sq_initialized == SQIS_ERROR)       \
-      return ret;                           \
-    if (setjmp(_main_jmpbuf) != 0) {        \
-      _clear_initialized_state(SQIS_ERROR); \
-      return ret;                           \
-    }                                       \
-  } while (0)
-
-#define SQ_ERR_CHECK_VOID()                 \
-  do {                                      \
-    if (sq_initialized == SQIS_ERROR)       \
-      return;                               \
-    if (setjmp(_main_jmpbuf) != 0) {        \
-      _clear_initialized_state(SQIS_ERROR); \
-      return;                               \
-    }                                       \
-  } while (0)
-
 #ifdef _MSC_VER
 #  define alloca _alloca
 #endif
 
-static void err(char* fmt, ...) {
+static void err_(char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   _output_func(fmt, ap);
   va_end(ap);
   sq_usermsgf("\n");
-  longjmp(_main_jmpbuf, 1);
+  GC(in_error) = true;
 }
 
 static void die_(char* file, char* fmt, ...) {
@@ -288,7 +267,7 @@ static void die_(char* file, char* fmt, ...) {
   _output_func(fmt, ap);
   va_end(ap);
   sq_usermsgf("\n");
-  abort();
+  SQ_TRAP();
 }
 
 SqLinkage sq_linkage_create(int alignment,
@@ -297,6 +276,7 @@ SqLinkage sq_linkage_create(int alignment,
                             bool common,
                             const char* section_name,
                             const char* section_flags) {
+  SQ_ERR_CHECK((SqLinkage){0});
   SQ_ASSERT(_num_linkages < _max_linkages);
   SqLinkage ret = {_num_linkages++};
   _linkage_pool[ret.u] = (Lnk){
@@ -508,7 +488,6 @@ SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
 
 SqRef sq_func_param_named(SqType type, const char* name) {
   SQ_ERR_CHECK((SqRef){0});
-
   int ty;
   int k = _sqtype_to_cls_and_ty(type, &ty);
   Ref r = newtmp(0, Kx, G(curf));
@@ -526,7 +505,7 @@ SqRef sq_func_param_named(SqType type, const char* name) {
 }
 
 SqRef sq_const_int(int64_t i) {
-  // SQ_ERR_CHECK((SqRef){0});
+  SQ_ERR_CHECK((SqRef){0});
   Con c = {0};
   c.type = CBits;
   c.bits.i = i;
@@ -534,7 +513,7 @@ SqRef sq_const_int(int64_t i) {
 }
 
 SqRef sq_const_single(float f) {
-  // SQ_ERR_CHECK((SqRef){0});
+  SQ_ERR_CHECK((SqRef){0});
   Con c = {0};
   c.type = CBits;
   c.bits.s = f;
@@ -543,7 +522,7 @@ SqRef sq_const_single(float f) {
 }
 
 SqRef sq_const_double(double d) {
-  // SQ_ERR_CHECK((SqRef){0});
+  SQ_ERR_CHECK((SqRef){0});
   Con c = {0};
   c.type = CBits;
   c.bits.d = d;
@@ -556,12 +535,13 @@ SqRef sq_const_double(double d) {
 // the function, we need to create a new one in the caller).
 SqSymbol sq_func_end(void) {
   SQ_ERR_CHECK((SqSymbol){0});
-
   if (!G(curb)) {
-    err("empty function");
+    err_("empty function");
+    return (SqSymbol){0};
   }
   if (G(curb)->jmp.type == Jxxx) {
-    err("last block misses jump");
+    err_("last block misses jump");
+    return (SqSymbol){0};
   }
   G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
   G(curf)->nmem = 0;
@@ -571,6 +551,9 @@ SqSymbol sq_func_end(void) {
     SQ_ASSERT(b->dlink == 0);
   }
   qbe_parse_typecheck(G(curf));
+  if (GC(in_error)) {
+    return (SqSymbol){0};
+  }
 
   SqSymbol ret = {intern(G(curf)->name)};
 
@@ -585,7 +568,6 @@ SqSymbol sq_func_end(void) {
 
 SqRef sq_ref_for_symbol(SqSymbol sym) {
   SQ_ERR_CHECK((SqRef){0});
-
   SQ_ASSERT(G(curf));
   Con c = {0};
   c.type = CAddr;
@@ -596,7 +578,6 @@ SqRef sq_ref_for_symbol(SqSymbol sym) {
 
 SqRef sq_ref_declare(void) {
   SQ_ERR_CHECK((SqRef){0});
-
   Ref tmp = newtmp(NULL, Kx, G(curf));
   SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
   return _internal_ref_to_sqref(tmp);
@@ -604,7 +585,6 @@ SqRef sq_ref_declare(void) {
 
 SqRef sq_extern(const char* name) {
   SQ_ERR_CHECK((SqRef){0});
-
   Con c = {0};
   c.type = CAddr;
   c.sym.id = intern((char*)name);
@@ -614,7 +594,6 @@ SqRef sq_extern(const char* name) {
 
 SqBlock sq_block_declare_named(const char* name) {
   SQ_ERR_CHECK((SqBlock){0});
-
   SQ_ASSERT(_num_blocks < _max_blocks);
   SqBlock ret = {_num_blocks++};
   Blk* blk = _sqblock_to_internal_blk(ret);
@@ -626,7 +605,6 @@ SqBlock sq_block_declare_named(const char* name) {
 
 void sq_block_start(SqBlock block) {
   SQ_ERR_CHECK_VOID();
-
   Blk* b = _sqblock_to_internal_blk(block);
   if (G(curb) && G(curb)->jmp.type == Jxxx) {
     qbe_parse_closeblk();
@@ -644,23 +622,20 @@ void sq_block_start(SqBlock block) {
 
 SqBlock sq_block_declare_and_start_named(const char* name) {
   SQ_ERR_CHECK((SqBlock){0});
-
   SqBlock new = sq_block_declare_named(name);
   sq_block_start(new);
   return new;
 }
 
 void sq_i_ret(SqRef val) {
-  Ref nullr = NULL_R;
   SQ_ERR_CHECK_VOID();
-
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   G(curb)->jmp.type = Jretw + G(rcls);
   if (val.u == 0) {
     G(curb)->jmp.type = Jret0;
   } else if (G(rcls) != K0) {
     Ref r = _sqref_to_internal_ref(val);
-    if (req(r, nullr)) {
+    if (req(r, NULL_R)) {
       err("invalid return value");
     }
     G(curb)->jmp.arg = r;
@@ -675,9 +650,7 @@ void sq_i_ret_void(void) {
 }
 
 SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
-  Ref nullr = NULL_R;
   SQ_ERR_CHECK((SqRef){0});
-
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   // args are inserted into instrs first, then the call
   for (int i = 0; i < num_args; ++i) {
@@ -686,7 +659,7 @@ SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
     int k = _sqtype_to_cls_and_ty(cas[i].type, &ty);
     Ref r = _sqref_to_internal_ref(cas[i].value);
     // TODO: env
-    if (k == K0 && req(r, nullr)) {
+    if (k == K0 && req(r, NULL_R)) {
       // This is our hacky special case for where '...' would appear in the call.
       *GC(curi) = (Ins){.op = Oargv};
     } else if (k == Kc) {
@@ -727,19 +700,23 @@ SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
 }
 
 SqRef sq_i_call0(SqType result, SqRef func) {
+  SQ_ERR_CHECK((SqRef){0});
   return sq_i_calla(result, func, 0, NULL);
 }
 
 SqRef sq_i_call1(SqType result, SqRef func, SqCallArg ca0) {
+  SQ_ERR_CHECK((SqRef){0});
   return sq_i_calla(result, func, 1, &ca0);
 }
 
 SqRef sq_i_call2(SqType result, SqRef func, SqCallArg ca0, SqCallArg ca1) {
+  SQ_ERR_CHECK((SqRef){0});
   SqCallArg cas[2] = {ca0, ca1};
   return sq_i_calla(result, func, 2, cas);
 }
 
 SqRef sq_i_call3(SqType result, SqRef func, SqCallArg ca0, SqCallArg ca1, SqCallArg ca2) {
+  SQ_ERR_CHECK((SqRef){0});
   SqCallArg cas[3] = {ca0, ca1, ca2};
   return sq_i_calla(result, func, 3, cas);
 }
@@ -750,6 +727,7 @@ SqRef sq_i_call4(SqType result,
                  SqCallArg ca1,
                  SqCallArg ca2,
                  SqCallArg ca3) {
+  SQ_ERR_CHECK((SqRef){0});
   SqCallArg cas[4] = {ca0, ca1, ca2, ca3};
   return sq_i_calla(result, func, 4, cas);
 }
@@ -761,6 +739,7 @@ SqRef sq_i_call5(SqType result,
                  SqCallArg ca2,
                  SqCallArg ca3,
                  SqCallArg ca4) {
+  SQ_ERR_CHECK((SqRef){0});
   SqCallArg cas[5] = {ca0, ca1, ca2, ca3, ca4};
   return sq_i_calla(result, func, 5, cas);
 }
@@ -773,6 +752,7 @@ SqRef sq_i_call6(SqType result,
                  SqCallArg ca3,
                  SqCallArg ca4,
                  SqCallArg ca5) {
+  SQ_ERR_CHECK((SqRef){0});
   SqCallArg cas[6] = {ca0, ca1, ca2, ca3, ca4, ca5};
   return sq_i_calla(result, func, 6, cas);
 }
@@ -787,11 +767,9 @@ void sq_i_jmp(SqBlock block) {
 }
 
 void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
-  Ref nullr = NULL_R;
   SQ_ERR_CHECK_VOID();
-
   Ref r = _sqref_to_internal_ref(cond);
-  if (req(r, nullr)) {
+  if (req(r, NULL_R)) {
     err("invalid argument for jnz jump");
   }
   G(curb)->jmp.type = Jjnz;
@@ -803,9 +781,9 @@ void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
 
 SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
   SQ_ERR_CHECK((SqRef){0});
-
   if (_ps != PPhi || G(curb) == G(curf)->start) {
-    err("unexpected phi instruction");
+    err_("unexpected phi instruction");
+    return (SqRef){0};
   }
 
   Ref tmp = newtmp(NULL, Kx, G(curf));
@@ -830,7 +808,6 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
 
 static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK_VOID();
-
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
@@ -845,7 +822,6 @@ static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef
 
 static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK((SqRef){0});
-
   Ref tmp = newtmp(NULL, Kx, G(curf));
   SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
   _normal_two_op_instr_into(op, tmp, size_class, arg0, arg1);
@@ -854,7 +830,6 @@ static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef a
 
 static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK_VOID();
-
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
@@ -868,7 +843,6 @@ static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
 
 static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0) {
   SQ_ERR_CHECK_VOID();
-
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
   SQ_ASSERT(_ps == PIns || _ps == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
@@ -883,7 +857,6 @@ static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef
 
 static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
   SQ_ERR_CHECK((SqRef){0});
-
   Ref tmp = newtmp(NULL, Kx, G(curf));
   SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
   _normal_one_op_instr_into(op, tmp, size_class, arg0);
@@ -892,7 +865,6 @@ static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
 
 void sq_data_start(SqLinkage linkage, const char* name) {
   SQ_ERR_CHECK_VOID();
-
   _curd_lnk = _linkage_to_internal_lnk(linkage);
   if (_curd_lnk.align == 0) {
     _curd_lnk.align = 8;
@@ -903,11 +875,11 @@ void sq_data_start(SqLinkage linkage, const char* name) {
   _curd.name = (char*)name;
   _curd.lnk = &_curd_lnk;
   qbe_main_data(&_curd);
+  // qbe_main_data need ret_on_err, but they're all tailcalls anyway.
 }
 
 void sq_data_byte(uint8_t val) {
   SQ_ERR_CHECK_VOID();
-
   _curd.isref = 0;
   _curd.isstr = 0;
   _curd.type = DB;
@@ -917,7 +889,6 @@ void sq_data_byte(uint8_t val) {
 
 void sq_data_half(uint16_t val) {
   SQ_ERR_CHECK_VOID();
-
   _curd.isref = 0;
   _curd.isstr = 0;
   _curd.type = DH;
@@ -927,7 +898,6 @@ void sq_data_half(uint16_t val) {
 
 void sq_data_word(uint32_t val) {
   SQ_ERR_CHECK_VOID();
-
   _curd.isref = 0;
   _curd.isstr = 0;
   _curd.type = DW;
@@ -937,7 +907,6 @@ void sq_data_word(uint32_t val) {
 
 void sq_data_long(uint64_t val) {
   SQ_ERR_CHECK_VOID();
-
   _curd.isref = 0;
   _curd.isstr = 0;
   _curd.type = DL;
@@ -947,7 +916,6 @@ void sq_data_long(uint64_t val) {
 
 void sq_data_single(float val) {
   SQ_ERR_CHECK_VOID();
-
   _curd.isref = 0;
   _curd.isstr = 0;
   _curd.type = DW;
@@ -957,7 +925,6 @@ void sq_data_single(float val) {
 
 void sq_data_double(double val) {
   SQ_ERR_CHECK_VOID();
-
   _curd.isref = 0;
   _curd.isstr = 0;
   _curd.type = DL;
@@ -967,7 +934,6 @@ void sq_data_double(double val) {
 
 void sq_data_ref(SqSymbol ref, int64_t offset) {
   SQ_ERR_CHECK_VOID();
-
   _curd.isref = 1;
   _curd.isstr = 0;
   _curd.type = DL;
@@ -1028,7 +994,6 @@ static size_t _str_repr(const char* str, char* into) {
 
 void sq_data_string(const char* str) {
   SQ_ERR_CHECK_VOID();
-
   _curd.type = DB;
   _curd.isstr = 1;
   // QBE sneakily avoids de-escaping in the tokenizer and re-escaping during
@@ -1046,7 +1011,6 @@ void sq_data_string(const char* str) {
 
 SqSymbol sq_data_end(void) {
   SQ_ERR_CHECK((SqSymbol){0});
-
   _curd.isref = 0;
   _curd.isstr = 0;
   _curd.type = DEnd;
@@ -1068,7 +1032,6 @@ SqSymbol sq_data_end(void) {
 // size/alignment for additional values).
 void sq_type_struct_start(const char* name, int align) {
   SQ_ERR_CHECK_VOID();
-
   vgrow(&GC(typ), _ntyp + 1);
   _curty = &GC(typ)[_ntyp++];
   _curty->isdark = 0;
@@ -1094,7 +1057,6 @@ void sq_type_struct_start(const char* name, int align) {
 
 void sq_type_add_field_with_count(SqType field, uint32_t count) {
   SQ_ERR_CHECK_VOID();
-
   Field* fld = _curty->fields[0];
 
   Typ* ty1;
@@ -1177,13 +1139,11 @@ void sq_type_add_field_with_count(SqType field, uint32_t count) {
 
 void sq_type_add_field(SqType field) {
   SQ_ERR_CHECK_VOID();
-
   sq_type_add_field_with_count(field, 1);
 }
 
 SqType sq_type_struct_end(void) {
   SQ_ERR_CHECK((SqType){0});
-
   Field* fld = _curty->fields[0];
   fld[_curty_build_n].type = FEnd;
   int a = 1 << _curty_build_al;
