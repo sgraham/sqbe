@@ -260,6 +260,12 @@ static void _clear_initialized_state(void) {
   _sq_arena_destroy(SQC(fn_arena));
   _sq_arena_destroy(SQC(global_arena));
   memset(&g_sq_context, 0, sizeof(SqContext));
+
+  // Mostly want to clear this on shutdown/error, but save the fact that we're
+  // actually in an error. Re-initialization will clear the GlobalContext fully.
+  int saved_in_error = GC(in_error);
+  memset(&global_context, 0, sizeof(GlobalContext));
+  GC(in_error) = saved_in_error;
 }
 
 static void err_(char* fmt, ...) {
@@ -346,13 +352,15 @@ static Blk* _sqblock_to_internal_blk(SqBlock block) {
 void sq_init(SqConfiguration* config) {
   SQ_ASSERT(SQC(initialized) == SQIS_UNINITIALIZED);
 
-  reinit_global_context(&global_context);
   memset(&g_sq_context, 0, sizeof(SqContext));
+  memset(&global_context, 0, sizeof(GlobalContext));
 
   SQC(fn_arena) =
       _sq_arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
   SQC(global_arena) =
       _sq_arena_create(config->max_compiler_global_reserve, config->global_commit_chunk_size);
+
+  global_context.insb = _sq_arena_push(SQC(fn_arena), sizeof(Ins) * NIns, _Alignof(Ins));
 
   // Don't think there's any need to make these separate from the main fn/global
   // arenas. Blk are Fn scoped, Lnk are global.

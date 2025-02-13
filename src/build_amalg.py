@@ -623,6 +623,7 @@ def main():
             if file == "main.c":
                 contents = remove_function(contents, "int", "main")
                 contents = remove_lines_range(contents, "static Target *tlist", "};")
+                contents = remove_function(contents, "void", "reinit_global_context")
 
             if file == "util.c":
                 contents = remove_function(contents, "void *", "emalloc")

@@ -1,0 +1,53 @@
+From c6a122ef84fafeb4c469bcc3487e9968010ade2c Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Thu, 13 Feb 2025 10:42:38 -0800
+Subject: [PATCH] Reduce size of GlobalContext by mallocing `insb`
+
+---
+ all.h  | 4 ++--
+ main.c | 7 ++++---
+ 2 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/all.h b/all.h
+index 572bfff..e83e544 100644
+--- a/all.h
++++ b/all.h
+@@ -578,7 +578,7 @@ typedef struct GlobalContext {
+ 
+ 	/* nominally owned by util.c, but used everywhere */
+ 	Typ *typ;
+-	Ins insb[NIns];
++	Ins* insb;  // Ins insb[NIns];
+ 
+ 	/* nominally owned by main.c, but used everywhere */
+ 	Target T;
+@@ -604,7 +604,7 @@ extern GlobalContext global_context;
+ 
+ // This should be used sparingly for things that are "really" global. Normally,
+ // prefer a file-local G(x) that prefixes with the filename. Currently, just
+-// `typ`, `insb`, and `curi`, `debug`, and `T`.
++// `typ`, `insb`, and `curi`, `debug`, `T`, and `in_error`.
+ #define GC(x) global_context.x
+ 
+ void reinit_global_context(GlobalContext* ctx);
+diff --git a/main.c b/main.c
+index 708b93d..c893fea 100644
+--- a/main.c
++++ b/main.c
+@@ -10,9 +10,10 @@ GlobalContext global_context;
+ void
+ reinit_global_context(GlobalContext* ctx) {
+ 	memset(ctx, 0, sizeof *ctx);
+-  // It'd be nice not to need this.
+-  ctx->util__pool = ctx->util__ptr;
+-  ctx->util__nptr = 1;
++	// It'd be nice not to need this, but sqbe can drop it, so not too big a deal.
++	ctx->util__pool = ctx->util__ptr;
++	ctx->util__nptr = 1;
++	GC(insb) = malloc(sizeof(Ins) * NIns);
+ }
+ 
+ extern Target T_amd64_sysv;
+-- 
+2.47.2.vfs.0.1
+
