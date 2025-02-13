@@ -25,6 +25,7 @@ SQ_OPAQUE_STRUCT_DEF(SqType);
 SQ_OPAQUE_STRUCT_DEF(SqBlock);
 SQ_OPAQUE_STRUCT_DEF(SqRef);
 SQ_OPAQUE_STRUCT_DEF(SqSymbol);
+SQ_OPAQUE_STRUCT_DEF(SqItemCtx);
 
 #undef SQ_OPAQUE_STRUCT_DEF
 
@@ -135,11 +136,13 @@ void sq_type_add_field(SqType field);
 void sq_type_add_field_with_count(SqType field, uint32_t count);
 SqType sq_type_struct_end(void);
 
-SqRef sq_const_int(int64_t i);
-SqRef sq_const_single(float f);
-SqRef sq_const_double(double d);
+void sq_itemctx_activate(SqItemCtx ctx);
 
-void sq_data_start(SqLinkage linkage, const char* name);
+// The returned SqItemCtx is already sq_itemctx_activate()d. If generating
+// multiple functions or data declarations at the same time, the correct one
+// needs to be (re)activated to set the context for subsequent calls to
+// sq_data_* functions.
+SqItemCtx sq_data_start(SqLinkage linkage, const char* name);
 void sq_data_byte(uint8_t val);
 void sq_data_half(uint16_t val);
 void sq_data_word(uint32_t val);
@@ -150,10 +153,18 @@ void sq_data_double(double d);
 void sq_data_ref(SqSymbol ref, int64_t offset);
 SqSymbol sq_data_end(void);
 
-// Returns the start block (can be useful for subsequent phi instructions,
-// otherwise you can just ignore this return value.)
-SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name);
+// The returned SqItemCtx is already sq_itemctx_activate()d. If generating
+// multiple functions or data declarations at the same time, the correct one
+// needs to be (re)activated to set the context for subsequent calls to
+// sq_func_*, sq_ref_*, sq_block_*, sq_i_*, or sq_const_* functions.
+SqItemCtx sq_func_start(SqLinkage linkage, SqType return_type, const char* name);
 SqSymbol sq_func_end(void);
+
+SqBlock sq_func_get_entry_block(void);
+
+SqRef sq_const_int(int64_t i);
+SqRef sq_const_single(float f);
+SqRef sq_const_double(double d);
 
 // SqRef are function local, so the return value from cannot be cached across
 // functions.
@@ -164,7 +175,7 @@ SqRef sq_ref_for_symbol(SqSymbol sym);
 // you need the SqRef before the instruction that generates it.
 SqRef sq_ref_declare(void);
 
-SqRef sq_extern(const char* name);
+SqRef sq_ref_extern(const char* name);
 
 #define sq_func_param(type) sq_func_param_named(type, NULL)
 SqRef sq_func_param_named(SqType type, const char* name);

@@ -21,7 +21,8 @@ int main(int argc, char** argv) {
   config.output = fopen(argv[1], "wb");
   sq_init(&config);
 
-  SqBlock b_start = sq_func_start(sq_linkage_export, sq_type_word, "main");
+  SqItemCtx ctx = sq_func_start(sq_linkage_export, sq_type_word, "main");
+  SqBlock b_start = sq_func_get_entry_block();
 
   SqRef y = sq_i_alloc4(sq_const_int(4));
   SqRef y1 = sq_i_add(sq_type_long, y, sq_const_int(1));
@@ -36,7 +37,7 @@ int main(int argc, char** argv) {
   SqRef c = sq_i_add(sq_type_word, n, sq_const_int('0'));
   sq_i_storeb(c, y);
 
-  SqRef r = sq_i_call1(sq_type_word, sq_extern("puts"), (SqCallArg){sq_type_long, y});
+  SqRef r = sq_i_call1(sq_type_word, sq_ref_extern("puts"), (SqCallArg){sq_type_long, y});
 
   sq_i_add_into(n1, sq_type_word, n, sq_const_int(1));
   SqRef cmp = sq_i_cslew(sq_type_word, n1, sq_const_int(9));

@@ -119,6 +119,7 @@ def do_test(f):
     if compileproc.returncode != rc:
         print("FAILED")
         print("EXPECTED rc %d, got %d" % (rc, compileproc.returncode))
+        sys.exit(1)
     elif rc != 0:
         if compileproc.stdout != error:
             print("COMPILE FAILED AS EXPECTED, BUT ERROR UNMATCHED")

@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
   config.output = fopen(argv[1], "wb");
   sq_init(&config);
 
-  SqBlock b_start = sq_func_start(sq_linkage_export, sq_type_word, "main");
+  sq_func_start(sq_linkage_export, sq_type_word, "main");
   sq_func_end();
 
   if (!sq_shutdown()) {

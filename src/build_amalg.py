@@ -575,6 +575,10 @@ def main():
 
             if file.endswith("all.h"):
                 contents = staticize_prototypes(contents)
+                contents = contents.replace(
+                    "static void reinit_global_context(GlobalContext* ctx);\n", ""
+                )
+
                 # MSVC annoyingly doesn't handle static forward declarations
                 # without a size properly and just dies at the point of
                 # declaration. We can't easily restructure to get the ops,

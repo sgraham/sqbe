@@ -16,24 +16,42 @@ typedef enum SqInitStatus {
   SQIS_INITIALIZED_NO_FIN = 2,
 } SqInitStatus;
 
-typedef struct SqContext {
-  SqInitStatus initialized;
+// These things are sqbe state that have to be saved/restored on entry/exit from
+// functions (or data)s. Additionally, it has to save/restore a lot of
+// GlobalContext (but not all), so we keep a GlobalContext here too.
+typedef struct SqPerFuncState {
+  // This is allocated for all of them during sq_init, and just reset when done.
+  SqArena* fn_arena;
 
-  SqOutputFn output_func;
   PState ps;
-
-  Blk* block_pool;
+  Blk* block_pool;  // This is allocated from fn_arena.
   unsigned int num_blocks;
   unsigned int max_blocks;
 
-  Lnk* linkage_pool;
+  Dat curd;
+  Lnk curd_lnk;
+
+  SqBlock start_block;
+
+  Ins* insb;
+  Ins* curi;
+} SqPerFuncState;
+
+typedef struct SqContext {
+  SqInitStatus initialized;
+
+  SqArena* global_arena;
+
+  //
+  // Global lifetime starts here.
+  //
+  uint ntyp;  // This is how many elements are in GC(typ), very hokey.
+  SqOutputFn output_func;
+
+  Lnk* linkage_pool;  // This is allocated from global_arena.
   unsigned int num_linkages;
   unsigned int max_linkages;
 
-  SqArena* global_arena;
-  SqArena* fn_arena;
-
-  uint ntyp;
   Typ* curty;
   int curty_build_n;
   uint64_t curty_build_sz;
@@ -41,8 +59,21 @@ typedef struct SqContext {
 
   int dbg_name_counter;
 
-  Dat curd;
-  Lnk curd_lnk;
+  // Copied here during init so allocating a SqPerFuncState has it.
+  unsigned int config_max_blocks;
+
+  //
+  // Per-func/data lifetime storage.
+  //
+  SqPerFuncState pfs;  // This is the one that's been sq_itemctx_activate()d,
+                       // and is always a copy of something in
+                       // saved_per_func_states.
+  SqItemCtx current_itemctx;
+
+#define SQ_MAX_FUNC_CONTEXTS 8
+  SqPerFuncState saved_per_func_states[SQ_MAX_FUNC_CONTEXTS];
+  GlobalContext saved_global_contexts[SQ_MAX_FUNC_CONTEXTS];
+  bool saved_per_func_state_in_use[SQ_MAX_FUNC_CONTEXTS];
 } SqContext;
 
 #define SQC(x) g_sq_context.x
@@ -227,26 +258,26 @@ void* alloc(size_t n) {
   if (n == 0) {
     return NULL;
   }
-  void* p = _sq_arena_push(SQC(fn_arena), n, 8);
+  void* p = _sq_arena_push(SQC(pfs.fn_arena), n, 8);
   memset(p, 0, n);
   return p;
 }
 
 void freeall(void) {
-  _sq_arena_pop_to(SQC(fn_arena), 0);
+  _sq_arena_pop_to(SQC(pfs.fn_arena), 0);
 }
 
 void qbe_free(void* ptr) {
   (void)ptr;  // Nothing until arena_destroy.
 }
 
-static void _gen_dbg_name(char* into, size_t len, const char* prefix) {
+static void _sq_gen_dbg_name(char* into, size_t len, const char* prefix) {
   snprintf(into, len, "%s_%d", prefix ? prefix : "", SQC(dbg_name_counter)++);
 }
 
 #define SQ_NAMED_IF_DEBUG(into, provided)        \
   if (global_context.main__dbg) {                \
-    _gen_dbg_name(into, sizeof(into), provided); \
+    _sq_gen_dbg_name(into, sizeof(into), provided); \
   }
 
 #define SQ_COUNTOF(a) (sizeof(a) / sizeof(a[0]))
@@ -257,7 +288,9 @@ static void _gen_dbg_name(char* into, size_t len, const char* prefix) {
 #endif
 
 static void _clear_initialized_state(void) {
-  _sq_arena_destroy(SQC(fn_arena));
+  for (int i = 0; i < SQ_MAX_FUNC_CONTEXTS; ++i) {
+    _sq_arena_destroy(g_sq_context.saved_per_func_states[i].fn_arena);
+  }
   _sq_arena_destroy(SQC(global_arena));
   memset(&g_sq_context, 0, sizeof(SqContext));
 
@@ -308,7 +341,7 @@ SqLinkage sq_linkage_create(int alignment,
   return ret;
 }
 
-static Lnk _linkage_to_internal_lnk(SqLinkage linkage) {
+static Lnk _sqlinkage_to_internal_lnk(SqLinkage linkage) {
   SQ_ASSERT(linkage.u < SQC(num_linkages));
   return SQC(linkage_pool)[linkage.u];
 }
@@ -345,8 +378,8 @@ static int _default_output_fn(const char* fmt, va_list ap) {
 }
 
 static Blk* _sqblock_to_internal_blk(SqBlock block) {
-  SQ_ASSERT(block.u < SQC(num_blocks));
-  return &SQC(block_pool)[block.u];
+  SQ_ASSERT(block.u < SQC(pfs.num_blocks));
+  return &SQC(pfs.block_pool)[block.u];
 }
 
 void sq_init(SqConfiguration* config) {
@@ -355,17 +388,15 @@ void sq_init(SqConfiguration* config) {
   memset(&g_sq_context, 0, sizeof(SqContext));
   memset(&global_context, 0, sizeof(GlobalContext));
 
-  SQC(fn_arena) =
-      _sq_arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
+  SQC(current_itemctx).u = SQ_MAX_FUNC_CONTEXTS;  // Hack, mark as none-active.
+
   SQC(global_arena) =
       _sq_arena_create(config->max_compiler_global_reserve, config->global_commit_chunk_size);
-
-  global_context.insb = _sq_arena_push(SQC(fn_arena), sizeof(Ins) * NIns, _Alignof(Ins));
-
-  // Don't think there's any need to make these separate from the main fn/global
-  // arenas. Blk are Fn scoped, Lnk are global.
-  SQC(max_blocks) = config->max_blocks_per_function;
-  SQC(block_pool) = _sq_arena_push(SQC(fn_arena), sizeof(Blk) * SQC(max_blocks), _Alignof(Blk));
+  for (int i = 0; i < SQ_MAX_FUNC_CONTEXTS; ++i) {
+    SQC(saved_per_func_states)[i].fn_arena =
+        _sq_arena_create(config->max_compiler_function_reserve, config->function_commit_chunk_size);
+  }
+  SQC(config_max_blocks) = config->max_blocks_per_function;
 
   SQC(max_linkages) = config->max_linkage_definitions;
   SQC(linkage_pool) =
@@ -458,16 +489,51 @@ bool sq_shutdown(void) {
   return true;
 }
 
-SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
-  SQ_ERR_CHECK((SqBlock){0});
+static SqItemCtx _sq_allocate_and_activate_itemctx(void) {
+  unsigned int i = 0;
+  SqPerFuncState* alloc_pfs = NULL;
+  for (i = 0; i < SQ_MAX_FUNC_CONTEXTS; ++i) {
+    if (!SQC(saved_per_func_state_in_use)[i]) {
+      SQC(saved_per_func_state_in_use)[i] = true;
+      alloc_pfs = &SQC(saved_per_func_states)[i];
+      break;
+    }
+  }
+  if (i == SQ_MAX_FUNC_CONTEXTS) {
+    die("too many func contexts");
+  }
+  SQ_ASSERT(alloc_pfs);
 
-  Lnk lnk = _linkage_to_internal_lnk(linkage);
+  _sq_arena_pop_to(alloc_pfs->fn_arena, 0);
+  alloc_pfs->ps = 0;
+  alloc_pfs->block_pool =
+      _sq_arena_push(alloc_pfs->fn_arena, sizeof(Blk) * SQC(config_max_blocks), _Alignof(Blk));
+  alloc_pfs->num_blocks = 0;
+  alloc_pfs->max_blocks = SQC(config_max_blocks);
+  alloc_pfs->curd = (Dat){0};
+  alloc_pfs->curd_lnk = (Lnk){0};
+
+  // TODO: probably more that has to be saved/restored from GlobalContext
+  alloc_pfs->insb = _sq_arena_push(alloc_pfs->fn_arena, sizeof(Ins) * NIns, _Alignof(Ins));
+  alloc_pfs->curi = NULL;
+
+  SqItemCtx ctx = {i};
+  sq_itemctx_activate(ctx);
+  return ctx;
+}
+
+SqItemCtx sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
+  SQ_ERR_CHECK((SqItemCtx){0});
+
+  SqItemCtx ctx = _sq_allocate_and_activate_itemctx();
+
+  Lnk lnk = _sqlinkage_to_internal_lnk(linkage);
   lnk.align = 16;
 
 #define G(x) global_context.parse__##x
 
   G(curb) = 0;
-  SQC(num_blocks) = 0;
+  SQC(pfs.num_blocks) = 0;
   GC(curi) = GC(insb);
   G(curf) = alloc(sizeof *G(curf));
   G(curf)->ntmp = 0;
@@ -489,9 +555,36 @@ SqBlock sq_func_start(SqLinkage linkage, SqType return_type, const char* name) {
   G(blink) = &G(curf)->start;
   G(rcls) = _sqtype_to_cls_and_ty(return_type, &G(curf)->retty);
   strncpy(G(curf)->name, name, NString - 1);
-  SQC(ps) = PLbl;
+  SQC(pfs.ps) = PLbl;
 
-  return sq_block_declare_and_start();
+  SQC(pfs.start_block) = sq_block_declare_and_start();
+  return ctx;
+}
+
+SqBlock sq_func_get_entry_block(void) {
+  SQ_ERR_CHECK((SqBlock){0});
+  return SQC(pfs.start_block);
+}
+
+// TODO: return the old one to help push/pop?
+void sq_itemctx_activate(SqItemCtx itemctx) {
+  SQ_ERR_CHECK_VOID();
+
+  // "write back" the current state to the saved state
+  if (SQC(current_itemctx.u < SQ_MAX_FUNC_CONTEXTS)) {
+    unsigned int i = SQC(current_itemctx).u;
+    SQC(pfs.insb) = global_context.insb;
+    SQC(pfs.curi) = global_context.curi;
+    SQC(saved_per_func_states)[i] = SQC(pfs);
+  }
+
+  // And then set the current state to the provided state.
+  SQ_ASSERT(itemctx.u < SQ_MAX_FUNC_CONTEXTS);
+  SQC(pfs) = SQC(saved_per_func_states)[itemctx.u];
+  // TODO: more?
+  global_context.insb = SQC(pfs.insb);
+  global_context.curi = SQC(pfs.curi);
+  SQC(current_itemctx) = itemctx;
 }
 
 SqRef sq_func_param_named(SqType type, const char* name) {
@@ -553,7 +646,7 @@ SqSymbol sq_func_end(void) {
   }
   G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
   G(curf)->nmem = 0;
-  G(curf)->nblk = SQC(num_blocks);
+  G(curf)->nblk = SQC(pfs.num_blocks);
   G(curf)->rpo = 0;
   for (Blk* b = G(curf)->start; b; b = b->link) {
     SQ_ASSERT(b->dlink == 0);
@@ -569,7 +662,7 @@ SqSymbol sq_func_end(void) {
 
   G(curf) = NULL;
 
-  _sq_arena_pop_to(SQC(fn_arena), 0);
+  _sq_arena_pop_to(SQC(pfs.fn_arena), 0);
 
   return ret;
 }
@@ -591,7 +684,7 @@ SqRef sq_ref_declare(void) {
   return _internal_ref_to_sqref(tmp);
 }
 
-SqRef sq_extern(const char* name) {
+SqRef sq_ref_extern(const char* name) {
   SQ_ERR_CHECK((SqRef){0});
   Con c = {0};
   c.type = CAddr;
@@ -602,8 +695,8 @@ SqRef sq_extern(const char* name) {
 
 SqBlock sq_block_declare_named(const char* name) {
   SQ_ERR_CHECK((SqBlock){0});
-  SQ_ASSERT(SQC(num_blocks) < SQC(max_blocks));
-  SqBlock ret = {SQC(num_blocks)++};
+  SQ_ASSERT(SQC(pfs.num_blocks) < SQC(pfs.max_blocks));
+  SqBlock ret = {SQC(pfs.num_blocks)++};
   Blk* blk = _sqblock_to_internal_blk(ret);
   memset(blk, 0, sizeof(Blk));
   blk->id = ret.u;
@@ -625,7 +718,7 @@ void sq_block_start(SqBlock block) {
   *G(blink) = b;
   G(curb) = b;
   G(plink) = &G(curb)->phi;
-  SQC(ps) = PPhi;
+  SQC(pfs.ps) = PPhi;
 }
 
 SqBlock sq_block_declare_and_start_named(const char* name) {
@@ -637,7 +730,7 @@ SqBlock sq_block_declare_and_start_named(const char* name) {
 
 void sq_i_ret(SqRef val) {
   SQ_ERR_CHECK_VOID();
-  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
+  SQ_ASSERT(SQC(pfs.ps) == PIns || SQC(pfs.ps) == PPhi);
   G(curb)->jmp.type = Jretw + G(rcls);
   if (val.u == 0) {
     G(curb)->jmp.type = Jret0;
@@ -649,7 +742,7 @@ void sq_i_ret(SqRef val) {
     G(curb)->jmp.arg = r;
   }
   qbe_parse_closeblk();
-  SQC(ps) = PLbl;
+  SQC(pfs.ps) = PLbl;
 }
 
 void sq_i_ret_void(void) {
@@ -659,7 +752,7 @@ void sq_i_ret_void(void) {
 
 SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
   SQ_ERR_CHECK((SqRef){0});
-  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
+  SQ_ASSERT(SQC(pfs.ps) == PIns || SQC(pfs.ps) == PPhi);
   // args are inserted into instrs first, then the call
   for (int i = 0; i < num_args; ++i) {
     SQ_ASSERT(GC(curi) - GC(insb) < NIns);
@@ -703,7 +796,7 @@ SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
     GC(curi)->to = tmp;
     ++GC(curi);
   }
-  SQC(ps) = PIns;
+  SQC(pfs.ps) = PIns;
   return _internal_ref_to_sqref(tmp);
 }
 
@@ -768,7 +861,7 @@ SqRef sq_i_call6(SqType result,
 void sq_i_jmp(SqBlock block) {
   SQ_ERR_CHECK_VOID();
 
-  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
+  SQ_ASSERT(SQC(pfs.ps) == PIns || SQC(pfs.ps) == PPhi);
   G(curb)->jmp.type = Jjmp;
   G(curb)->s1 = _sqblock_to_internal_blk(block);
   qbe_parse_closeblk();
@@ -789,7 +882,7 @@ void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
 
 SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
   SQ_ERR_CHECK((SqRef){0});
-  if (SQC(ps) != PPhi || G(curb) == G(curf)->start) {
+  if (SQC(pfs.ps) != PPhi || G(curb) == G(curf)->start) {
     err_("unexpected phi instruction");
     return (SqRef){0};
   }
@@ -810,14 +903,14 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
   phi->narg = i;
   *G(plink) = phi;
   G(plink) = &phi->link;
-  SQC(ps) = PPhi;
+  SQC(pfs.ps) = PPhi;
   return _internal_ref_to_sqref(tmp);
 }
 
 static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK_VOID();
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
-  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
+  SQ_ASSERT(SQC(pfs.ps) == PIns || SQC(pfs.ps) == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
   GC(curi)->cls = size_class.u;
@@ -825,7 +918,7 @@ static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
   GC(curi)->arg[1] = _sqref_to_internal_ref(arg1);
   ++GC(curi);
-  SQC(ps) = PIns;
+  SQC(pfs.ps) = PIns;
 }
 
 static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef arg1) {
@@ -838,7 +931,7 @@ static SqRef _normal_two_op_instr(int op, SqType size_class, SqRef arg0, SqRef a
 
 static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK_VOID();
-  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
+  SQ_ASSERT(SQC(pfs.ps) == PIns || SQC(pfs.ps) == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
   GC(curi)->cls = SQ_TYPE_W;
@@ -846,13 +939,13 @@ static void _normal_two_op_void_instr(int op, SqRef arg0, SqRef arg1) {
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
   GC(curi)->arg[1] = _sqref_to_internal_ref(arg1);
   ++GC(curi);
-  SQC(ps) = PIns;
+  SQC(pfs.ps) = PIns;
 }
 
 static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0) {
   SQ_ERR_CHECK_VOID();
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);
-  SQ_ASSERT(SQC(ps) == PIns || SQC(ps) == PPhi);
+  SQ_ASSERT(SQC(pfs.ps) == PIns || SQC(pfs.ps) == PPhi);
   SQ_ASSERT(GC(curi) - GC(insb) < NIns);
   GC(curi)->op = op;
   GC(curi)->cls = size_class.u;
@@ -860,7 +953,7 @@ static void _normal_one_op_instr_into(int op, Ref into, SqType size_class, SqRef
   GC(curi)->arg[0] = _sqref_to_internal_ref(arg0);
   GC(curi)->arg[1] = NULL_R;
   ++GC(curi);
-  SQC(ps) = PIns;
+  SQC(pfs.ps) = PIns;
 }
 
 static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
@@ -871,83 +964,89 @@ static SqRef _normal_one_op_instr(int op, SqType size_class, SqRef arg0) {
   return _internal_ref_to_sqref(tmp);
 }
 
-void sq_data_start(SqLinkage linkage, const char* name) {
-  SQ_ERR_CHECK_VOID();
-  SQC(curd_lnk) = _linkage_to_internal_lnk(linkage);
-  if (SQC(curd_lnk).align == 0) {
-    SQC(curd_lnk).align = 8;
+SqItemCtx sq_data_start(SqLinkage linkage, const char* name) {
+  SQ_ERR_CHECK((SqItemCtx){0});
+
+  SqItemCtx ctx = _sq_allocate_and_activate_itemctx();
+
+  SQC(pfs.curd_lnk) = _sqlinkage_to_internal_lnk(linkage);
+  if (SQC(pfs.curd_lnk).align == 0) {
+    SQC(pfs.curd_lnk).align = 8;
   }
 
-  SQC(curd) = (Dat){0};
-  SQC(curd).type = DStart;
-  SQC(curd).name = (char*)name;
-  SQC(curd).lnk = &SQC(curd_lnk);
-  qbe_main_data(&SQC(curd));
-  // qbe_main_data need ret_on_err, but they're all tailcalls anyway.
+  SQC(pfs.curd) = (Dat){0};
+  SQC(pfs.curd).type = DStart;
+  SQC(pfs.curd).name = (char*)name;
+  SQC(pfs.curd).lnk = &SQC(pfs.curd_lnk);
+  qbe_main_data(&SQC(pfs.curd));
+  if (GC(in_error)) { return (SqItemCtx){0}; }
+
+  return ctx;
 }
 
 void sq_data_byte(uint8_t val) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).isref = 0;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DB;
-  SQC(curd).u.num = val;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 0;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DB;
+  SQC(pfs.curd).u.num = val;
+  qbe_main_data(&SQC(pfs.curd));
+  // qbe_main_data need ret_on_err, but below here they're all tailcalls anyway.
 }
 
 void sq_data_half(uint16_t val) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).isref = 0;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DH;
-  SQC(curd).u.num = val;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 0;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DH;
+  SQC(pfs.curd).u.num = val;
+  qbe_main_data(&SQC(pfs.curd));
 }
 
 void sq_data_word(uint32_t val) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).isref = 0;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DW;
-  SQC(curd).u.num = val;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 0;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DW;
+  SQC(pfs.curd).u.num = val;
+  qbe_main_data(&SQC(pfs.curd));
 }
 
 void sq_data_long(uint64_t val) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).isref = 0;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DL;
-  SQC(curd).u.num = val;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 0;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DL;
+  SQC(pfs.curd).u.num = val;
+  qbe_main_data(&SQC(pfs.curd));
 }
 
 void sq_data_single(float val) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).isref = 0;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DW;
-  SQC(curd).u.flts = val;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 0;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DW;
+  SQC(pfs.curd).u.flts = val;
+  qbe_main_data(&SQC(pfs.curd));
 }
 
 void sq_data_double(double val) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).isref = 0;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DL;
-  SQC(curd).u.fltd = val;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 0;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DL;
+  SQC(pfs.curd).u.fltd = val;
+  qbe_main_data(&SQC(pfs.curd));
 }
 
 void sq_data_ref(SqSymbol ref, int64_t offset) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).isref = 1;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DL;
-  SQC(curd).u.ref.name = str(ref.u);
-  SQC(curd).u.ref.off = offset;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 1;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DL;
+  SQC(pfs.curd).u.ref.name = str(ref.u);
+  SQC(pfs.curd).u.ref.off = offset;
+  qbe_main_data(&SQC(pfs.curd));
 }
 
 static size_t _str_repr(const char* str, char* into) {
@@ -1002,8 +1101,8 @@ static size_t _str_repr(const char* str, char* into) {
 
 void sq_data_string(const char* str) {
   SQ_ERR_CHECK_VOID();
-  SQC(curd).type = DB;
-  SQC(curd).isstr = 1;
+  SQC(pfs.curd).type = DB;
+  SQC(pfs.curd).isstr = 1;
   // QBE sneakily avoids de-escaping in the tokenizer and re-escaping during
   // emission by just not handling escapes at all and relying on the input
   // format for string escapes being the same as the assembler's. Because we're
@@ -1013,20 +1112,20 @@ void sq_data_string(const char* str) {
   size_t len2 = _str_repr(str, escaped);
   SQ_ASSERT(len == len2);
   (void)len2;
-  SQC(curd).u.str = (char*)escaped;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).u.str = (char*)escaped;
+  qbe_main_data(&SQC(pfs.curd));
 }
 
 SqSymbol sq_data_end(void) {
   SQ_ERR_CHECK((SqSymbol){0});
-  SQC(curd).isref = 0;
-  SQC(curd).isstr = 0;
-  SQC(curd).type = DEnd;
-  qbe_main_data(&SQC(curd));
+  SQC(pfs.curd).isref = 0;
+  SQC(pfs.curd).isstr = 0;
+  SQC(pfs.curd).type = DEnd;
+  qbe_main_data(&SQC(pfs.curd));
 
-  SqSymbol ret = {intern(SQC(curd).name)};
-  SQC(curd) = (Dat){0};
-  SQC(curd_lnk) = (Lnk){0};
+  SqSymbol ret = {intern(SQC(pfs.curd).name)};
+  SQC(pfs.curd) = (Dat){0};
+  SQC(pfs.curd_lnk) = (Lnk){0};
   return ret;
 }
 
