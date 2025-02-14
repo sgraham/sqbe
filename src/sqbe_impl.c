@@ -33,8 +33,14 @@ typedef struct SqPerFuncState {
 
   SqBlock start_block;
 
+  // TODO: Should really make our code stop using parse__ versions of these,
+  // it'd be less confusing.
   Ins* insb;
   Ins* curi;
+  Fn* curf;
+  Blk* curb;
+  Blk** blink;
+  int rcls;
 } SqPerFuncState;
 
 typedef struct SqContext {
@@ -72,7 +78,6 @@ typedef struct SqContext {
 
 #define SQ_MAX_FUNC_CONTEXTS 8
   SqPerFuncState saved_per_func_states[SQ_MAX_FUNC_CONTEXTS];
-  GlobalContext saved_global_contexts[SQ_MAX_FUNC_CONTEXTS];
   bool saved_per_func_state_in_use[SQ_MAX_FUNC_CONTEXTS];
 } SqContext;
 
@@ -516,6 +521,10 @@ static SqItemCtx _sq_allocate_and_activate_itemctx(void) {
   // TODO: probably more that has to be saved/restored from GlobalContext
   alloc_pfs->insb = _sq_arena_push(alloc_pfs->fn_arena, sizeof(Ins) * NIns, _Alignof(Ins));
   alloc_pfs->curi = NULL;
+  alloc_pfs->curf = NULL;
+  alloc_pfs->curb = NULL;
+  alloc_pfs->blink = NULL;
+  alloc_pfs->rcls = 0;
 
   SqItemCtx ctx = {i};
   sq_itemctx_activate(ctx);
@@ -575,6 +584,10 @@ void sq_itemctx_activate(SqItemCtx itemctx) {
     unsigned int i = SQC(current_itemctx).u;
     SQC(pfs.insb) = global_context.insb;
     SQC(pfs.curi) = global_context.curi;
+    SQC(pfs.curf) = G(curf);
+    SQC(pfs.curb) = G(curb);
+    SQC(pfs.blink) = G(blink);
+    SQC(pfs.rcls) = G(rcls);
     SQC(saved_per_func_states)[i] = SQC(pfs);
   }
 
@@ -584,6 +597,10 @@ void sq_itemctx_activate(SqItemCtx itemctx) {
   // TODO: more?
   global_context.insb = SQC(pfs.insb);
   global_context.curi = SQC(pfs.curi);
+  G(curf) = SQC(pfs.curf);
+  G(curb) = SQC(pfs.curb);
+  G(blink) = SQC(pfs.blink);
+  G(rcls) = SQC(pfs.rcls);
   SQC(current_itemctx) = itemctx;
 }
 
