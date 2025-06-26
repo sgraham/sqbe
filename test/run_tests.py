@@ -39,7 +39,13 @@ else:
 
 
 def gen_cc(in_file, out_bin):
-    subprocess.run(["clang", in_file, "-o", out_bin], check=True)
+    if sys.platform == "win32":
+        subprocess.run(
+            ["C:\\Program Files\\LLVM\\bin\\clang.exe", in_file, "-o", out_bin],
+            check=True,
+        )
+    else:
+        subprocess.run(["clang", in_file, "-o", out_bin], check=True)
 
 
 def get_expected_output(filename):

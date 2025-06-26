@@ -746,6 +746,7 @@ def main():
                 "/nologo",
                 "/W4",
                 "/WX",
+                "/wd5287",  # TODO!
                 "/c",
                 "in_c_test.c",
             ]
@@ -758,6 +759,7 @@ def main():
                 "/nologo",
                 "/W4",
                 "/WX",
+                "/wd5287",  # TODO!
                 "/c",
                 "in_c_test.c",
             ]
