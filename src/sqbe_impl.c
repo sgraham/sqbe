@@ -276,13 +276,13 @@ void qbe_free(void* ptr) {
   (void)ptr;  // Nothing until arena_destroy.
 }
 
-static void _sq_gen_name(char* into, size_t len, const char* prefix) {
+static void _sq_gen_dbg_name(char* into, size_t len, const char* prefix) {
   snprintf(into, len, "%s_%d", prefix ? prefix : "", SQC(dbg_name_counter)++);
 }
 
 #define SQ_NAMED_IF_DEBUG(into, provided)        \
   if (global_context.main__dbg) {                \
-    _sq_gen_name(into, sizeof(into), provided); \
+    _sq_gen_dbg_name(into, sizeof(into), provided); \
   }
 
 #define SQ_COUNTOF(a) (sizeof(a) / sizeof(a[0]))
@@ -689,6 +689,7 @@ SqSymbol sq_func_end(void) {
 SqRef sq_ref_for_symbol(SqSymbol sym) {
   SQ_ERR_CHECK((SqRef){0});
   SQ_ASSERT(G(curf));
+  SQ_ASSERT(sym.u);
   Con c = {0};
   c.type = CAddr;
   c.sym.id = sym.u;
@@ -995,14 +996,8 @@ SqItemCtx sq_data_start(SqLinkage linkage, const char* name) {
 
   SQC(pfs.curd) = (Dat){0};
   SQC(pfs.curd).type = DStart;
-  SQ_ASSERT(name || linkage.u == sq_linkage_default.u);
-  char tmp[NString];
-  if (!name) {
-    _sq_gen_name(tmp, sizeof(tmp), NULL);
-    SQC(pfs.curd).name = tmp;
-  } else {
-    SQC(pfs.curd).name = (char*)name;
-  }
+  SQ_ASSERT(name);
+  SQC(pfs.curd).name = (char*)name;
   SQC(pfs.curd).lnk = &SQC(pfs.curd_lnk);
   qbe_main_data(&SQC(pfs.curd));
   if (GC(in_error)) { return (SqItemCtx){0}; }
