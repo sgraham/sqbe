@@ -22,6 +22,8 @@ SQBE_C_FILES = [
     "copy.c",
     "emit.c",
     "fold.c",
+    "gcm.c",
+    "gvn.c",
     "live.c",
     "load.c",
     "main.c",

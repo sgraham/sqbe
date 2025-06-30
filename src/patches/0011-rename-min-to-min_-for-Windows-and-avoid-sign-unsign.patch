@@ -1,0 +1,56 @@
+From 8f0b14d64b408e650dfdc0877a3a5127dc304a77 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Mon, 30 Jun 2025 12:23:45 -0700
+Subject: [PATCH 11/11] rename min() to min_() for Windows, and avoid
+ sign/unsigned warning
+
+---
+ copy.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/copy.c b/copy.c
+index 6705a25..cba139e 100644
+--- a/copy.c
++++ b/copy.c
+@@ -110,7 +110,7 @@ usewidthle(Fn *fn, Ref r, int w)
+ }
+ 
+ static int
+-min(int v1, int v2)
++min_(int v1, int v2)
+ {
+ 	return v1 < v2 ? v1 : v2;
+ }
+@@ -164,9 +164,9 @@ defwidthle(Fn *fn, Ref r, int w)
+ 				return 1;
+ 			if (w < 32) {
+ 				if (i->op == Osar)
+-					w = min(31, w+v);
++					w = min_(31, w+v);
+ 				else
+-					w = min(32, w+v);
++					w = min_(32, w+v);
+ 			}
+ 		}
+ 		return defwidthle(fn, i->arg[0], w);
+@@ -188,7 +188,7 @@ defwidthle(Fn *fn, Ref r, int w)
+ 	if (ext(i, &e)) {
+ 		if (e.zext && e.usew <= w)
+ 			return 1;
+-		w = min(w, e.nopw);
++		w = min_(w, e.nopw);
+ 		return defwidthle(fn, i->arg[0], w);
+ 	}
+ 
+@@ -326,7 +326,7 @@ copyref(Fn *fn, Blk *b, Ins *i)
+ 
+ 		/* do not break typing by returning
+ 		 * a narrower temp */
+-		if (KWIDE(i->cls) > KWIDE(t->cls))
++		if ((int)KWIDE(i->cls) > KWIDE(t->cls))
+ 			return NULL_R;
+ 
+ 		w  = Wsb + (i->op - Oextsb);
+-- 
+2.43.0
+
