@@ -1,13 +1,27 @@
-From 56064191fd64cdfdb7b8ef8ba8119c9de8280ccf Mon Sep 17 00:00:00 2001
+From b563e1992df48e6e177f29c31277f1bdb58e2dd0 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Thu, 9 Jan 2025 15:28:55 -0800
-Subject: [PATCH 03/10] fix -Wsometimes-uninitialized warning in non DEBUG
+Subject: [PATCH 03/13] fix -Wsometimes-uninitialized warning in non DEBUG
  builds
 
 ---
+ gcm.c       | 2 +-
  rv64/isel.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ 2 files changed, 2 insertions(+), 2 deletions(-)
 
+diff --git a/gcm.c b/gcm.c
+index e685d2a..cef1ddf 100644
+--- a/gcm.c
++++ b/gcm.c
+@@ -144,7 +144,7 @@ schedlate(Fn *fn, Ref r)
+ 	Use *u;
+ 	uint earlybid;
+ 	uint latebid;
+-	uint uselatebid;
++	uint uselatebid = 0;
+ 
+ 	if (rtype(r) != RTmp)
+ 		return NOBID;
 diff --git a/rv64/isel.c b/rv64/isel.c
 index 000c112..0fb85b3 100644
 --- a/rv64/isel.c

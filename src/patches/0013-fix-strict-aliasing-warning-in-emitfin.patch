@@ -1,0 +1,51 @@
+From e9d496e51dcbf148fb90b6ed3fb0e9b0cc8a1774 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Mon, 30 Jun 2025 13:03:39 -0700
+Subject: [PATCH 13/13] fix strict aliasing warning in emitfin
+
+---
+ emit.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/emit.c b/emit.c
+index ddd5716..f4f1661 100644
+--- a/emit.c
++++ b/emit.c
+@@ -152,7 +152,8 @@ emitfin(FILE *f, char *sec[3])
+ {
+ 	Asmbits *b;
+ 	int lg, i;
+-	union { int32_t i; float f; } u;
++	union { int32_t i; float f; } uf;
++	union { int64_t i; double d; } ud;
+ 
+ 	if (!G(stash))
+ 		return;
+@@ -171,18 +172,18 @@ emitfin(FILE *f, char *sec[3])
+ 						"\n\t.quad %"PRId64
+ 						"\n\t.quad 0\n\n",
+ 						(int64_t)b->n);
+-				else if (lg == 3)
++				else if (lg == 3) {
++					ud.i = b->n;
+ 					fprintf(f,
+ 						"\n\t.quad %"PRId64
+ 						" /* %f */\n\n",
+-						(int64_t)b->n,
+-						*(double *)&b->n);
+-				else if (lg == 2) {
+-					u.i = b->n;
++						ud.i, ud.d);
++				} else if (lg == 2) {
++					uf.i = b->n;
+ 					fprintf(f,
+ 						"\n\t.int %"PRId32
+ 						" /* %f */\n\n",
+-						u.i, (double)u.f);
++						uf.i, (double)uf.f);
+ 				}
+ 			}
+ 		}
+-- 
+2.49.0.vfs.0.4
+

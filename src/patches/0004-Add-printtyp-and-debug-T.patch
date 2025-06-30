@@ -1,7 +1,7 @@
-From 2df0862e86c55e70acbcdebaf10d9d01a299c4a8 Mon Sep 17 00:00:00 2001
+From 4d952f77a2db9ae100d51c5122dba4ed45512d74 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Tue, 14 Jan 2025 16:50:50 -0800
-Subject: [PATCH 04/10] Add printtyp() and debug['T']
+Subject: [PATCH 04/13] Add printtyp() and debug['T']
 
 ---
  all.h   |  1 +

@@ -1,7 +1,7 @@
-From 9651fdaef6cab28e5bbbd65a29ae24b3c741885e Mon Sep 17 00:00:00 2001
+From 57e384cd8ababe355ea656d5dc88261a899d5263 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
-Subject: [PATCH 05/10] Context-ize global and (most) function-static variables
+Subject: [PATCH 05/13] Context-ize global and (most) function-static variables
 
 Moves all mutable globals into a single GlobalContext struct.
 
@@ -1324,7 +1324,7 @@ index 7d0b04c..9f21ad2 100644
  static int
  iscon(Con *c, int w, uint64_t k)
 diff --git a/gcm.c b/gcm.c
-index e685d2a..0ea2c37 100644
+index cef1ddf..0aa5596 100644
 --- a/gcm.c
 +++ b/gcm.c
 @@ -421,7 +421,7 @@ sink(Fn *fn)

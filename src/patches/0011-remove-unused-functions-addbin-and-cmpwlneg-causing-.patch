@@ -1,0 +1,91 @@
+From 89c49eb3c3e8fe6670f4deb9d5b71cf1d1071d58 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Mon, 30 Jun 2025 12:53:27 -0700
+Subject: [PATCH 11/13] remove unused functions addbin and cmpwlneg causing
+ warnings
+
+also remove sort of (?) unused var in gvndup
+---
+ all.h  |  2 --
+ gvn.c  |  4 ++--
+ util.c | 19 -------------------
+ 3 files changed, 2 insertions(+), 23 deletions(-)
+
+diff --git a/all.h b/all.h
+index 57a56f4..3eb265d 100644
+--- a/all.h
++++ b/all.h
+@@ -637,7 +637,6 @@ void *vnew(ulong, size_t, Pool);
+ void vfree(void *);
+ void vgrow(void *, ulong);
+ void addins(Ins **, uint *, Ins *);
+-void addbins(Blk *, Ins **, uint *);
+ void strf(char[NString], char *, ...);
+ uint32_t intern(char *);
+ char *str(uint32_t);
+@@ -651,7 +650,6 @@ void idup(Blk *, Ins *, ulong);
+ Ins *icpy(Ins *, Ins *, ulong);
+ int cmpop(int);
+ int cmpneg(int);
+-int cmpwlneg(int);
+ int clsmerge(short *, short);
+ int phicls(int, Tmp *);
+ uint phiargn(Phi *, Blk *);
+diff --git a/gvn.c b/gvn.c
+index c4655be..81241d6 100644
+--- a/gvn.c
++++ b/gvn.c
+@@ -43,11 +43,11 @@ static uint gvntbln;
+ static Ins *
+ gvndup(Ins *i, int insert)
+ {
+-	uint idx, n;
++	uint idx;
+ 	Ins *ii;
+ 
+ 	idx = ihash(i) % gvntbln;
+-	for (n=1;; n++) {
++	for (;;) {
+ 		ii = gvntbl[idx];
+ 		if (!ii)
+ 			break;
+diff --git a/util.c b/util.c
+index 43d4472..493da61 100644
+--- a/util.c
++++ b/util.c
+@@ -153,15 +153,6 @@ addins(Ins **pvins, uint *pnins, Ins *i)
+ 	(*pvins)[(*pnins)-1] = *i;
+ }
+ 
+-void
+-addbins(Blk *b, Ins **pvins, uint *pnins)
+-{
+-	Ins *i;
+-
+-	for (i=b->ins; i<&b->ins[b->nins]; i++)
+-		addins(pvins, pnins, i);
+-}
+-
+ void
+ strf(char str[NString], char *s, ...)
+ {
+@@ -357,16 +348,6 @@ cmpop(int c)
+ 	return cmptab[c][1];
+ }
+ 
+-int
+-cmpwlneg(int op)
+-{
+-	if (INRANGE(op, Ocmpw, Ocmpw1))
+-		return cmpneg(op - Ocmpw) + Ocmpw;
+-	if (INRANGE(op, Ocmpl, Ocmpl1))
+-		return cmpneg(op - Ocmpl) + Ocmpl;
+-	die("not a wl comparison");
+-}
+-
+ int
+ clsmerge(short *pk, short k)
+ {
+-- 
+2.49.0.vfs.0.4
+

@@ -1,7 +1,7 @@
-From 33acd8081cce63b0ef286f7ec6bed4060475d37c Mon Sep 17 00:00:00 2001
+From cdd1be1778cb387dd3783b3c2aa46a23b8e7bf7c Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
-Subject: [PATCH 07/10] Use qbe_free() instead of free() directly
+Subject: [PATCH 07/13] Use qbe_free() instead of free() directly
 
 Pair emalloc() with qbe_free() rather than free() directly. This is so
 that when emalloc() is overridden in a library context, free() can also

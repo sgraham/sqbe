@@ -1,7 +1,7 @@
-From 6fa5af946316b72985c98c9ac9774d3b7a31fab3 Mon Sep 17 00:00:00 2001
+From da6a5b06940f23d60063ef21c4ea8a7e2da969e1 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
-Subject: [PATCH 06/10] Rename `R` to `NULL_R`
+Subject: [PATCH 06/13] Rename `R` to `NULL_R`
 
 This is unfortunately necessary because windows.h has a struct bitfield
 named `R` that conflicts when included.
@@ -1442,7 +1442,7 @@ index 9f21ad2..07f7051 100644
 +	return NULL_R;
  }
 diff --git a/gcm.c b/gcm.c
-index 0ea2c37..867208e 100644
+index 0aa5596..e5cc948 100644
 --- a/gcm.c
 +++ b/gcm.c
 @@ -234,7 +234,7 @@ latephi(Fn *fn, Phi *p, Ref r)

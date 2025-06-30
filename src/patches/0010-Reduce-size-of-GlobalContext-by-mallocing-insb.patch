@@ -1,7 +1,7 @@
-From 9233819f9f75741df6987196aad27b8db7b34a1f Mon Sep 17 00:00:00 2001
+From 9ea100a996a3bc3c45acd5ad87ecb33f2292077f Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 10:42:38 -0800
-Subject: [PATCH 10/10] Reduce size of GlobalContext by mallocing `insb`
+Subject: [PATCH 10/13] Reduce size of GlobalContext by mallocing `insb`
 
 ---
  all.h  | 4 ++--
