@@ -1,7 +1,7 @@
-From 65d57391db2290c8c21f5239c3d18439675847b8 Mon Sep 17 00:00:00 2001
+From e6554aacfe88c2b0504a9653436c30c34c8a1de3 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
-Subject: [PATCH] Use qbe_free() instead of free() directly
+Subject: [PATCH 07/10] Use qbe_free() instead of free() directly
 
 Pair emalloc() with qbe_free() rather than free() directly. This is so
 that when emalloc() is overridden in a library context, free() can also
@@ -10,21 +10,19 @@ be revectored.
  all.h        |  1 +
  amd64/isel.c |  2 +-
  cfg.c        |  2 +-
- copy.c       |  2 +-
  emit.c       |  2 +-
- fold.c       |  4 ++--
  mem.c        |  2 +-
  parse.c      |  2 +-
  spill.c      |  2 +-
  ssa.c        |  4 ++--
  util.c       | 12 +++++++++---
- 11 files changed, 21 insertions(+), 14 deletions(-)
+ 9 files changed, 18 insertions(+), 11 deletions(-)
 
 diff --git a/all.h b/all.h
-index 79a5c0c..0b85898 100644
+index a5d9652..e4e058d 100644
 --- a/all.h
 +++ b/all.h
-@@ -612,6 +612,7 @@ uint32_t hash(char *);
+@@ -623,6 +623,7 @@ uint32_t hash(char *);
  void die_(char *, char *, ...) __attribute__((noreturn));
  void *emalloc(size_t);
  void *alloc(size_t);
@@ -33,12 +31,12 @@ index 79a5c0c..0b85898 100644
  void *vnew(ulong, size_t, Pool);
  void vfree(void *);
 diff --git a/amd64/isel.c b/amd64/isel.c
-index f9c5069..85585cc 100644
+index 7317d9c..138ebb0 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
-@@ -831,7 +831,7 @@ amd64_isel(Fn *fn)
- 		b->nins = &GC(insb)[NIns] - GC(curi);
- 		idup(&b->ins, GC(curi), b->nins);
+@@ -830,7 +830,7 @@ amd64_isel(Fn *fn)
+ 			sel(*--i, num, fn);
+ 		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
 -	free(num);
 +	qbe_free(num);
@@ -46,53 +44,29 @@ index f9c5069..85585cc 100644
  	if (GC(debug)['I']) {
  		fprintf(stderr, "\n> After instruction selection:\n");
 diff --git a/cfg.c b/cfg.c
-index 1b305bc..29c6e4d 100644
+index ae931b3..2e8af68 100644
 --- a/cfg.c
 +++ b/cfg.c
-@@ -328,5 +328,5 @@ simpljmp(Fn *fn)
+@@ -356,7 +356,7 @@ simpljmp(Fn *fn)
  		}
  	}
  	*p = ret;
 -	free(uf);
 +	qbe_free(uf);
  }
-diff --git a/copy.c b/copy.c
-index e948957..5ab4b5b 100644
---- a/copy.c
-+++ b/copy.c
-@@ -215,5 +215,5 @@ copy(Fn *fn)
- 		printfn(fn, stderr);
- 	}
- 	vfree(stk);
--	free(cpy);
-+	qbe_free(cpy);
- }
+ 
+ static int
 diff --git a/emit.c b/emit.c
-index c8be039..c25da25 100644
+index 20395ec..ddd5716 100644
 --- a/emit.c
 +++ b/emit.c
-@@ -183,7 +183,7 @@ emitfin(FILE *f, char *sec[3])
+@@ -188,7 +188,7 @@ emitfin(FILE *f, char *sec[3])
  		}
  	while ((b=G(stash))) {
  		G(stash) = b->link;
 -		free(b);
 +		qbe_free(b);
  	}
- }
- 
-diff --git a/fold.c b/fold.c
-index 0e37181..4088bee 100644
---- a/fold.c
-+++ b/fold.c
-@@ -309,8 +309,8 @@ fold(Fn *fn)
- 		printfn(fn, stderr);
- 	}
- 
--	free(G(val));
--	free(G(edge));
-+	qbe_free(G(val));
-+	qbe_free(G(edge));
- 	vfree(G(usewrk));
  }
  
 diff --git a/mem.c b/mem.c
@@ -109,10 +83,10 @@ index 4afad11..2b0640e 100644
  	/* kill dead stores */
  	for (s=sl; s<&sl[nsl]; s++)
 diff --git a/parse.c b/parse.c
-index 8998890..b9dd1e3 100644
+index e93763d..b0b1529 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -365,7 +365,7 @@ tmpref(char *v)
+@@ -371,7 +371,7 @@ tmpref(char *v)
  	int t, i;
  
  	if (G(tmphcap)/2 <= G(curf)->ntmp-Tmp0) {
@@ -122,7 +96,7 @@ index 8998890..b9dd1e3 100644
  		G(tmph) = emalloc(G(tmphcap) * sizeof G(tmph)[0]);
  		for (t=Tmp0; t<G(curf)->ntmp; t++) {
 diff --git a/spill.c b/spill.c
-index 1298997..aecde71 100644
+index 5d7a22e..bceef96 100644
 --- a/spill.c
 +++ b/spill.c
 @@ -164,7 +164,7 @@ limit(BSet *b, int k, BSet *f)
@@ -135,10 +109,10 @@ index 1298997..aecde71 100644
  		G(limit_maxt) = nt;
  	}
 diff --git a/ssa.c b/ssa.c
-index f866312..3c0414c 100644
+index 90f9807..0c38681 100644
 --- a/ssa.c
 +++ b/ssa.c
-@@ -201,7 +201,7 @@ phiins(Fn *fn)
+@@ -200,7 +200,7 @@ phiins(Fn *fn)
  			}
  		}
  	}
@@ -147,7 +121,7 @@ index f866312..3c0414c 100644
  }
  
  struct Name {
-@@ -345,7 +345,7 @@ ssa(Fn *fn)
+@@ -344,7 +344,7 @@ ssa(Fn *fn)
  			nfree(n);
  		}
  	GC(debug)['L'] = d;
@@ -157,7 +131,7 @@ index f866312..3c0414c 100644
  		fprintf(stderr, "\n> After SSA construction:\n");
  		printfn(fn, stderr);
 diff --git a/util.c b/util.c
-index 2a2d3d4..a75e5de 100644
+index 5313593..43d4472 100644
 --- a/util.c
 +++ b/util.c
 @@ -57,6 +57,12 @@ emalloc(size_t n)
@@ -197,5 +171,5 @@ index 2a2d3d4..a75e5de 100644
  }
  
 -- 
-2.47.2.vfs.0.1
+2.43.0
 

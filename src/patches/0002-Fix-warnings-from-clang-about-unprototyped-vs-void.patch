@@ -1,7 +1,7 @@
-From 42496803f76fd1af79ad8d87bbec391fafad5e20 Mon Sep 17 00:00:00 2001
+From 36bbdce1d62190f98bddf047ed9743444cfeb537 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Sun, 12 Jan 2025 22:08:28 -0800
-Subject: [PATCH 3/4] Fix warnings from clang about unprototyped vs (void)
+Subject: [PATCH 02/10] Fix warnings from clang about unprototyped vs (void)
 
 e.g.
 
@@ -19,7 +19,7 @@ cfg.c:4:7: warning: a function declaration without a prototype is deprecated in 
  4 files changed, 12 insertions(+), 12 deletions(-)
 
 diff --git a/cfg.c b/cfg.c
-index 406c307..f1fa21a 100644
+index 8047c12..5db8c13 100644
 --- a/cfg.c
 +++ b/cfg.c
 @@ -1,7 +1,7 @@
@@ -32,10 +32,10 @@ index 406c307..f1fa21a 100644
  	static Blk z;
  	Blk *b;
 diff --git a/parse.c b/parse.c
-index e896679..e321254 100644
+index 7ab3ea5..406d13f 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -179,7 +179,7 @@ err(char *s, ...)
+@@ -185,7 +185,7 @@ err(char *s, ...)
  }
  
  static void
@@ -44,7 +44,7 @@ index e896679..e321254 100644
  {
  	static int done;
  	int i;
-@@ -201,7 +201,7 @@ lexinit()
+@@ -207,7 +207,7 @@ lexinit()
  }
  
  static int64_t
@@ -53,7 +53,7 @@ index e896679..e321254 100644
  {
  	uint64_t n;
  	int c, m;
-@@ -222,7 +222,7 @@ getint()
+@@ -228,7 +228,7 @@ getint()
  }
  
  static int
@@ -62,7 +62,7 @@ index e896679..e321254 100644
  {
  	static char tok[NString];
  	int c, i, esc;
-@@ -332,7 +332,7 @@ Alpha:
+@@ -338,7 +338,7 @@ Alpha:
  }
  
  static int
@@ -71,7 +71,7 @@ index e896679..e321254 100644
  {
  	if (thead == Txxx)
  		thead = lex();
-@@ -340,7 +340,7 @@ peek()
+@@ -346,7 +346,7 @@ peek()
  }
  
  static int
@@ -80,7 +80,7 @@ index e896679..e321254 100644
  {
  	int t;
  
-@@ -350,7 +350,7 @@ next()
+@@ -356,7 +356,7 @@ next()
  }
  
  static int
@@ -89,7 +89,7 @@ index e896679..e321254 100644
  {
  	int t;
  
-@@ -415,7 +415,7 @@ tmpref(char *v)
+@@ -421,7 +421,7 @@ tmpref(char *v)
  }
  
  static Ref
@@ -98,16 +98,16 @@ index e896679..e321254 100644
  {
  	Con c;
  
-@@ -580,7 +580,7 @@ findblk(char *name)
+@@ -586,7 +586,7 @@ findblk(char *name)
  }
  
  static void
 -closeblk()
 +closeblk(void)
  {
- 	curb->nins = curi - insb;
- 	idup(&curb->ins, insb, curb->nins);
-@@ -1012,7 +1012,7 @@ parsefields(Field *fld, Typ *ty, int t)
+ 	idup(curb, insb, curi-insb);
+ 	blink = &curb->link;
+@@ -1017,7 +1017,7 @@ parsefields(Field *fld, Typ *ty, int t)
  }
  
  static void
@@ -117,7 +117,7 @@ index e896679..e321254 100644
  	Typ *ty;
  	int t, al;
 diff --git a/rega.c b/rega.c
-index 8e601c9..4d2a06b 100644
+index ab98cd6..3be4c34 100644
 --- a/rega.c
 +++ b/rega.c
 @@ -247,7 +247,7 @@ pmrec(enum PMStat *status, int i, int *k)
@@ -130,7 +130,7 @@ index 8e601c9..4d2a06b 100644
  	int i;
  	enum PMStat *status;
 diff --git a/util.c b/util.c
-index 2e4b4cc..1a71030 100644
+index 3b5c09d..ad26f23 100644
 --- a/util.c
 +++ b/util.c
 @@ -90,7 +90,7 @@ alloc(size_t n)
@@ -143,5 +143,5 @@ index 2e4b4cc..1a71030 100644
  	void **pp;
  
 -- 
-2.39.3 (Apple Git-146)
+2.43.0
 

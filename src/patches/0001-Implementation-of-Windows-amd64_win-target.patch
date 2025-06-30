@@ -1,7 +1,7 @@
-From 7848d8ef8cfcec5140c11ea692dd0f0ca44a0c3c Mon Sep 17 00:00:00 2001
+From af8e284562d9709a66d49195845797f094ee88dd Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Fri, 7 Feb 2025 17:03:52 -0800
-Subject: [PATCH] Implementation of Windows amd64_win target
+Subject: [PATCH 01/10] Implementation of Windows amd64_win target
 
 This is an implementation of the Windows ABI. It supports most features
 (struct passing/returning, varargs, env). TLS is not yet supported.
@@ -23,7 +23,7 @@ Windows.
  amd64/emit.c       | 136 +++++++-
  amd64/sysv.c       |   4 +-
  amd64/targ.c       |  32 +-
- amd64/winabi.c     | 754 +++++++++++++++++++++++++++++++++++++++++++++
+ amd64/winabi.c     | 753 +++++++++++++++++++++++++++++++++++++++++++++
  doc/il.txt         |   1 +
  doc/native_win.txt |  15 +
  emit.c             |   8 +
@@ -35,24 +35,24 @@ Windows.
  test/dark.ssa      |   2 +-
  test/tls.ssa       |   1 +
  tools/test.sh      |  25 +-
- 18 files changed, 1000 insertions(+), 40 deletions(-)
+ 18 files changed, 999 insertions(+), 40 deletions(-)
  create mode 100755 amd64/winabi.c
  create mode 100644 doc/native_win.txt
 
 diff --git a/Makefile b/Makefile
-index 2482eb1..5637fcb 100644
+index 7acaf35..5c25950 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -6,7 +6,7 @@ BINDIR = $(PREFIX)/bin
  
  COMMOBJ  = main.o util.o parse.o abi.o cfg.o mem.o ssa.o alias.o load.o \
-            copy.o fold.o simpl.o live.o spill.o rega.o emit.o
+            copy.o fold.o gvn.o gcm.o simpl.o live.o spill.o rega.o emit.o
 -AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o
 +AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o amd64/winabi.o
  ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o
  RV64OBJ  = rv64/targ.o rv64/abi.o rv64/isel.o rv64/emit.o
  OBJ      = $(COMMOBJ) $(AMD64OBJ) $(ARM64OBJ) $(RV64OBJ)
-@@ -77,6 +77,9 @@ check-arm64: qbe
+@@ -80,6 +80,9 @@ check-arm64: qbe
  check-rv64: qbe
  	TARGET=rv64 tools/test.sh all
  
@@ -63,7 +63,7 @@ index 2482eb1..5637fcb 100644
  	@echo $(SRCALL)
  
 diff --git a/all.h b/all.h
-index 97cc41c..062780e 100644
+index df72617..e5124fa 100644
 --- a/all.h
 +++ b/all.h
 @@ -44,6 +44,7 @@ enum {
@@ -74,7 +74,7 @@ index 97cc41c..062780e 100644
  	int gpr0;   /* first general purpose reg */
  	int ngpr;
  	int fpr0;   /* first floating point reg */
-@@ -585,3 +586,4 @@ int stashbits(void *, int);
+@@ -618,3 +619,4 @@ int stashbits(bits, int);
  void elf_emitfnfin(char *, FILE *);
  void elf_emitfin(FILE *);
  void macho_emitfin(FILE *);
@@ -141,7 +141,7 @@ index 3a2db0e..8946dbb 100644
 +void amd64_sysv_emitfn(Fn *, FILE *);
 +void amd64_winabi_emitfn(Fn *, FILE *);
 diff --git a/amd64/emit.c b/amd64/emit.c
-index 8f36188..2f5be61 100644
+index 6cf37ec..df81e52 100644
 --- a/amd64/emit.c
 +++ b/amd64/emit.c
 @@ -167,9 +167,12 @@ slot(Ref r, E *e)
@@ -186,7 +186,7 @@ index 8f36188..2f5be61 100644
  {
  	static char *ctoa[] = {
  	#define X(c, s) [c] = s,
-@@ -622,7 +625,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+@@ -623,7 +626,7 @@ amd64_emitfn(Fn *fn, FILE *f)
  		fputs("\tpushq %rbp\n\tmovq %rsp, %rbp\n", f);
  	} else
  		e->fp = RSP;
@@ -195,7 +195,7 @@ index 8f36188..2f5be61 100644
  	if (e->fsz)
  		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
  	if (fn->vararg) {
-@@ -632,7 +635,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+@@ -633,7 +636,7 @@ amd64_emitfn(Fn *fn, FILE *f)
  		for (n=0; n<8; ++n, o+=16)
  			fprintf(f, "\tmovaps %%xmm%d, %d(%%rbp)\n", n, o);
  	}
@@ -204,7 +204,7 @@ index 8f36188..2f5be61 100644
  		if (fn->reg & BIT(*r)) {
  			itmp.arg[0] = TMP(*r);
  			emitf("pushq %L0", &itmp, e);
-@@ -655,7 +658,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+@@ -662,7 +665,7 @@ amd64_emitfn(Fn *fn, FILE *f)
  					"\tmovq %%rbp, %%rsp\n"
  					"\tsubq $%"PRIu64", %%rsp\n",
  					e->fsz + e->nclob * 8);
@@ -213,7 +213,7 @@ index 8f36188..2f5be61 100644
  				if (fn->reg & BIT(*--r)) {
  					itmp.arg[0] = TMP(*r);
  					emitf("popq %L0", &itmp, e);
-@@ -696,3 +699,118 @@ amd64_emitfn(Fn *fn, FILE *f)
+@@ -703,3 +706,118 @@ amd64_emitfn(Fn *fn, FILE *f)
  	if (!T.apple)
  		elf_emitfnfin(fn->name, f);
  }
@@ -333,7 +333,7 @@ index 8f36188..2f5be61 100644
 +	id0 += fn->nblk;
 +}
 diff --git a/amd64/sysv.c b/amd64/sysv.c
-index 5b559c1..49b125f 100644
+index fd10bfd..98964c9 100644
 --- a/amd64/sysv.c
 +++ b/amd64/sysv.c
 @@ -228,8 +228,8 @@ int amd64_sysv_rsave[] = {
@@ -406,10 +406,10 @@ index fba9144..00949b2 100644
  };
 diff --git a/amd64/winabi.c b/amd64/winabi.c
 new file mode 100755
-index 0000000..2482705
+index 0000000..57ec00c
 --- /dev/null
 +++ b/amd64/winabi.c
-@@ -0,0 +1,754 @@
+@@ -0,0 +1,753 @@
 +#include "all.h"
 +
 +#include <stdbool.h>
@@ -967,7 +967,7 @@ index 0000000..2482705
 +
 +  lower_block_return(func, block);
 +
-+  if (block->ins) {
++  if (block->nins) {
 +    // Work backwards through the instructions, either copying them unchanged,
 +    // or modifying as necessary.
 +    for (Ins* instr = &block->ins[block->nins - 1]; instr >= block->ins;) {
@@ -1005,8 +1005,7 @@ index 0000000..2482705
 +
 +  // emit/emiti add instructions from the end to the beginning of the temporary
 +  // global buffer. dup the final version into the final block storage.
-+  block->nins = &insb[NIns] - curi;
-+  idup(&block->ins, curi, block->nins);
++  idup(block, GC(curi), &GC(insb)[NIns]-GC(curi));
 +}
 +
 +static Ins* find_end_of_func_parameters(Blk* start_block) {
@@ -1110,8 +1109,8 @@ index 0000000..2482705
 +  int num_created_instrs = &insb[NIns] - curi;
 +  int num_other_after_instrs = (int)(start_block->nins - num_params);
 +  int new_total_instrs = num_other_after_instrs + num_created_instrs;
-+  Ins* new_instrs = alloc(new_total_instrs * sizeof(Ins));
-+  Ins* instr_p = icpy(new_instrs, curi, num_created_instrs);
++  Ins* new_instrs = vnew(new_total_instrs, sizeof(Ins), PFn);
++  Ins* instr_p = icpy(new_instrs, GC(curi), num_created_instrs);
 +  icpy(instr_p, end_of_params, num_other_after_instrs);
 +  start_block->nins = new_total_instrs;
 +  start_block->ins = new_instrs;
@@ -1198,10 +1197,10 @@ index 0000000..bc88f05
 +
 +should pass.
 diff --git a/emit.c b/emit.c
-index ba0174b..2f1a715 100644
+index 04837a5..594dddd 100644
 --- a/emit.c
 +++ b/emit.c
-@@ -218,6 +218,14 @@ macho_emitfin(FILE *f)
+@@ -223,6 +223,14 @@ macho_emitfin(FILE *f)
  	emitfin(f, sec);
  }
  
@@ -1217,7 +1216,7 @@ index ba0174b..2f1a715 100644
  static uint nfile;
  static uint curfile;
 diff --git a/main.c b/main.c
-index 5ecb4d0..c21320b 100644
+index 7a97f8a..b9069d0 100644
 --- a/main.c
 +++ b/main.c
 @@ -20,6 +20,7 @@ char debug['Z'+1] = {
@@ -1340,13 +1339,14 @@ index a17dda9..381279f 100644
  data $fmti = align 1 {b "i%d==%d\n", b 0}
  
 diff --git a/tools/test.sh b/tools/test.sh
-index 23c6663..9412708 100755
+index 7af62a5..fe6f94d 100755
 --- a/tools/test.sh
 +++ b/tools/test.sh
-@@ -62,6 +62,29 @@ init() {
+@@ -89,6 +89,29 @@ init() {
+ 			exit 77
  		fi
- 		bin="$bin -t rv64"
- 		;;
+ 		bin="$bin -t amd64_sysv"
++    ;;
 +	amd64_win)
 +		for p in x86_64-w64-mingw32
 +		do
@@ -1369,11 +1369,10 @@ index 23c6663..9412708 100755
 +		fi
 +		export WINEDEBUG=-all
 +		bin="$bin -t amd64_win"
-+		;;
+ 		;;
  	"")
  		case `uname` in
- 		*Darwin*)
-@@ -157,7 +180,7 @@ once() {
+@@ -185,7 +208,7 @@ once() {
  
  	if test -s $out
  	then

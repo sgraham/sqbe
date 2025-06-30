@@ -1,7 +1,7 @@
-From 552fcf61ad0762e55bd587f021d6033966f32763 Mon Sep 17 00:00:00 2001
+From 9651fdaef6cab28e5bbbd65a29ae24b3c741885e Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
-Subject: [PATCH] Context-ize global and (most) function-static variables
+Subject: [PATCH 05/10] Context-ize global and (most) function-static variables
 
 Moves all mutable globals into a single GlobalContext struct.
 
@@ -17,33 +17,35 @@ be maintained as-is because they're used to return created strings.)
 ---
  all.h          | 155 +++++++++++++++++-
  amd64/emit.c   |  35 ++--
- amd64/isel.c   |  38 ++---
- amd64/sysv.c   |  32 ++--
- amd64/winabi.c |  22 +--
- arm64/abi.c    |  48 +++---
+ amd64/isel.c   |  36 ++--
+ amd64/sysv.c   |  28 ++--
+ amd64/winabi.c |  16 +-
+ arm64/abi.c    |  42 ++---
  arm64/emit.c   |  29 ++--
- arm64/isel.c   |  22 +--
+ arm64/isel.c   |  20 +--
  cfg.c          |   5 +-
- copy.c         |   4 +-
+ copy.c         |   2 +
  emit.c         |  77 ++++-----
- fold.c         | 101 +++++-------
+ fold.c         |   1 +
+ gcm.c          |   6 +-
+ gvn.c          |   2 +-
  live.c         |  18 +-
  load.c         |  70 ++++----
- main.c         |  72 ++++----
+ main.c         |  73 ++++-----
  mem.c          |   6 +-
- parse.c        | 436 +++++++++++++++++++++++--------------------------
- rega.c         | 205 +++++++++++------------
- rv64/abi.c     |  30 ++--
+ parse.c        | 434 +++++++++++++++++++++++--------------------------
+ rega.c         | 201 +++++++++++------------
+ rv64/abi.c     |  28 ++--
  rv64/emit.c    |  11 +-
- rv64/isel.c    |  24 +--
- simpl.c        |  12 +-
- spill.c        | 161 +++++++++---------
+ rv64/isel.c    |  22 +--
+ simpl.c        |  10 +-
+ spill.c        | 159 +++++++++---------
  ssa.c          |  25 ++-
  util.c         |  65 +++-----
- 25 files changed, 883 insertions(+), 820 deletions(-)
+ 27 files changed, 826 insertions(+), 750 deletions(-)
 
 diff --git a/all.h b/all.h
-index 7402867..58e77f1 100644
+index d8cef38..9311435 100644
 --- a/all.h
 +++ b/all.h
 @@ -33,6 +33,12 @@ typedef struct Dat Dat;
@@ -59,7 +61,7 @@ index 7402867..58e77f1 100644
  enum {
  	NString = 80,
  	NIns    = 1 << 20,
-@@ -451,9 +457,150 @@ struct Dat {
+@@ -462,9 +468,150 @@ struct Dat {
  	char isstr;
  };
  
@@ -213,7 +215,7 @@ index 7402867..58e77f1 100644
  
  /* util.c */
  typedef enum {
-@@ -461,8 +608,6 @@ typedef enum {
+@@ -472,8 +619,6 @@ typedef enum {
  	PFn, /* discarded after processing the function */
  } Pool;
  
@@ -223,7 +225,7 @@ index 7402867..58e77f1 100644
  void die_(char *, char *, ...) __attribute__((noreturn));
  void *emalloc(size_t);
 diff --git a/amd64/emit.c b/amd64/emit.c
-index 2f5be61..74e7cbc 100644
+index df81e52..5283047 100644
 --- a/amd64/emit.c
 +++ b/amd64/emit.c
 @@ -1,5 +1,6 @@
@@ -298,16 +300,16 @@ index 2f5be61..74e7cbc 100644
  	Blk *b, *s;
  	Ins *i, itmp;
  	int *r, c, o, n, lbl;
-@@ -644,7 +644,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
- 
- 	for (lbl=0, b=fn->start; b; b=b->link) {
- 		if (lbl || b->npred > 1)
+@@ -650,7 +650,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+ 					break;
+ 			if (p != b->npred)
+ 				fprintf(f, ".p2align 4\n");
 -			fprintf(f, "%sbb%d:\n", T.asloc, id0+b->id);
 +			fprintf(f, "%sbb%d:\n", GC(T).asloc, G(amd64_sysv_emitfn_id0)+b->id);
+ 		}
  		for (i=b->ins; i!=&b->ins[b->nins]; i++)
  			emitins(*i, e);
- 		lbl = 1;
-@@ -675,7 +675,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+@@ -682,7 +682,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
  		Jmp:
  			if (b->s1 != b->link)
  				fprintf(f, "\tjmp %sbb%d\n",
@@ -316,7 +318,7 @@ index 2f5be61..74e7cbc 100644
  			else
  				lbl = 0;
  			break;
-@@ -689,14 +689,14 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+@@ -696,14 +696,14 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
  				} else
  					c = cmpneg(c);
  				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
@@ -334,7 +336,7 @@ index 2f5be61..74e7cbc 100644
  		elf_emitfnfin(fn->name, f);
  }
  
-@@ -729,7 +729,6 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -736,7 +736,6 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  		CMP(X)
  	#undef X
  	};
@@ -342,7 +344,7 @@ index 2f5be61..74e7cbc 100644
  	Blk *b, *s;
  	Ins *i, itmp;
  	int *r, c, lbl;
-@@ -761,7 +760,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -768,7 +767,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  
  	for (lbl=0, b=fn->start; b; b=b->link) {
  		if (lbl || b->npred > 1)
@@ -351,7 +353,7 @@ index 2f5be61..74e7cbc 100644
  		for (i=b->ins; i!=&b->ins[b->nins]; i++)
  			emitins(*i, e);
  		lbl = 1;
-@@ -792,7 +791,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -799,7 +798,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  		Jmp:
  			if (b->s1 != b->link)
  				fprintf(f, "\tjmp %sbb%d\n",
@@ -360,7 +362,7 @@ index 2f5be61..74e7cbc 100644
  			else
  				lbl = 0;
  			break;
-@@ -806,11 +805,11 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -813,11 +812,11 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  				} else
  					c = cmpneg(c);
  				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
@@ -375,7 +377,7 @@ index 2f5be61..74e7cbc 100644
 +	G(amd64_winabi_emitfn_id0) += fn->nblk;
  }
 diff --git a/amd64/isel.c b/amd64/isel.c
-index bd645ce..d8107ff 100644
+index 4aff0d6..4896fdf 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
 @@ -92,7 +92,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
@@ -504,14 +506,12 @@ index bd645ce..d8107ff 100644
  		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
  			for (p=(*sb)->phi; p; p=p->link) {
  				for (a=0; p->blk[a] != b; a++)
-@@ -828,12 +828,12 @@ amd64_isel(Fn *fn)
+@@ -828,11 +828,11 @@ amd64_isel(Fn *fn)
  		seljmp(b, fn);
  		for (i=&b->ins[b->nins]; i!=b->ins;)
  			sel(*--i, num, fn);
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
  	free(num);
  
@@ -521,7 +521,7 @@ index bd645ce..d8107ff 100644
  		printfn(fn, stderr);
  	}
 diff --git a/amd64/sysv.c b/amd64/sysv.c
-index 49b125f..79f70ac 100644
+index 98964c9..bb3a5ac 100644
 --- a/amd64/sysv.c
 +++ b/amd64/sysv.c
 @@ -49,8 +49,8 @@ classify(AClass *a, Typ *t, uint s)
@@ -576,31 +576,32 @@ index 49b125f..79f70ac 100644
  		fa = argsclass(i0, i1, ac, Opar, &aret, &env);
  	} else
  		fa = argsclass(i0, i1, ac, Opar, 0, &env);
-@@ -508,9 +508,9 @@ split(Fn *fn, Blk *b)
+@@ -508,8 +508,8 @@ split(Fn *fn, Blk *b)
  
  	++fn->nblk;
  	bn = newblk();
--	bn->nins = &insb[NIns] - curi;
--	idup(&bn->ins, curi, bn->nins);
+-	idup(bn, curi, &insb[NIns]-curi);
 -	curi = &insb[NIns];
-+	bn->nins = &GC(insb)[NIns] - GC(curi);
-+	idup(&bn->ins, GC(curi), bn->nins);
++	idup(bn, GC(curi), &GC(insb)[NIns]-GC(curi));
 +	GC(curi) = &GC(insb)[NIns];
  	bn->visit = ++b->visit;
  	strf(bn->name, "%s.%d", b->name, b->visit);
  	bn->loop = b->loop;
-@@ -669,9 +669,9 @@ amd64_sysv_abi(Fn *fn)
+@@ -668,12 +668,12 @@ amd64_sysv_abi(Fn *fn)
  		if (!ispar(i->op))
  			break;
  	fa = selpar(fn, b->ins, i);
--	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
-+	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
- 	i0 = alloc(n * sizeof(Ins));
--	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
-+	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
- 	ip = icpy(ip, i, &b->ins[b->nins] - i);
- 	b->nins = n;
- 	b->ins = i0;
+-	n0 = &insb[NIns] - curi;
++	n0 = &GC(insb)[NIns] - GC(curi);
+ 	ioff = i - b->ins;
+ 	n1 = b->nins - ioff;
+ 	vgrow(&b->ins, n0+n1);
+ 	icpy(b->ins+n0, b->ins+ioff, n1);
+-	icpy(b->ins, curi, n0);
++	icpy(b->ins, GC(curi), n0);
+ 	b->nins = n0+n1;
+ 
+ 	/* lower calls, returns, and vararg instructions */
 @@ -684,7 +684,7 @@ amd64_sysv_abi(Fn *fn)
  			b = fn->start; /* do it last */
  		if (b->visit)
@@ -610,14 +611,12 @@ index 49b125f..79f70ac 100644
  		selret(b, fn);
  		for (i=&b->ins[b->nins]; i!=b->ins;)
  			switch ((--i)->op) {
-@@ -711,11 +711,11 @@ amd64_sysv_abi(Fn *fn)
+@@ -711,10 +711,10 @@ amd64_sysv_abi(Fn *fn)
  		if (b == fn->start)
  			for (; ral; ral=ral->link)
  				emiti(ral->i);
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	} while (b != fn->start);
  
 -	if (debug['A']) {
@@ -626,7 +625,7 @@ index 49b125f..79f70ac 100644
  		printfn(fn, stderr);
  	}
 diff --git a/amd64/winabi.c b/amd64/winabi.c
-index 2482705..d5223a4 100755
+index 57ec00c..3b3fbb4 100755
 --- a/amd64/winabi.c
 +++ b/amd64/winabi.c
 @@ -191,7 +191,7 @@ static void classify_arguments(RegisterUsage* reg_usage,
@@ -665,18 +664,7 @@ index 2482705..d5223a4 100755
  
    lower_block_return(func, block);
  
-@@ -593,8 +593,8 @@ static void lower_args_for_block(Fn* func,
- 
-   // emit/emiti add instructions from the end to the beginning of the temporary
-   // global buffer. dup the final version into the final block storage.
--  block->nins = &insb[NIns] - curi;
--  idup(&block->ins, curi, block->nins);
-+  block->nins = &GC(insb)[NIns] - GC(curi);
-+  idup(&block->ins, GC(curi), block->nins);
- }
- 
- static Ins* find_end_of_func_parameters(Blk* start_block) {
-@@ -620,11 +620,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -619,11 +619,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
  
    // global temporary buffer used by emit. Reset to the end, and predecremented
    // when adding to it.
@@ -690,7 +678,7 @@ index 2482705..d5223a4 100755
      if (by_copy) {
        assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false,
                                 by_copy);
-@@ -695,11 +695,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -694,7 +694,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
      emit(Ocopy, Kl, env, TMP(RAX), R);
    }
  
@@ -698,13 +686,8 @@ index 2482705..d5223a4 100755
 +  int num_created_instrs = &GC(insb)[NIns] - GC(curi);
    int num_other_after_instrs = (int)(start_block->nins - num_params);
    int new_total_instrs = num_other_after_instrs + num_created_instrs;
-   Ins* new_instrs = alloc(new_total_instrs * sizeof(Ins));
--  Ins* instr_p = icpy(new_instrs, curi, num_created_instrs);
-+  Ins* instr_p = icpy(new_instrs, GC(curi), num_created_instrs);
-   icpy(instr_p, end_of_params, num_other_after_instrs);
-   start_block->nins = new_total_instrs;
-   start_block->ins = new_instrs;
-@@ -747,7 +747,7 @@ void amd64_winabi_abi(Fn* func) {
+   Ins* new_instrs = vnew(new_total_instrs, sizeof(Ins), PFn);
+@@ -746,7 +746,7 @@ void amd64_winabi_abi(Fn* func) {
    }
    lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
  
@@ -714,7 +697,7 @@ index 2482705..d5223a4 100755
      printfn(func, stderr);
    }
 diff --git a/arm64/abi.c b/arm64/abi.c
-index b9e6a14..4541ace 100644
+index 7a2b6f9..bea37ed 100644
 --- a/arm64/abi.c
 +++ b/arm64/abi.c
 @@ -78,7 +78,7 @@ isfloatv(Typ *t, char *cls)
@@ -789,31 +772,32 @@ index b9e6a14..4541ace 100644
  		if (cr.class & Cptr) {
  			fn->retr = newtmp("abi", Kl, fn);
  			emit(Ocopy, Kl, fn->retr, TMP(R8), R);
-@@ -545,9 +545,9 @@ split(Fn *fn, Blk *b)
+@@ -545,8 +545,8 @@ split(Fn *fn, Blk *b)
  
  	++fn->nblk;
  	bn = newblk();
--	bn->nins = &insb[NIns] - curi;
--	idup(&bn->ins, curi, bn->nins);
+-	idup(bn, curi, &insb[NIns]-curi);
 -	curi = &insb[NIns];
-+	bn->nins = &GC(insb)[NIns] - GC(curi);
-+	idup(&bn->ins, GC(curi), bn->nins);
++	idup(bn, GC(curi), &GC(insb)[NIns]-GC(curi));
 +	GC(curi) = &GC(insb)[NIns];
  	bn->visit = ++b->visit;
  	strf(bn->name, "%s.%d", b->name, b->visit);
  	bn->loop = b->loop;
-@@ -743,9 +743,9 @@ arm64_abi(Fn *fn)
+@@ -742,12 +742,12 @@ arm64_abi(Fn *fn)
  		if (!ispar(i->op))
  			break;
  	p = selpar(fn, b->ins, i);
--	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
-+	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
- 	i0 = alloc(n * sizeof(Ins));
--	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
-+	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
- 	ip = icpy(ip, i, &b->ins[b->nins] - i);
- 	b->nins = n;
- 	b->ins = i0;
+-	n0 = &insb[NIns] - curi;
++	n0 = &GC(insb)[NIns] - GC(curi);
+ 	ioff = i - b->ins;
+ 	n1 = b->nins - ioff;
+ 	vgrow(&b->ins, n0+n1);
+ 	icpy(b->ins+n0, b->ins+ioff, n1);
+-	icpy(b->ins, curi, n0);
++	icpy(b->ins, GC(curi), n0);
+ 	b->nins = n0+n1;
+ 
+ 	/* lower calls, returns, and vararg instructions */
 @@ -758,7 +758,7 @@ arm64_abi(Fn *fn)
  			b = fn->start; /* do it last */
  		if (b->visit)
@@ -839,14 +823,12 @@ index b9e6a14..4541ace 100644
  					apple_selvaarg(fn, b, i);
  				else
  					arm64_selvaarg(fn, b, i);
-@@ -791,11 +791,11 @@ arm64_abi(Fn *fn)
+@@ -791,10 +791,10 @@ arm64_abi(Fn *fn)
  		if (b == fn->start)
  			for (; il; il=il->link)
  				emiti(il->i);
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	} while (b != fn->start);
  
 -	if (debug['A']) {
@@ -854,7 +836,7 @@ index b9e6a14..4541ace 100644
  		fprintf(stderr, "\n> After ABI lowering:\n");
  		printfn(fn, stderr);
  	}
-@@ -814,7 +814,7 @@ apple_extsb(Fn *fn)
+@@ -813,7 +813,7 @@ apple_extsb(Fn *fn)
  	Ref r;
  
  	for (b=fn->start; b; b=b->link) {
@@ -863,7 +845,7 @@ index b9e6a14..4541ace 100644
  		j = b->jmp.type;
  		if (isretbh(j)) {
  			r = newtmp("abi", Kw, fn);
-@@ -834,7 +834,7 @@ apple_extsb(Fn *fn)
+@@ -833,7 +833,7 @@ apple_extsb(Fn *fn)
  				emiti(*--i);
  				if (isargbh(i->op)) {
  					i->to = newtmp("abi", Kl, fn);
@@ -872,14 +854,12 @@ index b9e6a14..4541ace 100644
  				}
  			}
  			for (i=i1; i>i0;)
-@@ -843,11 +843,11 @@ apple_extsb(Fn *fn)
+@@ -842,10 +842,10 @@ apple_extsb(Fn *fn)
  					emit(op, Kw, i->to, i->arg[0], R);
  				}
  		}
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
  
 -	if (debug['A']) {
@@ -888,7 +868,7 @@ index b9e6a14..4541ace 100644
  		printfn(fn, stderr);
  	}
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 28cd6a5..50e3ac5 100644
+index 9b6cf0f..8f70aec 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
 @@ -1,5 +1,7 @@
@@ -1012,7 +992,7 @@ index 28cd6a5..50e3ac5 100644
  		elf_emitfnfin(fn->name, out);
  }
 diff --git a/arm64/isel.c b/arm64/isel.c
-index 9ce6adc..43fa1e5 100644
+index ff3b30b..1ef3388 100644
 --- a/arm64/isel.c
 +++ b/arm64/isel.c
 @@ -78,7 +78,7 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
@@ -1025,7 +1005,7 @@ index 9ce6adc..43fa1e5 100644
  		&& c->sym.type == SThr) {
  			r1 = newtmp("isel", Kl, fn);
 @@ -112,7 +112,7 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
- 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+ 			n = stashbits(c->bits.i, KWIDE(k) ? 8 : 4);
  			vgrow(&fn->con, ++fn->ncon);
  			c = &fn->con[fn->ncon-1];
 -			sprintf(buf, "\"%sfp%d\"", T.asloc, n);
@@ -1086,14 +1066,12 @@ index 9ce6adc..43fa1e5 100644
  		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
  			for (p=(*sb)->phi; p; p=p->link) {
  				for (n=0; p->blk[n] != b; n++)
-@@ -306,11 +306,11 @@ arm64_isel(Fn *fn)
+@@ -306,10 +306,10 @@ arm64_isel(Fn *fn)
  		seljmp(b, fn);
  		for (i=&b->ins[b->nins]; i!=b->ins;)
  			sel(*--i, fn);
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
  
 -	if (debug['I']) {
@@ -1102,7 +1080,7 @@ index 9ce6adc..43fa1e5 100644
  		printfn(fn, stderr);
  	}
 diff --git a/cfg.c b/cfg.c
-index f1fa21a..1b305bc 100644
+index 5db8c13..ae931b3 100644
 --- a/cfg.c
 +++ b/cfg.c
 @@ -1,13 +1,14 @@
@@ -1119,32 +1097,24 @@ index f1fa21a..1b305bc 100644
  	b = alloc(sizeof *b);
 -	*b = z;
 +	*b = G(newblk_z);
+ 	b->ins = vnew(0, sizeof b->ins[0], PFn);
+ 	b->pred = vnew(0, sizeof b->pred[0], PFn);
  	return b;
- }
- 
 diff --git a/copy.c b/copy.c
-index da3987f..853e897 100644
+index 43b9490..e31bcd4 100644
 --- a/copy.c
 +++ b/copy.c
-@@ -1,5 +1,7 @@
- #include "all.h"
+@@ -8,6 +8,8 @@ struct Ext {
+ 	char usew; /* uses only the low usew bits of arg */
+ };
  
 +#define G(x) global_context.copy__##x
 +
  static int
- iscon(Ref r, int64_t bits, Fn *fn)
+ ext(Ins *i, Ext *e)
  {
-@@ -196,7 +198,7 @@ copy(Fn *fn)
- 		subst(&b->jmp.arg, cpy);
- 	}
- 
--	if (debug['C']) {
-+	if (GC(debug)['C']) {
- 		fprintf(stderr, "\n> Copy information:");
- 		for (t=Tmp0; t<fn->ntmp; t++) {
- 			if (req(cpy[t], R)) {
 diff --git a/emit.c b/emit.c
-index 2f1a715..c8be039 100644
+index 594dddd..20395ec 100644
 --- a/emit.c
 +++ b/emit.c
 @@ -1,5 +1,7 @@
@@ -1237,7 +1207,7 @@ index 2f1a715..c8be039 100644
 -typedef struct Asmbits Asmbits;
 -
  struct Asmbits {
- 	char bits[16];
+ 	bits n;
  	int size;
  	Asmbits *link;
  };
@@ -1245,20 +1215,20 @@ index 2f1a715..c8be039 100644
 -static Asmbits *stash;
 -
  int
- stashbits(void *bits, int size)
+ stashbits(bits n, int size)
  {
-@@ -139,7 +136,7 @@ stashbits(void *bits, int size)
+@@ -139,7 +136,7 @@ stashbits(bits n, int size)
  	int i;
  
  	assert(size == 4 || size == 8 || size == 16);
 -	for (pb=&stash, i=0; (b=*pb); pb=&b->link, i++)
 +	for (pb=&G(stash), i=0; (b=*pb); pb=&b->link, i++)
- 		if (size <= b->size)
- 		if (memcmp(bits, b->bits, size) == 0)
+ 		if (size <= b->size && b->n == n)
  			return i;
-@@ -159,17 +156,17 @@ emitfin(FILE *f, char *sec[3])
+ 	b = emalloc(sizeof *b);
+@@ -157,17 +154,17 @@ emitfin(FILE *f, char *sec[3])
  	int lg, i;
- 	double d;
+ 	union { int32_t i; float f; } u;
  
 -	if (!stash)
 +	if (!G(stash))
@@ -1275,10 +1245,10 @@ index 2f1a715..c8be039 100644
 -					sec[lg-2], lg, T.asloc, i
 +					sec[lg-2], lg, GC(T).asloc, i
  				);
- 				for (p=b->bits; p<&b->bits[b->size]; p+=4)
- 					fprintf(f, "\n\t.int %"PRId32,
-@@ -184,8 +181,8 @@ emitfin(FILE *f, char *sec[3])
- 					fprintf(f, "\n\n");
+ 				if (lg == 4)
+ 					fprintf(f,
+@@ -189,8 +186,8 @@ emitfin(FILE *f, char *sec[3])
+ 				}
  			}
  		}
 -	while ((b=stash)) {
@@ -1288,7 +1258,7 @@ index 2f1a715..c8be039 100644
  		free(b);
  	}
  }
-@@ -223,13 +220,9 @@ pe_emitfin(FILE *f)
+@@ -228,13 +225,9 @@ pe_emitfin(FILE *f)
  {
  	static char *sec[3] = { ".rodata", ".rodata", ".rodata" };
  
@@ -1303,7 +1273,7 @@ index 2f1a715..c8be039 100644
  void
  emitdbgfile(char *fn, FILE *f)
  {
-@@ -237,26 +230,26 @@ emitdbgfile(char *fn, FILE *f)
+@@ -242,26 +235,26 @@ emitdbgfile(char *fn, FILE *f)
  	uint n;
  
  	id = intern(fn);
@@ -1342,232 +1312,58 @@ index 2f1a715..c8be039 100644
 +		fprintf(f, "\t.loc %u %u\n", G(curfile), line);
  }
 diff --git a/fold.c b/fold.c
-index 3ff0bc7..90fd6c6 100644
+index 7d0b04c..9f21ad2 100644
 --- a/fold.c
 +++ b/fold.c
-@@ -1,23 +1,12 @@
+@@ -1,6 +1,7 @@
  #include "all.h"
  
+ /* boring folding code */
 +#define G(x) global_context.fold__##x
-+
- enum {
- 	Bot = -1, /* lattice bottom */
- 	Top = 0,  /* lattice top (matches UNDEF) */
- };
  
--typedef struct Edge Edge;
--
--struct Edge {
--	int dest;
--	int dead;
--	Edge *work;
--};
--
--static int *val;
--static Edge *flowrk, (*edge)[2];
--static Use **usewrk;
--static uint nuse;
--
  static int
  iscon(Con *c, int w, uint64_t k)
- {
-@@ -34,7 +23,7 @@ latval(Ref r)
- {
- 	switch (rtype(r)) {
- 	case RTmp:
--		return val[r.val];
-+		return G(val)[r.val];
- 	case RCon:
- 		return r.val;
- 	default:
-@@ -54,14 +43,14 @@ update(int t, int m, Fn *fn)
- 	Tmp *tmp;
- 	uint u;
- 
--	m = latmerge(val[t], m);
--	if (m != val[t]) {
-+	m = latmerge(G(val)[t], m);
-+	if (m != G(val)[t]) {
- 		tmp = &fn->tmp[t];
- 		for (u=0; u<tmp->nuse; u++) {
--			vgrow(&usewrk, ++nuse);
--			usewrk[nuse-1] = &tmp->use[u];
-+			vgrow(&G(usewrk), ++G(nuse));
-+			G(usewrk)[G(nuse)-1] = &tmp->use[u];
- 		}
--		val[t] = m;
-+		G(val)[t] = m;
+diff --git a/gcm.c b/gcm.c
+index e685d2a..0ea2c37 100644
+--- a/gcm.c
++++ b/gcm.c
+@@ -421,7 +421,7 @@ sink(Fn *fn)
+ 				sinkref(fn, b, &i->arg[1]);
+ 		sinkref(fn, b, &b->jmp.arg);
  	}
+-	addgcmins(fn, curi, &insb[NIns] - curi);
++	addgcmins(fn, GC(curi), &GC(insb)[NIns] - GC(curi));
  }
  
-@@ -70,7 +59,7 @@ deadedge(int s, int d)
- {
- 	Edge *e;
+ /* requires use dom
+@@ -448,12 +448,12 @@ gcm(Fn *fn)
  
--	e = edge[s];
-+	e = G(edge)[s];
- 	if (e[0].dest == d && !e[0].dead)
- 		return 0;
- 	if (e[1].dest == d && !e[1].dead)
-@@ -127,24 +116,24 @@ visitjmp(Blk *b, int n, Fn *fn)
- 	case Jjnz:
- 		l = latval(b->jmp.arg);
- 		if (l == Bot) {
--			edge[n][1].work = flowrk;
--			edge[n][0].work = &edge[n][1];
--			flowrk = &edge[n][0];
-+			G(edge)[n][1].work = G(flowrk);
-+			G(edge)[n][0].work = &G(edge)[n][1];
-+			G(flowrk) = &G(edge)[n][0];
- 		}
- 		else if (iscon(&fn->con[l], 0, 0)) {
--			assert(edge[n][0].dead);
--			edge[n][1].work = flowrk;
--			flowrk = &edge[n][1];
-+			assert(G(edge)[n][0].dead);
-+			G(edge)[n][1].work = G(flowrk);
-+			G(flowrk) = &G(edge)[n][1];
- 		}
- 		else {
--			assert(edge[n][1].dead);
--			edge[n][0].work = flowrk;
--			flowrk = &edge[n][0];
-+			assert(G(edge)[n][1].dead);
-+			G(edge)[n][0].work = G(flowrk);
-+			G(flowrk) = &G(edge)[n][0];
- 		}
- 		break;
- 	case Jjmp:
--		edge[n][0].work = flowrk;
--		flowrk = &edge[n][0];
-+		G(edge)[n][0].work = G(flowrk);
-+		G(flowrk) = &G(edge)[n][0];
- 		break;
- 	case Jhlt:
- 		break;
-@@ -172,7 +161,7 @@ renref(Ref *r)
- 	int l;
- 
- 	if (rtype(*r) == RTmp)
--		if ((l=val[r->val]) != Bot) {
-+		if ((l=G(val)[r->val]) != Bot) {
- 			*r = CON(l);
- 			return 1;
- 		}
-@@ -191,27 +180,27 @@ fold(Fn *fn)
- 	int t, d;
- 	uint n, a;
- 
--	val = emalloc(fn->ntmp * sizeof val[0]);
--	edge = emalloc(fn->nblk * sizeof edge[0]);
--	usewrk = vnew(0, sizeof usewrk[0], PHeap);
-+	G(val) = emalloc(fn->ntmp * sizeof G(val)[0]);
-+	G(edge) = emalloc(fn->nblk * sizeof G(edge)[0]);
-+	G(usewrk) = vnew(0, sizeof G(usewrk)[0], PHeap);
- 
- 	for (t=0; t<fn->ntmp; t++)
--		val[t] = Top;
-+		G(val)[t] = Top;
- 	for (n=0; n<fn->nblk; n++) {
- 		b = fn->rpo[n];
- 		b->visit = 0;
--		initedge(&edge[n][0], b->s1);
--		initedge(&edge[n][1], b->s2);
-+		initedge(&G(edge)[n][0], b->s1);
-+		initedge(&G(edge)[n][1], b->s2);
- 	}
- 	initedge(&start, fn->start);
--	flowrk = &start;
--	nuse = 0;
-+	G(flowrk) = &start;
-+	G(nuse) = 0;
- 
- 	/* 1. find out constants and dead cfg edges */
- 	for (;;) {
--		e = flowrk;
-+		e = G(flowrk);
- 		if (e) {
--			flowrk = e->work;
-+			G(flowrk) = e->work;
- 			e->work = 0;
- 			if (e->dest == -1 || !e->dead)
- 				continue;
-@@ -227,11 +216,11 @@ fold(Fn *fn)
- 			}
- 			b->visit++;
- 			assert(b->jmp.type != Jjmp
--				|| !edge[n][0].dead
--				|| flowrk == &edge[n][0]);
-+				|| !G(edge)[n][0].dead
-+				|| G(flowrk) == &G(edge)[n][0]);
- 		}
--		else if (nuse) {
--			u = usewrk[--nuse];
-+		else if (G(nuse)) {
-+			u = G(usewrk)[--G(nuse)];
- 			n = u->bid;
- 			b = fn->rpo[n];
- 			if (b->visit == 0)
-@@ -254,16 +243,16 @@ fold(Fn *fn)
- 			break;
- 	}
- 
--	if (debug['F']) {
-+	if (GC(debug)['F']) {
- 		fprintf(stderr, "\n> SCCP findings:");
- 		for (t=Tmp0; t<fn->ntmp; t++) {
--			if (val[t] == Bot)
-+			if (G(val)[t] == Bot)
- 				continue;
- 			fprintf(stderr, "\n%10s: ", fn->tmp[t].name);
--			if (val[t] == Top)
-+			if (G(val)[t] == Top)
- 				fprintf(stderr, "Top");
- 			else
--				printref(CON(val[t]), fn, stderr);
-+				printref(CON(G(val)[t]), fn, stderr);
- 		}
- 		fprintf(stderr, "\n dead code: ");
- 	}
-@@ -273,7 +262,7 @@ fold(Fn *fn)
- 	for (pb=&fn->start; (b=*pb);) {
- 		if (b->visit == 0) {
- 			d = 1;
--			if (debug['F'])
-+			if (GC(debug)['F'])
- 				fprintf(stderr, "%s ", b->name);
- 			edgedel(b, &b->s1);
- 			edgedel(b, &b->s2);
-@@ -281,7 +270,7 @@ fold(Fn *fn)
- 			continue;
- 		}
- 		for (pp=&b->phi; (p=*pp);)
--			if (val[p->to.val] != Bot)
-+			if (G(val)[p->to.val] != Bot)
- 				*pp = p->link;
- 			else {
- 				for (a=0; a<p->narg; a++)
-@@ -313,16 +302,16 @@ fold(Fn *fn)
- 		pb = &b->link;
- 	}
- 
--	if (debug['F']) {
-+	if (GC(debug)['F']) {
- 		if (!d)
- 			fprintf(stderr, "(none)");
- 		fprintf(stderr, "\n\n> After constant folding:\n");
+ 	gcmmove(fn);
+ 	filluse(fn);
+-	curi = &insb[NIns];
++	GC(curi) = &GC(insb)[NIns];
+ 	sink(fn);
+ 	filluse(fn);
+ 	schedblk(fn);
+ 	
+-	if (debug['G']) {
++	if (GC(debug)['G']) {
+ 		fprintf(stderr, "\n> After GCM:\n");
  		printfn(fn, stderr);
  	}
+diff --git a/gvn.c b/gvn.c
+index 1db5bbc..5ff2bd7 100644
+--- a/gvn.c
++++ b/gvn.c
+@@ -497,7 +497,7 @@ gvn(Fn *fn)
+ 	free(gvntbl);
+ 	gvntbl = 0;
  
--	free(val);
--	free(edge);
--	vfree(usewrk);
-+	free(G(val));
-+	free(G(edge));
-+	vfree(G(usewrk));
- }
- 
- /* boring folding code */
+-	if (debug['G']) {
++	if (GC(debug)['G']) {
+ 		fprintf(stderr, "\n> After GVN:\n");
+ 		printfn(fn, stderr);
+ 	}
 diff --git a/live.c b/live.c
 index 68f48b0..3586ffa 100644
 --- a/live.c
@@ -1625,7 +1421,7 @@ index 68f48b0..3586ffa 100644
  		for (b=f->start; b; b=b->link) {
  			fprintf(stderr, "\t%-10sin:   ", b->name);
 diff --git a/load.c b/load.c
-index 6f40cc7..a443c85 100644
+index bac382c..b6e0dbe 100644
 --- a/load.c
 +++ b/load.c
 @@ -1,10 +1,11 @@
@@ -1793,7 +1589,7 @@ index 6f40cc7..a443c85 100644
  	ist->isphi = 1;
  	ist->bid = b->id;
  	ist->new.phi.m = sl;
-@@ -419,10 +415,10 @@ loadopt(Fn *fn)
+@@ -420,10 +416,10 @@ loadopt(Fn *fn)
  	Slice sl;
  	Loc l;
  
@@ -1808,7 +1604,7 @@ index 6f40cc7..a443c85 100644
  	for (b=fn->start; b; b=b->link)
  		for (i=b->ins; i<&b->ins[b->nins]; ++i) {
  			if (!isload(i->op))
-@@ -432,11 +428,11 @@ loadopt(Fn *fn)
+@@ -433,11 +429,11 @@ loadopt(Fn *fn)
  			l = (Loc){LRoot, i-b->ins, b};
  			i->arg[1] = def(sl, MASK(sz), b, i, &l);
  		}
@@ -1825,7 +1621,7 @@ index 6f40cc7..a443c85 100644
  		for (; ist->bid == n && ist->isphi; ++ist) {
  			ist->new.phi.p->link = b->phi;
 @@ -485,8 +481,8 @@ loadopt(Fn *fn)
- 		idup(&b->ins, ib, nt);
+ 		idup(b, ib, nt);
  	}
  	vfree(ib);
 -	vfree(ilog);
@@ -1836,7 +1632,7 @@ index 6f40cc7..a443c85 100644
  		printfn(fn, stderr);
  	}
 diff --git a/main.c b/main.c
-index 81604e4..a6cefa7 100644
+index 37e9f00..7253656 100644
 --- a/main.c
 +++ b/main.c
 @@ -3,21 +3,17 @@
@@ -1906,24 +1702,25 @@ index 81604e4..a6cefa7 100644
  	}
 -	T.abi0(fn);
 +	GC(T).abi0(fn);
- 	fillrpo(fn);
- 	fillpreds(fn);
+ 	fillcfg(fn);
  	filluse(fn);
-@@ -80,11 +74,11 @@ func(Fn *fn)
- 	copy(fn);
+ 	promote(fn);
+@@ -84,11 +78,12 @@ func(Fn *fn)
+ 	gcm(fn);
  	filluse(fn);
- 	fold(fn);
+ 	ssacheck(fn);
 -	T.abi1(fn);
 +	GC(T).abi1(fn);
  	simpl(fn);
- 	fillpreds(fn);
+ 	fillcfg(fn);
  	filluse(fn);
 -	T.isel(fn);
 +	GC(T).isel(fn);
- 	fillrpo(fn);
++  ret_on_err();
+ 	fillcfg(fn);
  	filllive(fn);
  	fillloop(fn);
-@@ -102,9 +96,9 @@ func(Fn *fn)
+@@ -105,9 +100,9 @@ func(Fn *fn)
  			break;
  		} else
  			fn->rpo[n]->link = fn->rpo[n+1];
@@ -1936,7 +1733,7 @@ index 81604e4..a6cefa7 100644
  	} else
  		fprintf(stderr, "\n");
  	freeall();
-@@ -113,7 +107,7 @@ func(Fn *fn)
+@@ -116,7 +111,7 @@ func(Fn *fn)
  static void
  dbgfile(char *fn)
  {
@@ -1945,7 +1742,7 @@ index 81604e4..a6cefa7 100644
  }
  
  int
-@@ -124,21 +118,23 @@ main(int ac, char *av[])
+@@ -127,21 +122,23 @@ main(int ac, char *av[])
  	char *f, *sep;
  	int c;
  
@@ -1975,7 +1772,7 @@ index 81604e4..a6cefa7 100644
  					fprintf(stderr, "cannot open '%s'\n", optarg);
  					exit(1);
  				}
-@@ -146,7 +142,7 @@ main(int ac, char *av[])
+@@ -149,7 +146,7 @@ main(int ac, char *av[])
  			break;
  		case 't':
  			if (strcmp(optarg, "?") == 0) {
@@ -1984,7 +1781,7 @@ index 81604e4..a6cefa7 100644
  				exit(0);
  			}
  			for (t=tlist;; t++) {
-@@ -155,7 +151,7 @@ main(int ac, char *av[])
+@@ -158,7 +155,7 @@ main(int ac, char *av[])
  					exit(1);
  				}
  				if (strcmp(optarg, (*t)->name) == 0) {
@@ -1993,7 +1790,7 @@ index 81604e4..a6cefa7 100644
  					break;
  				}
  			}
-@@ -194,8 +190,8 @@ main(int ac, char *av[])
+@@ -197,8 +194,8 @@ main(int ac, char *av[])
  		fclose(inf);
  	} while (++optind < ac);
  
@@ -2036,7 +1833,7 @@ index 3265b39..b270ec6 100644
  			if (s0->s != s0)
  				continue;
 diff --git a/parse.c b/parse.c
-index 38c265a..c0c1857 100644
+index 25a0e1a..3d09cd2 100644
 --- a/parse.c
 +++ b/parse.c
 @@ -2,6 +2,8 @@
@@ -2048,7 +1845,7 @@ index 38c265a..c0c1857 100644
  enum {
  	Ksb = 4, /* matches Oarg/Opar/Jret */
  	Kub,
-@@ -135,43 +137,17 @@ enum {
+@@ -141,43 +143,17 @@ enum {
  	NPred = 63,
  
  	TMask = 16383, /* for temps hash */
@@ -2093,7 +1890,7 @@ index 38c265a..c0c1857 100644
  	vfprintf(stderr, s, ap);
  	fprintf(stderr, "\n");
  	va_end(ap);
-@@ -181,11 +157,10 @@ err(char *s, ...)
+@@ -187,11 +163,10 @@ err(char *s, ...)
  static void
  lexinit(void)
  {
@@ -2106,7 +1903,7 @@ index 38c265a..c0c1857 100644
  		return;
  	for (i=0; i<NPubOp; ++i)
  		if (optab[i].name)
-@@ -193,11 +168,11 @@ lexinit(void)
+@@ -199,11 +174,11 @@ lexinit(void)
  	assert(Ntok <= UCHAR_MAX);
  	for (i=0; i<Ntok; ++i)
  		if (kwmap[i]) {
@@ -2122,7 +1919,7 @@ index 38c265a..c0c1857 100644
  }
  
  static int64_t
-@@ -207,15 +182,15 @@ getint(void)
+@@ -213,15 +188,15 @@ getint(void)
  	int c, m;
  
  	n = 0;
@@ -2142,7 +1939,7 @@ index 38c265a..c0c1857 100644
  	if (m)
  		n = 1 + ~n;
  	return *(int64_t *)&n;
-@@ -224,15 +199,14 @@ getint(void)
+@@ -230,15 +205,14 @@ getint(void)
  static int
  lex(void)
  {
@@ -2160,7 +1957,7 @@ index 38c265a..c0c1857 100644
  	switch (c) {
  	case EOF:
  		return Teof;
-@@ -251,57 +225,57 @@ lex(void)
+@@ -257,57 +231,57 @@ lex(void)
  	case '+':
  		return Tplus;
  	case 's':
@@ -2234,7 +2031,7 @@ index 38c265a..c0c1857 100644
  				return t;
  			}
  			esc = (c == '\\' && !esc);
-@@ -314,18 +288,18 @@ Alpha:
+@@ -320,18 +294,18 @@ Alpha:
  	do {
  		if (i >= NString-1)
  			err("identifier too long");
@@ -2261,7 +2058,7 @@ index 38c265a..c0c1857 100644
  		return Txxx;
  	}
  	return t;
-@@ -334,9 +308,9 @@ Alpha:
+@@ -340,9 +314,9 @@ Alpha:
  static int
  peek(void)
  {
@@ -2274,7 +2071,7 @@ index 38c265a..c0c1857 100644
  }
  
  static int
-@@ -345,7 +319,7 @@ next(void)
+@@ -351,7 +325,7 @@ next(void)
  	int t;
  
  	t = peek();
@@ -2283,7 +2080,7 @@ index 38c265a..c0c1857 100644
  	return t;
  }
  
-@@ -390,27 +364,27 @@ tmpref(char *v)
+@@ -396,27 +370,27 @@ tmpref(char *v)
  {
  	int t, i;
  
@@ -2327,7 +2124,7 @@ index 38c265a..c0c1857 100644
  	return TMP(t);
  }
  
-@@ -424,19 +398,19 @@ parseref(void)
+@@ -430,19 +404,19 @@ parseref(void)
  	default:
  		return R;
  	case Ttmp:
@@ -2351,7 +2148,7 @@ index 38c265a..c0c1857 100644
  		c.flt = 2;
  		break;
  	case Tthread:
-@@ -445,19 +419,19 @@ parseref(void)
+@@ -451,19 +425,19 @@ parseref(void)
  		/* fall through */
  	case Tglo:
  		c.type = CAddr;
@@ -2375,7 +2172,7 @@ index 38c265a..c0c1857 100644
  }
  
  static int
-@@ -467,7 +441,7 @@ parsecls(int *tyn)
+@@ -473,7 +447,7 @@ parsecls(int *tyn)
  	default:
  		err("invalid class specifier");
  	case Ttyp:
@@ -2384,7 +2181,7 @@ index 38c265a..c0c1857 100644
  		return Kc;
  	case Tsb:
  		return Ksb;
-@@ -498,7 +472,7 @@ parserefl(int arg)
+@@ -504,7 +478,7 @@ parserefl(int arg)
  	vararg = 0;
  	expect(Tlparen);
  	while (peek() != Trparen) {
@@ -2393,7 +2190,7 @@ index 38c265a..c0c1857 100644
  			err("too many instructions");
  		if (!arg && vararg)
  			err("no parameters allowed after '...'");
-@@ -508,8 +482,8 @@ parserefl(int arg)
+@@ -514,8 +488,8 @@ parserefl(int arg)
  				err("only one '...' allowed");
  			vararg = 1;
  			if (arg) {
@@ -2404,7 +2201,7 @@ index 38c265a..c0c1857 100644
  			}
  			next();
  			goto Next;
-@@ -533,25 +507,25 @@ parserefl(int arg)
+@@ -539,25 +513,25 @@ parserefl(int arg)
  			err("invalid function parameter");
  		if (env)
  			if (arg)
@@ -2439,7 +2236,7 @@ index 38c265a..c0c1857 100644
  	Next:
  		if (peek() == Trparen)
  			break;
-@@ -567,25 +541,25 @@ findblk(char *name)
+@@ -573,24 +547,24 @@ findblk(char *name)
  	Blk *b;
  	uint32_t h;
  
@@ -2463,18 +2260,16 @@ index 38c265a..c0c1857 100644
  static void
  closeblk(void)
  {
--	curb->nins = curi - insb;
--	idup(&curb->ins, insb, curb->nins);
+-	idup(curb, insb, curi-insb);
 -	blink = &curb->link;
 -	curi = insb;
-+	G(curb)->nins = GC(curi) - GC(insb);
-+	idup(&G(curb)->ins, GC(insb), G(curb)->nins);
++	idup(G(curb), GC(insb), GC(curi)-GC(insb));
 +	G(blink) = &G(curb)->link;
 +	GC(curi) = GC(insb);
  }
  
  static PState
-@@ -604,7 +578,7 @@ parseline(PState ps)
+@@ -609,7 +583,7 @@ parseline(PState ps)
  		err("label or } expected");
  	switch (t) {
  	case Ttmp:
@@ -2483,7 +2278,7 @@ index 38c265a..c0c1857 100644
  		expect(Teq);
  		k = parsecls(&ty);
  		op = next();
-@@ -624,53 +598,53 @@ parseline(PState ps)
+@@ -629,53 +603,53 @@ parseline(PState ps)
  	case Trbrace:
  		return PEnd;
  	case Tlbl:
@@ -2556,7 +2351,7 @@ index 38c265a..c0c1857 100644
  	Close:
  		expect(Tnl);
  		closeblk();
-@@ -680,21 +654,21 @@ parseline(PState ps)
+@@ -685,21 +659,21 @@ parseline(PState ps)
  		k = Kw;
  		r = R;
  		expect(Tint);
@@ -2583,7 +2378,7 @@ index 38c265a..c0c1857 100644
  		arg[0] = parseref();
  		parserefl(1);
  		op = Ocall;
-@@ -713,7 +687,7 @@ parseline(PState ps)
+@@ -718,7 +692,7 @@ parseline(PState ps)
  		op = Oload;
  	if (op == Talloc1 || op == Talloc2)
  		op = Oalloc;
@@ -2592,7 +2387,7 @@ index 38c265a..c0c1857 100644
  		err("cannot use vastart in non-variadic function");
  	if (k >= Ksb)
  		err("size class must be w, l, s, or d");
-@@ -724,7 +698,7 @@ parseline(PState ps)
+@@ -729,7 +703,7 @@ parseline(PState ps)
  				err("too many arguments");
  			if (op == Tphi) {
  				expect(Tlbl);
@@ -2601,7 +2396,7 @@ index 38c265a..c0c1857 100644
  			}
  			arg[i] = parseref();
  			if (req(arg[i], R))
-@@ -740,7 +714,7 @@ parseline(PState ps)
+@@ -745,7 +719,7 @@ parseline(PState ps)
  	next();
  	switch (op) {
  	case Tphi:
@@ -2610,7 +2405,7 @@ index 38c265a..c0c1857 100644
  			err("unexpected phi instruction");
  		phi = alloc(sizeof *phi);
  		phi->to = r;
-@@ -750,41 +724,41 @@ parseline(PState ps)
+@@ -755,41 +729,41 @@ parseline(PState ps)
  		phi->blk = vnew(i, sizeof blk[0], PFn);
  		memcpy(phi->blk, blk, i * sizeof blk[0]);
  		phi->narg = i;
@@ -2671,7 +2466,7 @@ index 38c265a..c0c1857 100644
  		return PIns;
  	}
  }
-@@ -894,55 +868,55 @@ parsefn(Lnk *lnk)
+@@ -899,55 +873,55 @@ parsefn(Lnk *lnk)
  	int i;
  	PState ps;
  
@@ -2740,12 +2535,12 @@ index 38c265a..c0c1857 100644
 -	curf->mem = vnew(0, sizeof curf->mem[0], PFn);
 -	curf->nmem = 0;
 -	curf->nblk = nblk;
--	curf->rpo = 0;
+-	curf->rpo = vnew(nblk, sizeof curf->rpo[0], PFn);
 -	for (b=curf->start; b; b=b->link)
 +	G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
 +	G(curf)->nmem = 0;
 +	G(curf)->nblk = G(nblk);
-+	G(curf)->rpo = 0;
++	G(curf)->rpo = vnew(G(nblk), sizeof G(curf)->rpo[0], PFn);
 +	for (b=G(curf)->start; b; b=b->link)
  		b->dlink = 0; /* was trashed by findblk() */
 -	for (i=0; i<BMask+1; ++i)
@@ -2761,7 +2556,7 @@ index 38c265a..c0c1857 100644
  }
  
  static void
-@@ -967,7 +941,7 @@ parsefields(Field *fld, Typ *ty, int t)
+@@ -972,7 +946,7 @@ parsefields(Field *fld, Typ *ty, int t)
  		case Tb: type = Fb; s = 1; a = 0; break;
  		case Ttyp:
  			type = FTyp;
@@ -2770,7 +2565,7 @@ index 38c265a..c0c1857 100644
  			s = ty1->size;
  			a = ty1->align;
  			break;
-@@ -986,13 +960,13 @@ parsefields(Field *fld, Typ *ty, int t)
+@@ -991,13 +965,13 @@ parsefields(Field *fld, Typ *ty, int t)
  		}
  		t = nextnl();
  		if (t == Tint) {
@@ -2786,7 +2581,7 @@ index 38c265a..c0c1857 100644
  		for (; c>0 && n<NField; c--, n++) {
  			fld[n].type = type;
  			fld[n].len = s;
-@@ -1022,20 +996,20 @@ parsetyp(void)
+@@ -1027,20 +1001,20 @@ parsetyp(void)
  	 * to handle nested types, any pointer
  	 * held to typ[] might be invalidated!
  	 */
@@ -2811,7 +2606,7 @@ index 38c265a..c0c1857 100644
  			;
  		ty->align = al;
  		t = nextnl();
-@@ -1045,7 +1019,7 @@ parsetyp(void)
+@@ -1050,7 +1024,7 @@ parsetyp(void)
  	t = nextnl();
  	if (t == Tint) {
  		ty->isdark = 1;
@@ -2820,7 +2615,7 @@ index 38c265a..c0c1857 100644
  		if (ty->align == -1)
  			err("dark types need alignment");
  		if (nextnl() != Trbrace)
-@@ -1067,7 +1041,7 @@ parsetyp(void)
+@@ -1072,7 +1046,7 @@ parsetyp(void)
  		parsefields(ty->fields[n++], ty, t);
  	ty->nunion = n;
  
@@ -2829,7 +2624,7 @@ index 38c265a..c0c1857 100644
      fprintf(stderr, "\n> Parsed type:\n");
      printtyp(ty, stderr);
    }
-@@ -1079,14 +1053,14 @@ parsedatref(Dat *d)
+@@ -1084,14 +1058,14 @@ parsedatref(Dat *d)
  	int t;
  
  	d->isref = 1;
@@ -2846,7 +2641,7 @@ index 38c265a..c0c1857 100644
  	}
  }
  
-@@ -1094,7 +1068,7 @@ static void
+@@ -1099,7 +1073,7 @@ static void
  parsedatstr(Dat *d)
  {
  	d->isstr = 1;
@@ -2855,7 +2650,7 @@ index 38c265a..c0c1857 100644
  }
  
  static void
-@@ -1106,16 +1080,16 @@ parsedat(void cb(Dat *), Lnk *lnk)
+@@ -1111,16 +1085,16 @@ parsedat(void cb(Dat *), Lnk *lnk)
  
  	if (nextnl() != Tglo || nextnl() != Teq)
  		err("data name, then = expected");
@@ -2876,7 +2671,7 @@ index 38c265a..c0c1857 100644
  		t = nextnl();
  	}
  	d.type = DStart;
-@@ -1127,7 +1101,7 @@ parsedat(void cb(Dat *), Lnk *lnk)
+@@ -1132,7 +1106,7 @@ parsedat(void cb(Dat *), Lnk *lnk)
  		err("expected data contents in { .. }");
  	for (;;) {
  		switch (nextnl()) {
@@ -2885,7 +2680,7 @@ index 38c265a..c0c1857 100644
  		case Trbrace: goto Done;
  		case Tl: d.type = DL; break;
  		case Tw: d.type = DW; break;
-@@ -1143,11 +1117,11 @@ parsedat(void cb(Dat *), Lnk *lnk)
+@@ -1148,11 +1122,11 @@ parsedat(void cb(Dat *), Lnk *lnk)
  			d.isref = 0;
  			memset(&d.u, 0, sizeof d.u);
  			if (t == Tflts)
@@ -2900,7 +2695,7 @@ index 38c265a..c0c1857 100644
  			else if (t == Tglo)
  				parsedatref(&d);
  			else if (t == Tstr)
-@@ -1188,10 +1162,10 @@ parselnk(Lnk *lnk)
+@@ -1193,10 +1167,10 @@ parselnk(Lnk *lnk)
  				err("only one section allowed");
  			if (next() != Tstr)
  				err("section \"name\" expected");
@@ -2913,7 +2708,7 @@ index 38c265a..c0c1857 100644
  			}
  			break;
  		default:
-@@ -1210,12 +1184,12 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+@@ -1215,12 +1189,12 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
  	uint n;
  
  	lexinit();
@@ -2932,7 +2727,7 @@ index 38c265a..c0c1857 100644
  	for (;;) {
  		lnk = (Lnk){0};
  		switch (parselnk(&lnk)) {
-@@ -1223,7 +1197,7 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+@@ -1228,7 +1202,7 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
  			err("top-level definition expected");
  		case Tdbgfile:
  			expect(Tstr);
@@ -2941,7 +2736,7 @@ index 38c265a..c0c1857 100644
  			break;
  		case Tfunc:
  			lnk.align = 16;
-@@ -1236,10 +1210,10 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+@@ -1241,10 +1215,10 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
  			parsetyp();
  			break;
  		case Teof:
@@ -2956,7 +2751,7 @@ index 38c265a..c0c1857 100644
  			return;
  		}
  	}
-@@ -1294,7 +1268,7 @@ void printtyp(Typ* ty, FILE* f) {
+@@ -1299,7 +1273,7 @@ void printtyp(Typ* ty, FILE* f) {
      for (int j = 0; j < NField+1; ++j) {
        if (fld[j].type == FTyp) {
          fprintf(f, "    field %d: %s => %s\n", j, field_type_name[fld[j].type],
@@ -2965,7 +2760,7 @@ index 38c265a..c0c1857 100644
        } else {
          fprintf(f, "    field %d: %s len %u\n", j, field_type_name[fld[j].type], fld[j].len);
        }
-@@ -1330,7 +1304,7 @@ printref(Ref r, Fn *fn, FILE *f)
+@@ -1335,7 +1309,7 @@ printref(Ref r, Fn *fn, FILE *f)
  		fprintf(f, "%04x", r.val);
  		break;
  	case RType:
@@ -2974,7 +2769,7 @@ index 38c265a..c0c1857 100644
  		break;
  	case RMem:
  		i = 0;
-@@ -1443,7 +1417,7 @@ printfn(Fn *fn, FILE *f)
+@@ -1448,7 +1422,7 @@ printfn(Fn *fn, FILE *f)
  				printref(b->jmp.arg, fn, f);
  			}
  			if (b->jmp.type == Jretc)
@@ -2984,7 +2779,7 @@ index 38c265a..c0c1857 100644
  			break;
  		case Jhlt:
 diff --git a/rega.c b/rega.c
-index 4d2a06b..6f8b5e6 100644
+index 3be4c34..95d8ac1 100644
 --- a/rega.c
 +++ b/rega.c
 @@ -1,5 +1,7 @@
@@ -3309,18 +3104,16 @@ index 4d2a06b..6f8b5e6 100644
  			cur->w[rf] = 0;
  			for (r=0; r<nr; r++)
  				if (req(*ra[r], TMP(rt)))
-@@ -439,8 +428,8 @@ doblk(Blk *b, RMap *cur)
+@@ -439,7 +428,7 @@ doblk(Blk *b, RMap *cur)
  			 * the above loop must be changed */
  		}
  	}
--	b->nins = &insb[NIns] - curi;
--	idup(&b->ins, curi, b->nins);
-+	b->nins = &GC(insb)[NIns] - GC(curi);
-+	idup(&b->ins, GC(curi), b->nins);
+-	idup(b, curi, &insb[NIns]-curi);
++	idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  }
  
  /* qsort() comparison function to peel
-@@ -464,11 +453,11 @@ carve(const void *a, const void *b)
+@@ -463,11 +452,11 @@ carve(const void *a, const void *b)
  static int
  prio2(int t1, int t2)
  {
@@ -3335,7 +3128,7 @@ index 4d2a06b..6f8b5e6 100644
  }
  
  /* register allocation
-@@ -486,11 +475,11 @@ rega(Fn *fn)
+@@ -485,11 +474,11 @@ rega(Fn *fn)
  	Ref src, dst;
  
  	/* 1. setup */
@@ -3352,7 +3145,7 @@ index 4d2a06b..6f8b5e6 100644
  	blk = alloc(fn->nblk * sizeof blk[0]);
  	end = alloc(fn->nblk * sizeof end[0]);
  	beg = alloc(fn->nblk * sizeof beg[0]);
-@@ -501,11 +490,11 @@ rega(Fn *fn)
+@@ -500,11 +489,11 @@ rega(Fn *fn)
  	bsinit(cur.b, fn->ntmp);
  	bsinit(old.b, fn->ntmp);
  
@@ -3368,7 +3161,7 @@ index 4d2a06b..6f8b5e6 100644
  	}
  	for (bp=blk, b=fn->start; b; b=b->link)
  		*bp++ = b;
-@@ -522,7 +511,7 @@ rega(Fn *fn)
+@@ -521,7 +510,7 @@ rega(Fn *fn)
  	for (bp=blk; bp<&blk[fn->nblk]; bp++) {
  		b = *bp;
  		n = b->id;
@@ -3377,7 +3170,7 @@ index 4d2a06b..6f8b5e6 100644
  		cur.n = 0;
  		bszero(cur.b);
  		memset(cur.w, 0, sizeof cur.w);
-@@ -598,31 +587,31 @@ rega(Fn *fn)
+@@ -597,31 +586,31 @@ rega(Fn *fn)
  				rl[r] = -1;
  		}
  
@@ -3416,7 +3209,7 @@ index 4d2a06b..6f8b5e6 100644
  		fprintf(stderr, "\n> Register mappings:\n");
  		for (n=0; n<fn->nblk; n++) {
  			b = fn->rpo[n];
-@@ -639,7 +628,7 @@ rega(Fn *fn)
+@@ -638,7 +627,7 @@ rega(Fn *fn)
  	for (b=fn->start;; b=b->link) {
  		ps = (Blk**[3]){&b->s1, &b->s2, (Blk*[1]){0}};
  		for (; (s=**ps); ps++) {
@@ -3425,7 +3218,7 @@ index 4d2a06b..6f8b5e6 100644
  			for (p=s->phi; p; p=p->link) {
  				dst = p->to;
  				assert(rtype(dst)==RSlot || rtype(dst)==RTmp);
-@@ -659,11 +648,11 @@ rega(Fn *fn)
+@@ -658,11 +647,11 @@ rega(Fn *fn)
  			for (t=Tmp0; bsiter(s->in, &t); t++) {
  				src = rref(&end[b->id], t);
  				dst = rref(&beg[s->id], t);
@@ -3440,22 +3233,20 @@ index 4d2a06b..6f8b5e6 100644
  				continue;
  			b1 = newblk();
  			b1->loop = (b->loop+s->loop) / 2;
-@@ -671,10 +660,10 @@ rega(Fn *fn)
+@@ -670,9 +659,9 @@ rega(Fn *fn)
  			blist = b1;
  			fn->nblk++;
  			strf(b1->name, "%s_%s", b->name, s->name);
--			b1->nins = &insb[NIns] - curi;
--			stmov += b1->nins;
+-			stmov += &insb[NIns]-curi;
 -			stblk += 1;
--			idup(&b1->ins, curi, b1->nins);
-+			b1->nins = &GC(insb)[NIns] - GC(curi);
-+			G(stmov) += b1->nins;
+-			idup(b1, curi, &insb[NIns]-curi);
++			G(stmov) += &GC(insb)[NIns]-GC(curi);
 +			G(stblk) += 1;
-+			idup(&b1->ins, GC(curi), b1->nins);
++			idup(b1, GC(curi), &GC(insb)[NIns]-GC(curi));
  			b1->jmp.type = Jjmp;
  			b1->s1 = s;
  			**ps = b1;
-@@ -686,12 +675,12 @@ rega(Fn *fn)
+@@ -684,12 +673,12 @@ rega(Fn *fn)
  	}
  	for (b=fn->start; b; b=b->link)
  		b->phi = 0;
@@ -3473,7 +3264,7 @@ index 4d2a06b..6f8b5e6 100644
  		printfn(fn, stderr);
  	}
 diff --git a/rv64/abi.c b/rv64/abi.c
-index e31425c..87f38c7 100644
+index 1c51bfc..a4c8fe7 100644
 --- a/rv64/abi.c
 +++ b/rv64/abi.c
 @@ -106,7 +106,7 @@ fpstruct(Typ *t, int off, Class *c)
@@ -3538,19 +3329,22 @@ index e31425c..87f38c7 100644
  		if (cr.class & Cptr) {
  			fn->retr = newtmp("abi", Kl, fn);
  			emit(Ocopy, Kl, fn->retr, TMP(A0), R);
-@@ -600,9 +600,9 @@ rv64_abi(Fn *fn)
+@@ -600,12 +600,12 @@ rv64_abi(Fn *fn)
  		if (!ispar(i->op))
  			break;
  	p = selpar(fn, b->ins, i);
--	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
-+	n = b->nins - (i - b->ins) + (&GC(insb)[NIns] - GC(curi));
- 	i0 = alloc(n * sizeof(Ins));
--	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
-+	ip = icpy(ip = i0, GC(curi), &GC(insb)[NIns] - GC(curi));
- 	ip = icpy(ip, i, &b->ins[b->nins] - i);
- 	b->nins = n;
- 	b->ins = i0;
-@@ -615,7 +615,7 @@ rv64_abi(Fn *fn)
+-	n0 = &insb[NIns] - curi;
++	n0 = &GC(insb)[NIns] - GC(curi);
+ 	ioff = i - b->ins;
+ 	n1 = b->nins - ioff;
+ 	vgrow(&b->ins, n0+n1);
+ 	icpy(b->ins+n0, b->ins+ioff, n1);
+-	icpy(b->ins, curi, n0);
++	icpy(b->ins, GC(curi), n0);
+ 	b->nins = n0+n1;
+ 
+ 	/* lower calls, returns, and vararg instructions */
+@@ -616,7 +616,7 @@ rv64_abi(Fn *fn)
  			b = fn->start; /* do it last */
  		if (b->visit)
  			continue;
@@ -3559,14 +3353,12 @@ index e31425c..87f38c7 100644
  		selret(b, fn);
  		for (i=&b->ins[b->nins]; i!=b->ins;)
  			switch ((--i)->op) {
-@@ -642,11 +642,11 @@ rv64_abi(Fn *fn)
+@@ -643,10 +643,10 @@ rv64_abi(Fn *fn)
  		if (b == fn->start)
  			for (; il; il=il->link)
  				emiti(il->i);
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	} while (b != fn->start);
  
 -	if (debug['A']) {
@@ -3627,11 +3419,11 @@ index 39b55ea..2eec69e 100644
  	elf_emitfnfin(fn->name, f);
  }
 diff --git a/rv64/isel.c b/rv64/isel.c
-index 99cc158..c5e22f5 100644
+index 0fb85b3..2bfb1cc 100644
 --- a/rv64/isel.c
 +++ b/rv64/isel.c
 @@ -44,7 +44,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
- 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+ 			n = stashbits(c->bits.i, KWIDE(k) ? 8 : 4);
  			vgrow(&fn->con, ++fn->ncon);
  			c = &fn->con[fn->ncon-1];
 -			sprintf(buf, "\"%sfp%d\"", T.asloc, n);
@@ -3707,14 +3499,12 @@ index 99cc158..c5e22f5 100644
  		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
  			for (p=(*sb)->phi; p; p=p->link) {
  				for (n=0; p->blk[n] != b; n++)
-@@ -244,11 +244,11 @@ rv64_isel(Fn *fn)
+@@ -244,10 +244,10 @@ rv64_isel(Fn *fn)
  		seljmp(b, fn);
  		for (i=&b->ins[b->nins]; i!=b->ins;)
  			sel(*--i, fn);
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
  
 -	if (debug['I']) {
@@ -3723,7 +3513,7 @@ index 99cc158..c5e22f5 100644
  		printfn(fn, stderr);
  	}
 diff --git a/simpl.c b/simpl.c
-index 5b16f54..bf8bc78 100644
+index 3774f29..e91c9d2 100644
 --- a/simpl.c
 +++ b/simpl.c
 @@ -1,5 +1,7 @@
@@ -3748,19 +3538,16 @@ index 5b16f54..bf8bc78 100644
  			*new = 1;
  		}
  		blit((i-1)->arg, rsval(i->arg[0]), fn);
-@@ -119,8 +121,8 @@ simpl(Fn *fn)
+@@ -119,6 +121,6 @@ simpl(Fn *fn)
  			ins(&i, &new, b, fn);
  		}
- 		if (new) {
--			b->nins = &insb[NIns] - curi;
--			idup(&b->ins, curi, b->nins);
-+			b->nins = &GC(insb)[NIns] - GC(curi);
-+			idup(&b->ins, GC(curi), b->nins);
- 		}
+ 		if (new)
+-			idup(b, curi, &insb[NIns]-curi);
++			idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
  }
 diff --git a/spill.c b/spill.c
-index 2ce1d4f..fc14aa0 100644
+index 67c6540..c545fe9 100644
 --- a/spill.c
 +++ b/spill.c
 @@ -1,5 +1,7 @@
@@ -4102,7 +3889,7 @@ index 2ce1d4f..fc14aa0 100644
  				if (t >= Tmp0)
  					/* in case i->to was a
  					 * dead temporary */
-@@ -502,31 +495,31 @@ spill(Fn *fn)
+@@ -502,30 +495,30 @@ spill(Fn *fn)
  				sethint(v, r);
  		}
  		if (b == fn->start)
@@ -4124,10 +3911,8 @@ index 2ce1d4f..fc14aa0 100644
  				p->to = slot(p->to.val);
  		}
  		bscopy(b->in, v);
--		b->nins = &insb[NIns] - curi;
--		idup(&b->ins, curi, b->nins);
-+		b->nins = &GC(insb)[NIns] - GC(curi);
-+		idup(&b->ins, GC(curi), b->nins);
+-		idup(b, curi, &insb[NIns]-curi);
++		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
  
  	/* align the locals to a 16 byte boundary */
@@ -4143,7 +3928,7 @@ index 2ce1d4f..fc14aa0 100644
  		for (b=fn->start; b; b=b->link) {
  			fprintf(stderr, "\t%-10s (% 5d) ", b->name, b->loop);
 diff --git a/ssa.c b/ssa.c
-index 929301e..4b1ad7a 100644
+index 89cde44..4c0a992 100644
 --- a/ssa.c
 +++ b/ssa.c
 @@ -1,6 +1,8 @@
@@ -4152,10 +3937,10 @@ index 929301e..4b1ad7a 100644
  
 +#define G(x) global_context.ssa__##x
 +
- static void
+ void
  adduse(Tmp *tmp, int ty, Blk *b, ...)
  {
-@@ -202,23 +204,20 @@ phiins(Fn *fn)
+@@ -201,23 +203,20 @@ phiins(Fn *fn)
  	free(blist);
  }
  
@@ -4182,7 +3967,7 @@ index 929301e..4b1ad7a 100644
  	} else
  		/* could use alloc, here
  		 * but namel should be reset
-@@ -233,8 +232,8 @@ nnew(Ref r, Blk *b, Name *up)
+@@ -232,8 +231,8 @@ nnew(Ref r, Blk *b, Name *up)
  static void
  nfree(Name *n)
  {
@@ -4193,7 +3978,7 @@ index 929301e..4b1ad7a 100644
  }
  
  static void
-@@ -322,10 +321,10 @@ ssa(Fn *fn)
+@@ -321,10 +320,10 @@ ssa(Fn *fn)
  
  	nt = fn->ntmp;
  	stk = emalloc(nt * sizeof stk[0]);
@@ -4207,7 +3992,7 @@ index 929301e..4b1ad7a 100644
  		fprintf(stderr, "\n> Dominators:\n");
  		for (b1=fn->start; b1; b1=b1->link) {
  			if (!b1->dom)
-@@ -345,9 +344,9 @@ ssa(Fn *fn)
+@@ -344,9 +343,9 @@ ssa(Fn *fn)
  			stk[nt] = n->up;
  			nfree(n);
  		}
@@ -4220,7 +4005,7 @@ index 929301e..4b1ad7a 100644
  		printfn(fn, stderr);
  	}
 diff --git a/util.c b/util.c
-index 1a71030..296aaaa 100644
+index ad26f23..68181ff 100644
 --- a/util.c
 +++ b/util.c
 @@ -1,9 +1,10 @@
@@ -4307,7 +4092,7 @@ index 1a71030..296aaaa 100644
  }
  
  void *
-@@ -171,15 +155,15 @@ intern(char *s)
+@@ -189,15 +173,15 @@ intern(char *s)
  	uint32_t h;
  	uint i, n;
  
@@ -4327,7 +4112,7 @@ index 1a71030..296aaaa 100644
  		die("interning table overflow");
  	if (n == 0)
  		b->str = vnew(1, sizeof b->str[0], PHeap);
-@@ -189,14 +173,14 @@ intern(char *s)
+@@ -207,14 +191,14 @@ intern(char *s)
  	b->str[n] = emalloc(strlen(s)+1);
  	b->nstr = n + 1;
  	strcpy(b->str[n], s);
@@ -4345,7 +4130,7 @@ index 1a71030..296aaaa 100644
  }
  
  int
-@@ -238,9 +222,9 @@ argcls(Ins *i, int n)
+@@ -301,9 +285,9 @@ argcls(Ins *i, int n)
  void
  emit(int op, int k, Ref to, Ref arg0, Ref arg1)
  {
@@ -4357,7 +4142,7 @@ index 1a71030..296aaaa 100644
  		.op = op, .cls = k,
  		.to = to, .arg = {arg0, arg1}
  	};
-@@ -337,14 +321,13 @@ phicls(int t, Tmp *tmp)
+@@ -432,14 +416,13 @@ phiarg(Phi *p, Blk *b)
  Ref
  newtmp(char *prfx, int k,  Fn *fn)
  {
@@ -4374,5 +4159,5 @@ index 1a71030..296aaaa 100644
  	fn->tmp[t].slot = -1;
  	fn->tmp[t].nuse = +1;
 -- 
-2.34.1
+2.43.0
 

@@ -1,7 +1,7 @@
-From 731fdff5ff4ccde570bcad42c37921056d9884ae Mon Sep 17 00:00:00 2001
+From 6fa5af946316b72985c98c9ac9774d3b7a31fab3 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
-Subject: [PATCH] Rename `R` to `NULL_R`
+Subject: [PATCH 06/10] Rename `R` to `NULL_R`
 
 This is unfortunately necessary because windows.h has a struct bitfield
 named `R` that conflicts when included.
@@ -15,8 +15,10 @@ named `R` that conflicts when included.
  arm64/abi.c    |  84 ++++++++++++++++++++--------------------
  arm64/emit.c   |   2 +-
  arm64/isel.c   |  26 ++++++-------
- copy.c         |  16 ++++----
- fold.c         |   4 +-
+ copy.c         |  12 +++---
+ fold.c         |  12 +++---
+ gcm.c          |   2 +-
+ gvn.c          |  14 +++----
  live.c         |   2 +-
  load.c         |  28 +++++++-------
  mem.c          |   6 +--
@@ -30,7 +32,7 @@ named `R` that conflicts when included.
  ssa.c          |  10 ++---
  tools/pmov.c   |   4 +-
  util.c         |   4 +-
- 24 files changed, 328 insertions(+), 328 deletions(-)
+ 26 files changed, 338 insertions(+), 338 deletions(-)
 
 diff --git a/alias.c b/alias.c
 index 9b41084..7a7114b 100644
@@ -55,7 +57,7 @@ index 9b41084..7a7114b 100644
  				if (!isload(i->op))
  					esc(i->arg[0], fn);
 diff --git a/all.h b/all.h
-index 58e77f1..79a5c0c 100644
+index 9311435..a5d9652 100644
 --- a/all.h
 +++ b/all.h
 @@ -98,7 +98,7 @@ enum {
@@ -77,7 +79,7 @@ index 58e77f1..79a5c0c 100644
  	return r.type;
  }
 diff --git a/amd64/emit.c b/amd64/emit.c
-index 74e7cbc..32732c6 100644
+index 5283047..67d16cf 100644
 --- a/amd64/emit.c
 +++ b/amd64/emit.c
 @@ -322,13 +322,13 @@ Next:
@@ -115,7 +117,7 @@ index 74e7cbc..32732c6 100644
  		break;
  	case Oswap:
 diff --git a/amd64/isel.c b/amd64/isel.c
-index d8107ff..f9c5069 100644
+index 4896fdf..7317d9c 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
 @@ -102,7 +102,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
@@ -399,7 +401,7 @@ index d8107ff..f9c5069 100644
  		s = fn->tmp[a->base.val].slot;
  		if (s != -1)
 diff --git a/amd64/sysv.c b/amd64/sysv.c
-index 79f70ac..975171d 100644
+index bb3a5ac..cce3e01 100644
 --- a/amd64/sysv.c
 +++ b/amd64/sysv.c
 @@ -126,26 +126,26 @@ selret(Blk *b, Fn *fn)
@@ -620,7 +622,7 @@ index 79f70ac..975171d 100644
  
  	return fa | (s*4)<<12;
  }
-@@ -568,7 +568,7 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -567,7 +567,7 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
  	*/
  
  	loc = newtmp("abi", Kl, fn);
@@ -629,7 +631,7 @@ index 79f70ac..975171d 100644
  	b0 = split(fn, b);
  	b0->jmp = b->jmp;
  	b0->s1 = b->s1;
-@@ -582,13 +582,13 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -581,13 +581,13 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
  	nr = newtmp("abi", Kl, fn);
  	r0 = newtmp("abi", Kw, fn);
  	r1 = newtmp("abi", Kl, fn);
@@ -645,7 +647,7 @@ index 79f70ac..975171d 100644
  	emit(Oadd, Kl, r0, ap, c16);
  	breg = split(fn, b);
  	breg->jmp.type = Jjmp;
-@@ -597,9 +597,9 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -596,9 +596,9 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
  	lstk = newtmp("abi", Kl, fn);
  	r0 = newtmp("abi", Kl, fn);
  	r1 = newtmp("abi", Kl, fn);
@@ -657,7 +659,7 @@ index 79f70ac..975171d 100644
  	emit(Oadd, Kl, r0, ap, c8);
  	bstk = split(fn, b);
  	bstk->jmp.type = Jjmp;
-@@ -624,7 +624,7 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -623,7 +623,7 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
  	b->s2 = bstk;
  	c = getcon(isint ? 48 : 176, fn);
  	emit(Ocmpw+Ciult, Kw, r1, nr, c);
@@ -666,7 +668,7 @@ index 79f70ac..975171d 100644
  	emit(Oadd, Kl, r0, ap, isint ? CON_Z : c4);
  }
  
-@@ -639,18 +639,18 @@ selvastart(Fn *fn, int fa, Ref ap)
+@@ -638,18 +638,18 @@ selvastart(Fn *fn, int fa, Ref ap)
  	sp = fa >> 12;
  	r0 = newtmp("abi", Kl, fn);
  	r1 = newtmp("abi", Kl, fn);
@@ -690,7 +692,7 @@ index 79f70ac..975171d 100644
  
  void
 diff --git a/amd64/winabi.c b/amd64/winabi.c
-index d5223a4..d4d8b39 100755
+index 3b3fbb4..60d242a 100755
 --- a/amd64/winabi.c
 +++ b/amd64/winabi.c
 @@ -274,7 +274,7 @@ static Ins* lower_call(Fn* func,
@@ -899,7 +901,7 @@ index d5223a4..d4d8b39 100755
  }
  
  static void lower_args_for_block(Fn* func,
-@@ -629,11 +629,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -628,11 +628,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
        assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false,
                                 by_copy);
        Ref ret_ref = newtmp("abi.ret", Kl, func);
@@ -913,7 +915,7 @@ index d5223a4..d4d8b39 100755
    classify_arguments(&reg_usage, start_of_params, end_of_params, arg_classes,
                       &env);
    func->reg = amd64_winabi_argregs(
-@@ -652,34 +652,34 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -651,34 +651,34 @@ static RegisterUsage lower_func_parameters(Fn* func) {
          // an alloca so we have something to point at (same for InlineOnStack).
          if (instr->op == Oparc) {
            arg->ref = newtmp("abi", Kl, func);
@@ -958,7 +960,7 @@ index d5223a4..d4d8b39 100755
          break;
        }
        case APS_EnvTag:
-@@ -691,8 +691,8 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -690,8 +690,8 @@ static RegisterUsage lower_func_parameters(Fn* func) {
    }
  
    // If there was an `env`, it was passed in RAX, so copy it into the env ref.
@@ -970,7 +972,7 @@ index d5223a4..d4d8b39 100755
  
    int num_created_instrs = &GC(insb)[NIns] - GC(curi);
 diff --git a/arm64/abi.c b/arm64/abi.c
-index 4541ace..9df56e7 100644
+index bea37ed..d76a4a9 100644
 --- a/arm64/abi.c
 +++ b/arm64/abi.c
 @@ -148,7 +148,7 @@ sttmps(Ref tmp[], int cls[], uint nreg, Ref mem, Fn *fn)
@@ -1124,7 +1126,7 @@ index 4541ace..9df56e7 100644
  		}
  
  	return (Params){
-@@ -580,10 +580,10 @@ apple_selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -579,10 +579,10 @@ apple_selvaarg(Fn *fn, Blk *b, Ins *i)
  	stk8 = newtmp("abi", Kl, fn);
  	stk = newtmp("abi", Kl, fn);
  
@@ -1138,7 +1140,7 @@ index 4541ace..9df56e7 100644
  }
  
  static void
-@@ -622,7 +622,7 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -621,7 +621,7 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
  	*/
  
  	loc = newtmp("abi", Kl, fn);
@@ -1147,7 +1149,7 @@ index 4541ace..9df56e7 100644
  	b0 = split(fn, b);
  	b0->jmp = b->jmp;
  	b0->s1 = b->s1;
-@@ -636,13 +636,13 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -635,13 +635,13 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
  	nr = newtmp("abi", Kl, fn);
  	r0 = newtmp("abi", Kw, fn);
  	r1 = newtmp("abi", Kl, fn);
@@ -1163,7 +1165,7 @@ index 4541ace..9df56e7 100644
  	emit(Oadd, Kl, r0, ap, isgp ? c8 : c16);
  	breg = split(fn, b);
  	breg->jmp.type = Jjmp;
-@@ -650,9 +650,9 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -649,9 +649,9 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
  
  	lstk = newtmp("abi", Kl, fn);
  	r0 = newtmp("abi", Kl, fn);
@@ -1175,7 +1177,7 @@ index 4541ace..9df56e7 100644
  	bstk = split(fn, b);
  	bstk->jmp.type = Jjmp;
  	bstk->s1 = b0;
-@@ -675,7 +675,7 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
+@@ -674,7 +674,7 @@ arm64_selvaarg(Fn *fn, Blk *b, Ins *i)
  	b->s1 = breg;
  	b->s2 = bstk;
  	emit(Ocmpw+Cislt, Kw, r1, nr, CON_Z);
@@ -1184,7 +1186,7 @@ index 4541ace..9df56e7 100644
  	emit(Oadd, Kl, r0, ap, isgp ? c24 : c28);
  }
  
-@@ -688,9 +688,9 @@ apple_selvastart(Fn *fn, Params p, Ref ap)
+@@ -687,9 +687,9 @@ apple_selvastart(Fn *fn, Params p, Ref ap)
  	stk = newtmp("abi", Kl, fn);
  	arg = newtmp("abi", Kl, fn);
  
@@ -1196,7 +1198,7 @@ index 4541ace..9df56e7 100644
  }
  
  static void
-@@ -701,28 +701,28 @@ arm64_selvastart(Fn *fn, Params p, Ref ap)
+@@ -700,28 +700,28 @@ arm64_selvastart(Fn *fn, Params p, Ref ap)
  	rsave = newtmp("abi", Kl, fn);
  
  	r0 = newtmp("abi", Kl, fn);
@@ -1231,7 +1233,7 @@ index 4541ace..9df56e7 100644
  	emit(Oadd, Kl, r0, ap, getcon(28, fn));
  }
  
-@@ -819,7 +819,7 @@ apple_extsb(Fn *fn)
+@@ -818,7 +818,7 @@ apple_extsb(Fn *fn)
  		if (isretbh(j)) {
  			r = newtmp("abi", Kw, fn);
  			op = Oextsb + (j - Jretsb);
@@ -1240,7 +1242,7 @@ index 4541ace..9df56e7 100644
  			b->jmp.arg = r;
  			b->jmp.type = Jretw;
  		}
-@@ -840,7 +840,7 @@ apple_extsb(Fn *fn)
+@@ -839,7 +839,7 @@ apple_extsb(Fn *fn)
  			for (i=i1; i>i0;)
  				if (isargbh((--i)->op)) {
  					op = Oextsb + (i->op - Oargsb);
@@ -1248,9 +1250,9 @@ index 4541ace..9df56e7 100644
 +					emit(op, Kw, i->to, i->arg[0], NULL_R);
  				}
  		}
- 		b->nins = &GC(insb)[NIns] - GC(curi);
+ 		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 50e3ac5..645529f 100644
+index 8f70aec..b876272 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
 @@ -454,7 +454,7 @@ emitins(Ins *i, E *e)
@@ -1263,7 +1265,7 @@ index 50e3ac5..645529f 100644
  		break;
  	case Odbgloc:
 diff --git a/arm64/isel.c b/arm64/isel.c
-index 43fa1e5..9cf3a03 100644
+index 1ef3388..97db08f 100644
 --- a/arm64/isel.c
 +++ b/arm64/isel.c
 @@ -91,23 +91,23 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
@@ -1294,7 +1296,7 @@ index 43fa1e5..9cf3a03 100644
 -			emit(Ocopy, k, r1, r0, R);
 +			emit(Ocopy, k, r1, r0, NULL_R);
  		} else {
- 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+ 			n = stashbits(c->bits.i, KWIDE(k) ? 8 : 4);
  			vgrow(&fn->con, ++fn->ncon);
 @@ -116,8 +116,8 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
  			*c = (Con){.type = CAddr};
@@ -1353,91 +1355,159 @@ index 43fa1e5..9cf3a03 100644
  	i = &b->ins[b->nins];
  	while (i > b->ins)
 diff --git a/copy.c b/copy.c
-index 853e897..e948957 100644
+index e31bcd4..6705a25 100644
 --- a/copy.c
 +++ b/copy.c
-@@ -48,7 +48,7 @@ iscopy(Ins *i, Ref r, Fn *fn)
- static Ref
- copyof(Ref r, Ref *cpy)
- {
--	if (rtype(r) == RTmp && !req(cpy[r.val], R))
-+	if (rtype(r) == RTmp && !req(cpy[r.val], NULL_R))
- 		return cpy[r.val];
- 	return r;
- }
-@@ -111,7 +111,7 @@ phisimpl(Phi *p, Ref r, Ref *cpy, Use ***pstk, BSet *ts, BSet *as, Fn *fn)
- static void
- subst(Ref *pr, Ref *cpy)
- {
--	assert(rtype(*pr) != RTmp || !req(cpy[pr->val], R));
-+	assert(rtype(*pr) != RTmp || !req(cpy[pr->val], NULL_R));
- 	*pr = copyof(*pr, cpy);
+@@ -67,8 +67,8 @@ usewidthle(Fn *fn, Ref r, int w)
+ 			 * this case, the replaced phi
+ 			 * uses are added to the
+ 			 * replacement temp uses and
+-			 * Phi.to is set to R */
+-			if (p->visit || req(p->to, R))
++			 * Phi.to is set to NULL_R */
++			if (p->visit || req(p->to, NULL_R))
+ 				continue;
+ 			p->visit = 1;
+ 			b = usewidthle(fn, p->to, w);
+@@ -327,7 +327,7 @@ copyref(Fn *fn, Blk *b, Ins *i)
+ 		/* do not break typing by returning
+ 		 * a narrower temp */
+ 		if (KWIDE(i->cls) > KWIDE(t->cls))
+-			return R;
++			return NULL_R;
+ 
+ 		w  = Wsb + (i->op - Oextsb);
+ 		if (BIT(w) & extcpy[t->width])
+@@ -345,7 +345,7 @@ copyref(Fn *fn, Blk *b, Ins *i)
+ 			return i->arg[0];
+ 	}
+ 
+-	return R;
++	return NULL_R;
  }
  
-@@ -138,19 +138,19 @@ copy(Fn *fn)
- 		b = fn->rpo[n];
- 		for (p=b->phi; p; p=p->link) {
- 			assert(rtype(p->to) == RTmp);
--			if (!req(cpy[p->to.val], R))
-+			if (!req(cpy[p->to.val], NULL_R))
- 				continue;
- 			eq = 0;
--			r = R;
-+			r = NULL_R;
- 			for (a=0; a<p->narg; a++)
- 				if (p->blk[a]->id < n) {
- 					r1 = copyof(p->arg[a], cpy);
--					if (req(r, R) || req(r, UNDEF))
-+					if (req(r, NULL_R) || req(r, UNDEF))
- 						r = r1;
- 					if (req(r1, r) || req(r1, UNDEF))
- 						eq++;
- 				}
--			assert(!req(r, R));
-+			assert(!req(r, NULL_R));
- 			if (rtype(r) == RTmp
- 			&& !dom(fn->rpo[fn->tmp[r.val].bid], b))
- 				cpy[p->to.val] = p->to;
-@@ -163,7 +163,7 @@ copy(Fn *fn)
- 		}
- 		for (i=b->ins; i<&b->ins[b->nins]; i++) {
- 			assert(rtype(i->to) <= RTmp);
--			if (!req(cpy[i->to.val], R))
-+			if (!req(cpy[i->to.val], NULL_R))
- 				continue;
- 			r = copyof(i->arg[0], cpy);
- 			if (iscopy(i, r, fn))
-@@ -201,7 +201,7 @@ copy(Fn *fn)
- 	if (GC(debug)['C']) {
- 		fprintf(stderr, "\n> Copy information:");
- 		for (t=Tmp0; t<fn->ntmp; t++) {
--			if (req(cpy[t], R)) {
-+			if (req(cpy[t], NULL_R)) {
- 				fprintf(stderr, "\n%10s not seen!",
- 					fn->tmp[t].name);
- 			}
+ static int
+@@ -390,7 +390,7 @@ phicopyref(Fn *fn, Blk *b, Phi *p)
+ 	if (p->narg != 2
+ 	|| d->jmp.type != Jjnz
+ 	|| !isw1(fn, d->jmp.arg))
+-		return R;
++		return NULL_R;
+ 
+ 	s = (Blk*[]){0, 0};
+ 	for (n=0; n<2; n++)
+@@ -406,5 +406,5 @@ phicopyref(Fn *fn, Blk *b, Phi *p)
+ 	&& d->s2->jmp.type == Jjmp)
+ 		return d->jmp.arg;
+ 
+-	return R;
++	return NULL_R;
+ }
 diff --git a/fold.c b/fold.c
-index 90fd6c6..0e37181 100644
+index 9f21ad2..07f7051 100644
 --- a/fold.c
 +++ b/fold.c
-@@ -91,7 +91,7 @@ visitins(Ins *i, Fn *fn)
- 		return;
+@@ -211,7 +211,7 @@ opfold(int op, int cls, Con *cl, Con *cr, Fn *fn)
+ 
+ 	if (cls == Kw || cls == Kl) {
+ 		if (foldint(&c, op, cls == Kl, cl, cr))
+-			return R;
++			return NULL_R;
+ 	} else
+ 		foldflt(&c, op, cls == Kd, cl, cr);
+ 	if (!KWIDE(cls))
+@@ -229,19 +229,19 @@ foldref(Fn *fn, Ins *i)
+ 	Con *cl, *cr;
+ 
+ 	if (rtype(i->to) != RTmp)
+-		return R;
++		return NULL_R;
  	if (optab[i->op].canfold) {
- 		l = latval(i->arg[0]);
--		if (!req(i->arg[1], R))
-+		if (!req(i->arg[1], NULL_R))
- 			r = latval(i->arg[1]);
- 		else
- 			r = CON_Z.val;
-@@ -297,7 +297,7 @@ fold(Fn *fn)
- 				} else
- 					edgedel(b, &b->s2);
- 				b->jmp.type = Jjmp;
--				b->jmp.arg = R;
-+				b->jmp.arg = NULL_R;
- 		}
- 		pb = &b->link;
+ 		if (rtype(i->arg[0]) != RCon)
+-			return R;
++			return NULL_R;
+ 		cl = &fn->con[i->arg[0].val];
+ 		rr = i->arg[1];
+-		if (req(rr, R))
++		if (req(rr, NULL_R))
+ 		    rr = CON_Z;
+ 		if (rtype(rr) != RCon)
+-			return R;
++			return NULL_R;
+ 		cr = &fn->con[rr.val];
+ 
+ 		return opfold(i->op, i->cls, cl, cr, fn);
  	}
+-	return R;
++	return NULL_R;
+ }
+diff --git a/gcm.c b/gcm.c
+index 0ea2c37..867208e 100644
+--- a/gcm.c
++++ b/gcm.c
+@@ -234,7 +234,7 @@ latephi(Fn *fn, Phi *p, Ref r)
+ static uint
+ latejmp(Blk *b, Ref r)
+ {
+-	if (req(b->jmp.arg, R))
++	if (req(b->jmp.arg, NULL_R))
+ 		return NOBID;
+ 	else {
+ 		assert(req(b->jmp.arg, r));
+diff --git a/gvn.c b/gvn.c
+index 5ff2bd7..da952f1 100644
+--- a/gvn.c
++++ b/gvn.c
+@@ -126,9 +126,9 @@ dedupphi(Fn *fn, Blk *b)
+ 
+ 	for (pp=&b->phi; (p=*pp);) {
+ 		r = phicopyref(fn, b, p);
+-		if (!req(r, R)) {
++		if (!req(r, NULL_R)) {
+ 			replaceuses(fn, p->to, r);
+-			p->to = R;
++			p->to = NULL_R;
+ 			*pp = p->link;
+ 		} else
+ 			pp = &p->link;
+@@ -247,16 +247,16 @@ dedupins(Fn *fn, Blk *b, Ins *i)
+ 	if (i->op == Onop || pinned(i))
+ 		return;
+ 
+-	assert(!req(i->to, R));
++	assert(!req(i->to, NULL_R));
+ 	assoccon(fn, b, i);
+ 
+ 	r = copyref(fn, b, i);
+-	if (!req(r, R)) {
++	if (!req(r, NULL_R)) {
+ 		killins(fn, i, r);
+ 		return;
+ 	}
+ 	r = foldref(fn, i);
+-	if (!req(r, R)) {
++	if (!req(r, NULL_R)) {
+ 		killins(fn, i, r);
+ 		return;
+ 	}
+@@ -355,7 +355,7 @@ usecls(Use *u, Ref r, int cls)
+ 			k = argcls(u->u.ins, 1);
+ 		return k == Kx ? cls : k;
+ 	case UPhi:
+-		if (req(u->u.phi->to, R))
++		if (req(u->u.phi->to, NULL_R))
+ 			return cls; /* eliminated */
+ 		return u->u.phi->cls;
+ 	case UJmp:
+@@ -417,7 +417,7 @@ dedupjmp(Fn *fn, Blk *b)
+ 		/* we later move active ins out of dead blks */
+ 		b->s2 = 0;
+ 		b->jmp.type = Jjmp;
+-		b->jmp.arg = R;
++		b->jmp.arg = NULL_R;
+ 	}
+ }
+ 
 diff --git a/live.c b/live.c
 index 3586ffa..1a1c1f2 100644
 --- a/live.c
@@ -1452,7 +1522,7 @@ index 3586ffa..1a1c1f2 100644
  				t = i->to.val;
  				if (bshas(b->in, t))
 diff --git a/load.c b/load.c
-index a443c85..87f40f3 100644
+index b6e0dbe..28d0fc1 100644
 --- a/load.c
 +++ b/load.c
 @@ -73,7 +73,7 @@ iins(int cls, int op, Ref a0, Ref a1, Loc *l)
@@ -1539,7 +1609,7 @@ index a443c85..87f40f3 100644
  			goto Load;
  		p->arg[np] = r1;
  		p->blk[np] = bp;
-@@ -448,7 +448,7 @@ loadopt(Fn *fn)
+@@ -449,7 +449,7 @@ loadopt(Fn *fn)
  					break;
  				i = &b->ins[ni++];
  				if (isload(i->op)
@@ -1548,7 +1618,7 @@ index a443c85..87f40f3 100644
  					ext = Oextsb + i->op - Oloadsb;
  					switch (i->op) {
  					default:
-@@ -471,7 +471,7 @@ loadopt(Fn *fn)
+@@ -472,7 +472,7 @@ loadopt(Fn *fn)
  						break;
  					}
  					i->arg[0] = i->arg[1];
@@ -1586,10 +1656,10 @@ index b270ec6..4afad11 100644
  				vgrow(&stk, ++n);
  				stk[n-1] = i->to.val;
 diff --git a/parse.c b/parse.c
-index c0c1857..8998890 100644
+index 3d09cd2..e93763d 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -396,7 +396,7 @@ parseref(void)
+@@ -402,7 +402,7 @@ parseref(void)
  	memset(&c, 0, sizeof c);
  	switch (next()) {
  	default:
@@ -1598,7 +1668,7 @@ index c0c1857..8998890 100644
  	case Ttmp:
  		return tmpref(G(tokval).str);
  	case Tint:
-@@ -501,30 +501,30 @@ parserefl(int arg)
+@@ -507,30 +507,30 @@ parserefl(int arg)
  			break;
  		}
  		r = parseref();
@@ -1637,7 +1707,7 @@ index c0c1857..8998890 100644
  		GC(curi)++;
  	Next:
  		if (peek() == Trparen)
-@@ -565,7 +565,7 @@ closeblk(void)
+@@ -570,7 +570,7 @@ closeblk(void)
  static PState
  parseline(PState ps)
  {
@@ -1646,7 +1716,7 @@ index c0c1857..8998890 100644
  	Blk *blk[NPred];
  	Phi *phi;
  	Ref r;
-@@ -589,7 +589,7 @@ parseline(PState ps)
+@@ -594,7 +594,7 @@ parseline(PState ps)
  		case Tcall:
  		case Ovastart:
  			/* operations without result */
@@ -1655,7 +1725,7 @@ index c0c1857..8998890 100644
  			k = Kw;
  			op = t;
  			break;
-@@ -617,7 +617,7 @@ parseline(PState ps)
+@@ -622,7 +622,7 @@ parseline(PState ps)
  			G(curb)->jmp.type = Jret0;
  		else if (G(rcls) != K0) {
  			r = parseref();
@@ -1664,7 +1734,7 @@ index c0c1857..8998890 100644
  				err("invalid return value");
  			G(curb)->jmp.arg = r;
  		}
-@@ -628,7 +628,7 @@ parseline(PState ps)
+@@ -633,7 +633,7 @@ parseline(PState ps)
  	case Tjnz:
  		G(curb)->jmp.type = Jjnz;
  		r = parseref();
@@ -1673,7 +1743,7 @@ index c0c1857..8998890 100644
  			err("invalid argument for jnz jump");
  		G(curb)->jmp.arg = r;
  		expect(Tcomma);
-@@ -652,7 +652,7 @@ parseline(PState ps)
+@@ -657,7 +657,7 @@ parseline(PState ps)
  	case Odbgloc:
  		op = t;
  		k = Kw;
@@ -1682,7 +1752,7 @@ index c0c1857..8998890 100644
  		expect(Tint);
  		arg[0] = INT(G(tokval).num);
  		if (arg[0].val != G(tokval).num)
-@@ -701,7 +701,7 @@ parseline(PState ps)
+@@ -706,7 +706,7 @@ parseline(PState ps)
  				blk[i] = findblk(G(tokval).str);
  			}
  			arg[i] = parseref();
@@ -1691,7 +1761,7 @@ index c0c1857..8998890 100644
  				err("invalid instruction argument");
  			i++;
  			t = peek();
-@@ -1314,13 +1314,13 @@ printref(Ref r, Fn *fn, FILE *f)
+@@ -1319,13 +1319,13 @@ printref(Ref r, Fn *fn, FILE *f)
  			printcon(&m->offset, f);
  			i = 1;
  		}
@@ -1707,7 +1777,7 @@ index c0c1857..8998890 100644
  			if (i)
  				fprintf(f, " + ");
  			fprintf(f, "%d * ", m->scale);
-@@ -1371,13 +1371,13 @@ printfn(Fn *fn, FILE *f)
+@@ -1376,13 +1376,13 @@ printfn(Fn *fn, FILE *f)
  		}
  		for (i=b->ins; i<&b->ins[b->nins]; i++) {
  			fprintf(f, "\t");
@@ -1723,7 +1793,7 @@ index c0c1857..8998890 100644
  				switch (i->op) {
  				case Oarg:
  				case Oswap:
-@@ -1390,11 +1390,11 @@ printfn(Fn *fn, FILE *f)
+@@ -1395,11 +1395,11 @@ printfn(Fn *fn, FILE *f)
  				case Oxidiv:
  					fputc(ktoc[i->cls], f);
  				}
@@ -1737,7 +1807,7 @@ index c0c1857..8998890 100644
  				fprintf(f, ", ");
  				printref(i->arg[1], fn, f);
  			}
-@@ -1412,7 +1412,7 @@ printfn(Fn *fn, FILE *f)
+@@ -1417,7 +1417,7 @@ printfn(Fn *fn, FILE *f)
  		case Jretd:
  		case Jretc:
  			fprintf(f, "\t%s", jtoa[b->jmp.type]);
@@ -1747,7 +1817,7 @@ index c0c1857..8998890 100644
  				printref(b->jmp.arg, fn, f);
  			}
 diff --git a/rega.c b/rega.c
-index 6f8b5e6..a44cbda 100644
+index 95d8ac1..48d6637 100644
 --- a/rega.c
 +++ b/rega.c
 @@ -109,7 +109,7 @@ ralloctry(RMap *m, int t, int try)
@@ -1839,7 +1909,7 @@ index 6f8b5e6..a44cbda 100644
  			cur->w[rf] = 0;
  			for (r=0; r<nr; r++)
 diff --git a/rv64/abi.c b/rv64/abi.c
-index 87f38c7..580197d 100644
+index a4c8fe7..8b247e6 100644
 --- a/rv64/abi.c
 +++ b/rv64/abi.c
 @@ -185,7 +185,7 @@ sttmps(Ref tmp[], int ntmp, Class *c, Ref mem, Fn *fn)
@@ -2103,7 +2173,7 @@ index 2eec69e..81fb65a 100644
  		break;
  	case Odbgloc:
 diff --git a/rv64/isel.c b/rv64/isel.c
-index c5e22f5..8863b91 100644
+index 2bfb1cc..b3d51d4 100644
 --- a/rv64/isel.c
 +++ b/rv64/isel.c
 @@ -47,10 +47,10 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
@@ -2156,7 +2226,7 @@ index c5e22f5..8863b91 100644
  		icmp = GC(curi);
  		fixarg(&icmp->arg[0], k, icmp, fn);
 diff --git a/simpl.c b/simpl.c
-index bf8bc78..7410cfd 100644
+index e91c9d2..bb218cd 100644
 --- a/simpl.c
 +++ b/simpl.c
 @@ -23,10 +23,10 @@ blit(Ref sd[2], int sz, Fn *fn)
@@ -2173,7 +2243,7 @@ index bf8bc78..7410cfd 100644
  			off += fwd ? 0 : n;
  		}
 diff --git a/spill.c b/spill.c
-index fc14aa0..1298997 100644
+index c545fe9..5d7a22e 100644
 --- a/spill.c
 +++ b/spill.c
 @@ -225,14 +225,14 @@ reloads(BSet *u, BSet *v)
@@ -2221,10 +2291,10 @@ index fc14aa0..1298997 100644
  				store(i->to, G(tmp)[t].slot);
  				if (t >= Tmp0)
 diff --git a/ssa.c b/ssa.c
-index 4b1ad7a..f866312 100644
+index 4c0a992..90f9807 100644
 --- a/ssa.c
 +++ b/ssa.c
-@@ -77,7 +77,7 @@ filluse(Fn *fn)
+@@ -76,7 +76,7 @@ filluse(Fn *fn)
  				}
  		}
  		for (i=b->ins; i<&b->ins[b->nins]; i++) {
@@ -2233,7 +2303,7 @@ index 4b1ad7a..f866312 100644
  				assert(rtype(i->to) == RTmp);
  				w = WFull;
  				if (isparbh(i->op))
-@@ -151,9 +151,9 @@ phiins(Fn *fn)
+@@ -150,9 +150,9 @@ phiins(Fn *fn)
  		bp = be;
  		for (b=fn->start; b; b=b->link) {
  			b->visit = 0;
@@ -2245,7 +2315,7 @@ index 4b1ad7a..f866312 100644
  					if (req(i->arg[0], TMP(t)))
  						i->arg[0] = r;
  					if (req(i->arg[1], TMP(t)))
-@@ -173,7 +173,7 @@ phiins(Fn *fn)
+@@ -172,7 +172,7 @@ phiins(Fn *fn)
  					}
  				}
  			}
@@ -2254,7 +2324,7 @@ index 4b1ad7a..f866312 100644
  				b->jmp.arg = r;
  		}
  		bscopy(defs, u);
-@@ -243,7 +243,7 @@ rendef(Ref *r, Blk *b, Name **stk, Fn *fn)
+@@ -242,7 +242,7 @@ rendef(Ref *r, Blk *b, Name **stk, Fn *fn)
  	int t;
  
  	t = r->val;
@@ -2282,10 +2352,10 @@ index ffc38ea..fa1d2ac 100644
  				break;
  			}
 diff --git a/util.c b/util.c
-index 296aaaa..2a2d3d4 100644
+index 68181ff..5313593 100644
 --- a/util.c
 +++ b/util.c
-@@ -416,12 +416,12 @@ salloc(Ref rt, Ref rs, Fn *fn)
+@@ -526,12 +526,12 @@ salloc(Ref rt, Ref rs, Fn *fn)
  		if (sz < 0 || sz >= INT_MAX-15)
  			err("invalid alloc size %"PRId64, sz);
  		sz = (sz + 15)  & -16;
@@ -2301,5 +2371,5 @@ index 296aaaa..2a2d3d4 100644
  		emit(Oadd, Kl, r1, rs, getcon(15, fn));
  		if (fn->tmp[rs.val].slot != -1)
 -- 
-2.47.2.vfs.0.1
+2.43.0
 

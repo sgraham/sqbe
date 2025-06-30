@@ -1,7 +1,7 @@
-From 23053db980498e4daa29ff89ef8d9e604cea4d26 Mon Sep 17 00:00:00 2001
+From 2df0862e86c55e70acbcdebaf10d9d01a299c4a8 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Tue, 14 Jan 2025 16:50:50 -0800
-Subject: [PATCH] Add printtyp() and debug['T']
+Subject: [PATCH 04/10] Add printtyp() and debug['T']
 
 ---
  all.h   |  1 +
@@ -10,10 +10,10 @@ Subject: [PATCH] Add printtyp() and debug['T']
  3 files changed, 42 insertions(+)
 
 diff --git a/all.h b/all.h
-index 3161440..049a026 100644
+index e5124fa..d8cef38 100644
 --- a/all.h
 +++ b/all.h
-@@ -518,6 +518,7 @@ bshas(BSet *bs, uint elt)
+@@ -535,6 +535,7 @@ bshas(BSet *bs, uint elt)
  extern Op optab[NOp];
  void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
  void printfn(Fn *, FILE *);
@@ -22,7 +22,7 @@ index 3161440..049a026 100644
  void err(char *, ...) __attribute__((noreturn));
  
 diff --git a/main.c b/main.c
-index c21320b..81604e4 100644
+index b9069d0..37e9f00 100644
 --- a/main.c
 +++ b/main.c
 @@ -16,6 +16,7 @@ char debug['Z'+1] = {
@@ -34,10 +34,10 @@ index c21320b..81604e4 100644
  
  extern Target T_amd64_sysv;
 diff --git a/parse.c b/parse.c
-index e321254..a8090d0 100644
+index 406d13f..25a0e1a 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -1066,6 +1066,11 @@ parsetyp(void)
+@@ -1071,6 +1071,11 @@ parsetyp(void)
  	} else
  		parsefields(ty->fields[n++], ty, t);
  	ty->nunion = n;
@@ -49,7 +49,7 @@ index e321254..a8090d0 100644
  }
  
  static void
-@@ -1264,6 +1269,41 @@ printcon(Con *c, FILE *f)
+@@ -1269,6 +1274,41 @@ printcon(Con *c, FILE *f)
  	}
  }
  
@@ -92,5 +92,5 @@ index e321254..a8090d0 100644
  printref(Ref r, Fn *fn, FILE *f)
  {
 -- 
-2.39.3 (Apple Git-146)
+2.43.0
 
