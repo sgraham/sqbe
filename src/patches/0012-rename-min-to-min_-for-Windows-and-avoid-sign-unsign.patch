@@ -1,12 +1,15 @@
-From e73e65b7facc81067412499473eaeb0cf0318058 Mon Sep 17 00:00:00 2001
+From 0ecb7564ca608b4cb9446166a3e9147e23e3e730 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:55:16 -0700
 Subject: [PATCH 12/13] rename min() to min_() for Windows, and avoid
  sign/unsigned warning
 
+and (void) some assert-only var uses for warnings too.
 ---
  copy.c | 10 +++++-----
- 1 file changed, 5 insertions(+), 5 deletions(-)
+ gvn.c  |  1 +
+ rega.c |  1 +
+ 3 files changed, 7 insertions(+), 5 deletions(-)
 
 diff --git a/copy.c b/copy.c
 index 0e3a104..1a61920 100644
@@ -51,6 +54,30 @@ index 0e3a104..1a61920 100644
  			return NULL_R;
  
  		w  = Wsb + (i->op - Oextsb);
+diff --git a/gvn.c b/gvn.c
+index e82b321..26333d6 100644
+--- a/gvn.c
++++ b/gvn.c
+@@ -219,6 +219,7 @@ assoccon(Fn *fn, Blk *b, Ins *i1)
+ 	|| (i1->cls == Kw && (int32_t)c.bits.i < 0)) {
+ 		fail = negcon(i1->cls, &c);
+ 		assert(fail == 0);
++		(void)fail;
+ 		op = Osub;
+ 	}
+ 
+diff --git a/rega.c b/rega.c
+index 48d6637..279e207 100644
+--- a/rega.c
++++ b/rega.c
+@@ -257,6 +257,7 @@ move(int r, Ref to, RMap *m)
+ 	if (bshas(m->b, r)) {
+ 		/* r is used and not by to */
+ 		assert(r1 != r);
++		(void)r1;
+ 		for (n=0; m->r[n] != r; n++)
+ 			assert(n+1 < m->n);
+ 		t = m->t[n];
 -- 
 2.49.0.vfs.0.4
 
