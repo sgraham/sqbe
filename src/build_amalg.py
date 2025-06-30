@@ -381,7 +381,7 @@ def fix_missing_static(contents, funcname):
     result = []
     lines = contents.splitlines()
     for i, x in enumerate(lines):
-        if x.startswith(funcname + "(") and lines[i - 1] == "void":
+        if x.startswith(funcname + "(") and lines[i - 1] in ("void", "int"):
             result[i - 1] = "static " + result[i - 1]
         result.append(x)
     return "\n".join(result)
@@ -538,6 +538,9 @@ def main():
 
             if file == "cfg.c":  # This should be changed upstream.
                 contents = fix_missing_static(contents, "multloop")
+
+            if file == "gvn.c":  # This should be changed upstream.
+                contents = fix_missing_static(contents, "cmpeqz")
 
             if file == "main.c":
                 contents = staticize_main_data(contents)

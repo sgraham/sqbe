@@ -1,4 +1,4 @@
-From 89dd0b2ae4f5f7cc2bc32815df05f887c02f9ff0 Mon Sep 17 00:00:00 2001
+From 9253a66ad06e63f34c201c9fe69e1f5f392148b6 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
 Subject: [PATCH 09/13] add possibility for err to be non-fatal, only useful in
@@ -18,7 +18,7 @@ Subject: [PATCH 09/13] add possibility for err to be non-fatal, only useful in
  10 files changed, 95 insertions(+), 50 deletions(-)
 
 diff --git a/all.h b/all.h
-index e4e058d..4e38fbd 100644
+index 6232c51..4d6d5d3 100644
 --- a/all.h
 +++ b/all.h
 @@ -7,6 +7,12 @@
@@ -34,7 +34,7 @@ index e4e058d..4e38fbd 100644
  
  typedef unsigned char uchar;
  typedef unsigned int uint;
-@@ -602,6 +608,8 @@ typedef struct GlobalContext {
+@@ -605,6 +611,8 @@ typedef struct GlobalContext {
  	// ['T'] = 0, /* types */
  	Ins *curi;
  
@@ -43,7 +43,7 @@ index e4e058d..4e38fbd 100644
  } GlobalContext;
  
  extern GlobalContext global_context;
-@@ -683,7 +691,7 @@ void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
+@@ -686,7 +694,7 @@ void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
  void printfn(Fn *, FILE *);
  void printtyp(Typ*, FILE *);
  void printref(Ref, Fn *, FILE *);

@@ -1,4 +1,4 @@
-From da6a5b06940f23d60063ef21c4ea8a7e2da969e1 Mon Sep 17 00:00:00 2001
+From 225f0b0560ca98a41f7557d441dffc423136db6c Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
 Subject: [PATCH 06/13] Rename `R` to `NULL_R`
@@ -57,7 +57,7 @@ index 9b41084..7a7114b 100644
  				if (!isload(i->op))
  					esc(i->arg[0], fn);
 diff --git a/all.h b/all.h
-index 9311435..a5d9652 100644
+index a0aff79..0f7cc79 100644
 --- a/all.h
 +++ b/all.h
 @@ -98,7 +98,7 @@ enum {
@@ -1355,7 +1355,7 @@ index 1ef3388..97db08f 100644
  	i = &b->ins[b->nins];
  	while (i > b->ins)
 diff --git a/copy.c b/copy.c
-index e31bcd4..6705a25 100644
+index be0fe10..0e3a104 100644
 --- a/copy.c
 +++ b/copy.c
 @@ -67,8 +67,8 @@ usewidthle(Fn *fn, Ref r, int w)
@@ -1455,10 +1455,10 @@ index 0aa5596..e5cc948 100644
  	else {
  		assert(req(b->jmp.arg, r));
 diff --git a/gvn.c b/gvn.c
-index 5ff2bd7..da952f1 100644
+index 0aef3f9..d599724 100644
 --- a/gvn.c
 +++ b/gvn.c
-@@ -126,9 +126,9 @@ dedupphi(Fn *fn, Blk *b)
+@@ -124,9 +124,9 @@ dedupphi(Fn *fn, Blk *b)
  
  	for (pp=&b->phi; (p=*pp);) {
  		r = phicopyref(fn, b, p);
@@ -1470,7 +1470,7 @@ index 5ff2bd7..da952f1 100644
  			*pp = p->link;
  		} else
  			pp = &p->link;
-@@ -247,16 +247,16 @@ dedupins(Fn *fn, Blk *b, Ins *i)
+@@ -245,16 +245,16 @@ dedupins(Fn *fn, Blk *b, Ins *i)
  	if (i->op == Onop || pinned(i))
  		return;
  
@@ -1490,7 +1490,7 @@ index 5ff2bd7..da952f1 100644
  		killins(fn, i, r);
  		return;
  	}
-@@ -355,7 +355,7 @@ usecls(Use *u, Ref r, int cls)
+@@ -353,7 +353,7 @@ usecls(Use *u, Ref r, int cls)
  			k = argcls(u->u.ins, 1);
  		return k == Kx ? cls : k;
  	case UPhi:
@@ -1499,7 +1499,7 @@ index 5ff2bd7..da952f1 100644
  			return cls; /* eliminated */
  		return u->u.phi->cls;
  	case UJmp:
-@@ -417,7 +417,7 @@ dedupjmp(Fn *fn, Blk *b)
+@@ -415,7 +415,7 @@ dedupjmp(Fn *fn, Blk *b)
  		/* we later move active ins out of dead blks */
  		b->s2 = 0;
  		b->jmp.type = Jjmp;

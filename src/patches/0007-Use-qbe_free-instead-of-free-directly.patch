@@ -1,4 +1,4 @@
-From cdd1be1778cb387dd3783b3c2aa46a23b8e7bf7c Mon Sep 17 00:00:00 2001
+From f2f60a2037d8bc78b0efa59a825678006a53a3c1 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
 Subject: [PATCH 07/13] Use qbe_free() instead of free() directly
@@ -20,10 +20,10 @@ be revectored.
  10 files changed, 20 insertions(+), 13 deletions(-)
 
 diff --git a/all.h b/all.h
-index a5d9652..e4e058d 100644
+index 0f7cc79..6232c51 100644
 --- a/all.h
 +++ b/all.h
-@@ -623,6 +623,7 @@ uint32_t hash(char *);
+@@ -626,6 +626,7 @@ uint32_t hash(char *);
  void die_(char *, char *, ...) __attribute__((noreturn));
  void *emalloc(size_t);
  void *alloc(size_t);
@@ -71,10 +71,10 @@ index 20395ec..ddd5716 100644
  }
  
 diff --git a/gvn.c b/gvn.c
-index da952f1..c4655be 100644
+index d599724..67e50c7 100644
 --- a/gvn.c
 +++ b/gvn.c
-@@ -450,7 +450,7 @@ rebuildcfg(Fn *fn)
+@@ -448,7 +448,7 @@ rebuildcfg(Fn *fn)
  			if (gvndup(i, 0) == i)
  				addins(&s->ins, &s->nins, i);
  	}
@@ -83,7 +83,7 @@ index da952f1..c4655be 100644
  }
  
  /* requires rpo pred ssa use
-@@ -494,7 +494,7 @@ gvn(Fn *fn)
+@@ -492,7 +492,7 @@ gvn(Fn *fn)
  		dedupjmp(fn, b);
  	}
  	rebuildcfg(fn);

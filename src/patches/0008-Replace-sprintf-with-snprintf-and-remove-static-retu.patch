@@ -1,4 +1,4 @@
-From 938b2691b22ce92048550c4bcccdb833188b32cd Mon Sep 17 00:00:00 2001
+From e2d348135489c93b45769fb8c2f22b68cd762349 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
 Subject: [PATCH 08/13] Replace sprintf with snprintf and remove static return

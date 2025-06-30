@@ -1,4 +1,4 @@
-From 9ea100a996a3bc3c45acd5ad87ecb33f2292077f Mon Sep 17 00:00:00 2001
+From 1ed320c4cb56d6f2caea1038b427a5bcae5951d3 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 10:42:38 -0800
 Subject: [PATCH 10/13] Reduce size of GlobalContext by mallocing `insb`
@@ -9,7 +9,7 @@ Subject: [PATCH 10/13] Reduce size of GlobalContext by mallocing `insb`
  2 files changed, 6 insertions(+), 5 deletions(-)
 
 diff --git a/all.h b/all.h
-index 4e38fbd..57a56f4 100644
+index 4d6d5d3..7f951e4 100644
 --- a/all.h
 +++ b/all.h
 @@ -590,7 +590,7 @@ typedef struct GlobalContext {
@@ -19,9 +19,9 @@ index 4e38fbd..57a56f4 100644
 -	Ins insb[NIns];
 +	Ins* insb;  // Ins insb[NIns];
  
- 	/* nominally owned by main.c, but used everywhere */
- 	Target T;
-@@ -616,7 +616,7 @@ extern GlobalContext global_context;
+ 	/* nominally owned by gvn.c, but used in gvn.c and copy.c */
+ 	Ref con01[2];
+@@ -619,7 +619,7 @@ extern GlobalContext global_context;
  
  // This should be used sparingly for things that are "really" global. Normally,
  // prefer a file-local G(x) that prefixes with the filename. Currently, just

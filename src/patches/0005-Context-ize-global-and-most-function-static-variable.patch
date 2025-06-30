@@ -1,4 +1,4 @@
-From 57e384cd8ababe355ea656d5dc88261a899d5263 Mon Sep 17 00:00:00 2001
+From aef8763d8bb5a2bff8872d75672589e4f233e929 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
 Subject: [PATCH 05/13] Context-ize global and (most) function-static variables
@@ -15,7 +15,7 @@ In the future, it might help enable multithreaded compilation too
 (though currently, there are still function-static buffers that have to
 be maintained as-is because they're used to return created strings.)
 ---
- all.h          | 155 +++++++++++++++++-
+ all.h          | 158 +++++++++++++++++-
  amd64/emit.c   |  35 ++--
  amd64/isel.c   |  36 ++--
  amd64/sysv.c   |  28 ++--
@@ -24,11 +24,11 @@ be maintained as-is because they're used to return created strings.)
  arm64/emit.c   |  29 ++--
  arm64/isel.c   |  20 +--
  cfg.c          |   5 +-
- copy.c         |   2 +
+ copy.c         |  10 +-
  emit.c         |  77 ++++-----
  fold.c         |   1 +
  gcm.c          |   6 +-
- gvn.c          |   2 +-
+ gvn.c          |   8 +-
  live.c         |  18 +-
  load.c         |  70 ++++----
  main.c         |  73 ++++-----
@@ -42,10 +42,10 @@ be maintained as-is because they're used to return created strings.)
  spill.c        | 159 +++++++++---------
  ssa.c          |  25 ++-
  util.c         |  65 +++-----
- 27 files changed, 826 insertions(+), 750 deletions(-)
+ 27 files changed, 835 insertions(+), 758 deletions(-)
 
 diff --git a/all.h b/all.h
-index d8cef38..9311435 100644
+index d8cef38..a0aff79 100644
 --- a/all.h
 +++ b/all.h
 @@ -33,6 +33,12 @@ typedef struct Dat Dat;
@@ -61,7 +61,7 @@ index d8cef38..9311435 100644
  enum {
  	NString = 80,
  	NIns    = 1 << 20,
-@@ -462,9 +468,150 @@ struct Dat {
+@@ -462,9 +468,153 @@ struct Dat {
  	char isstr;
  };
  
@@ -186,6 +186,9 @@ index d8cef38..9311435 100644
 +	Typ *typ;
 +	Ins insb[NIns];
 +
++	/* nominally owned by gvn.c, but used in gvn.c and copy.c */
++	Ref con01[2];
++
 +	/* nominally owned by main.c, but used everywhere */
 +	Target T;
 +	char debug['Z' + 1];
@@ -215,7 +218,7 @@ index d8cef38..9311435 100644
  
  /* util.c */
  typedef enum {
-@@ -472,8 +619,6 @@ typedef enum {
+@@ -472,8 +622,6 @@ typedef enum {
  	PFn, /* discarded after processing the function */
  } Pool;
  
@@ -1101,7 +1104,7 @@ index 5db8c13..ae931b3 100644
  	b->pred = vnew(0, sizeof b->pred[0], PFn);
  	return b;
 diff --git a/copy.c b/copy.c
-index 43b9490..e31bcd4 100644
+index 43b9490..be0fe10 100644
 --- a/copy.c
 +++ b/copy.c
 @@ -8,6 +8,8 @@ struct Ext {
@@ -1113,6 +1116,40 @@ index 43b9490..e31bcd4 100644
  static int
  ext(Ins *i, Ext *e)
  {
+@@ -287,7 +289,7 @@ copyref(Fn *fn, Blk *b, Ins *i)
+ 	/* op identity value */
+ 	if (optab[i->op].hasid
+ 	&& KBASE(i->cls) == 0 /* integer only - fp NaN! */
+-	&& req(i->arg[1], con01[optab[i->op].idval])
++	&& req(i->arg[1], GC(con01)[optab[i->op].idval])
+ 	&& (!optab[i->op].cmpeqwl || isw1(fn, i->arg[0])))
+ 		return i->arg[0];
+ 
+@@ -299,13 +301,13 @@ copyref(Fn *fn, Blk *b, Ins *i)
+ 	/* integer cmp with identical args */
+ 	if ((optab[i->op].cmpeqwl || optab[i->op].cmplgtewl)
+ 	&& req(i->arg[0], i->arg[1]))
+-		return con01[optab[i->op].eqval];
++		return GC(con01)[optab[i->op].eqval];
+ 
+ 	/* cmpeq/ne 0 with 0/non-0 inference */
+ 	if (optab[i->op].cmpeqwl
+ 	&& req(i->arg[1], CON_Z)
+ 	&& zeroval(fn, b, i->arg[0], argcls(i, 0), &z))
+-		return con01[optab[i->op].eqval^z^1];
++		return GC(con01)[optab[i->op].eqval^z^1];
+ 
+ 	/* redundant and mask */
+ 	if (i->op == Oand
+@@ -393,7 +395,7 @@ phicopyref(Fn *fn, Blk *b, Phi *p)
+ 	s = (Blk*[]){0, 0};
+ 	for (n=0; n<2; n++)
+ 		for (c=0; c<2; c++)
+-			if (req(p->arg[n], con01[c]))
++			if (req(p->arg[n], GC(con01)[c]))
+ 				s[c] = p->blk[n];
+ 
+ 	/* if s1 ends with a jnz on either b
 diff --git a/emit.c b/emit.c
 index 594dddd..20395ec 100644
 --- a/emit.c
@@ -1352,10 +1389,29 @@ index cef1ddf..0aa5596 100644
  		printfn(fn, stderr);
  	}
 diff --git a/gvn.c b/gvn.c
-index 1db5bbc..5ff2bd7 100644
+index 1db5bbc..0aef3f9 100644
 --- a/gvn.c
 +++ b/gvn.c
-@@ -497,7 +497,7 @@ gvn(Fn *fn)
+@@ -1,7 +1,5 @@
+ #include "all.h"
+ 
+-Ref con01[2];
+-
+ static inline uint
+ mix(uint x0, uint x1)
+ {
+@@ -465,8 +463,8 @@ gvn(Fn *fn)
+ 	Ins *i;
+ 	uint n, nins;
+ 
+-	con01[0] = getcon(0, fn);
+-	con01[1] = getcon(1, fn);
++	GC(con01)[0] = getcon(0, fn);
++	GC(con01)[1] = getcon(1, fn);
+ 
+ 	/* copy.c uses the visit bit */
+ 	for (b=fn->start; b; b=b->link)
+@@ -497,7 +495,7 @@ gvn(Fn *fn)
  	free(gvntbl);
  	gvntbl = 0;
  

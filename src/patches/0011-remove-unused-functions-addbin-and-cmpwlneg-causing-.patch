@@ -1,4 +1,4 @@
-From 89c49eb3c3e8fe6670f4deb9d5b71cf1d1071d58 Mon Sep 17 00:00:00 2001
+From 528ce5237325625727b0a80314e2424329f6fd83 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:53:27 -0700
 Subject: [PATCH 11/13] remove unused functions addbin and cmpwlneg causing
@@ -12,10 +12,10 @@ also remove sort of (?) unused var in gvndup
  3 files changed, 2 insertions(+), 23 deletions(-)
 
 diff --git a/all.h b/all.h
-index 57a56f4..3eb265d 100644
+index 7f951e4..210833d 100644
 --- a/all.h
 +++ b/all.h
-@@ -637,7 +637,6 @@ void *vnew(ulong, size_t, Pool);
+@@ -640,7 +640,6 @@ void *vnew(ulong, size_t, Pool);
  void vfree(void *);
  void vgrow(void *, ulong);
  void addins(Ins **, uint *, Ins *);
@@ -23,7 +23,7 @@ index 57a56f4..3eb265d 100644
  void strf(char[NString], char *, ...);
  uint32_t intern(char *);
  char *str(uint32_t);
-@@ -651,7 +650,6 @@ void idup(Blk *, Ins *, ulong);
+@@ -654,7 +653,6 @@ void idup(Blk *, Ins *, ulong);
  Ins *icpy(Ins *, Ins *, ulong);
  int cmpop(int);
  int cmpneg(int);
@@ -32,10 +32,10 @@ index 57a56f4..3eb265d 100644
  int phicls(int, Tmp *);
  uint phiargn(Phi *, Blk *);
 diff --git a/gvn.c b/gvn.c
-index c4655be..81241d6 100644
+index 67e50c7..e82b321 100644
 --- a/gvn.c
 +++ b/gvn.c
-@@ -43,11 +43,11 @@ static uint gvntbln;
+@@ -41,11 +41,11 @@ static uint gvntbln;
  static Ins *
  gvndup(Ins *i, int insert)
  {

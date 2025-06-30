@@ -1,4 +1,4 @@
-From 66347777bb636fe61c1a99f192c019fd61bf969d Mon Sep 17 00:00:00 2001
+From e73e65b7facc81067412499473eaeb0cf0318058 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:55:16 -0700
 Subject: [PATCH 12/13] rename min() to min_() for Windows, and avoid
@@ -9,7 +9,7 @@ Subject: [PATCH 12/13] rename min() to min_() for Windows, and avoid
  1 file changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/copy.c b/copy.c
-index 6705a25..cba139e 100644
+index 0e3a104..1a61920 100644
 --- a/copy.c
 +++ b/copy.c
 @@ -110,7 +110,7 @@ usewidthle(Fn *fn, Ref r, int w)
