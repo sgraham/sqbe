@@ -2371,5 +2371,5 @@ index 68181ff..5313593 100644
  		emit(Oadd, Kl, r1, rs, getcon(15, fn));
  		if (fn->tmp[rs.val].slot != -1)
 -- 
-2.43.0
+2.49.0.vfs.0.4
 

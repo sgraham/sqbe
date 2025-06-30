@@ -1,4 +1,4 @@
-From e6554aacfe88c2b0504a9653436c30c34c8a1de3 Mon Sep 17 00:00:00 2001
+From 33acd8081cce63b0ef286f7ec6bed4060475d37c Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
 Subject: [PATCH 07/10] Use qbe_free() instead of free() directly
@@ -11,12 +11,13 @@ be revectored.
  amd64/isel.c |  2 +-
  cfg.c        |  2 +-
  emit.c       |  2 +-
+ gvn.c        |  4 ++--
  mem.c        |  2 +-
  parse.c      |  2 +-
  spill.c      |  2 +-
  ssa.c        |  4 ++--
  util.c       | 12 +++++++++---
- 9 files changed, 18 insertions(+), 11 deletions(-)
+ 10 files changed, 20 insertions(+), 13 deletions(-)
 
 diff --git a/all.h b/all.h
 index a5d9652..e4e058d 100644
@@ -69,6 +70,28 @@ index 20395ec..ddd5716 100644
  	}
  }
  
+diff --git a/gvn.c b/gvn.c
+index da952f1..c4655be 100644
+--- a/gvn.c
++++ b/gvn.c
+@@ -450,7 +450,7 @@ rebuildcfg(Fn *fn)
+ 			if (gvndup(i, 0) == i)
+ 				addins(&s->ins, &s->nins, i);
+ 	}
+-	free(rpo);
++	qbe_free(rpo);
+ }
+ 
+ /* requires rpo pred ssa use
+@@ -494,7 +494,7 @@ gvn(Fn *fn)
+ 		dedupjmp(fn, b);
+ 	}
+ 	rebuildcfg(fn);
+-	free(gvntbl);
++	qbe_free(gvntbl);
+ 	gvntbl = 0;
+ 
+ 	if (GC(debug)['G']) {
 diff --git a/mem.c b/mem.c
 index 4afad11..2b0640e 100644
 --- a/mem.c
@@ -171,5 +194,5 @@ index 5313593..43d4472 100644
  }
  
 -- 
-2.43.0
+2.49.0.vfs.0.4
 

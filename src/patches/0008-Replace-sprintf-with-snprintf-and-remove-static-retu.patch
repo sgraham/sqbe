@@ -1,4 +1,4 @@
-From 21e8bbba9d39b5e4e596fa51069b3cb46fa9667c Mon Sep 17 00:00:00 2001
+From 468c0c3bbc65de0b41eebf01ce157c42a177aa18 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
 Subject: [PATCH 08/10] Replace sprintf with snprintf and remove static return
@@ -180,5 +180,5 @@ index b3d51d4..1a5f7c0 100644
  			c->sym.id = intern(buf);
  			emit(Oload, k, r1, CON(c-fn->con), NULL_R);
 -- 
-2.43.0
+2.49.0.vfs.0.4
 

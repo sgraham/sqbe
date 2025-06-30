@@ -664,7 +664,7 @@ SqSymbol sq_func_end(void) {
   G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
   G(curf)->nmem = 0;
   G(curf)->nblk = SQC(pfs.num_blocks);
-  G(curf)->rpo = 0;
+	G(curf)->rpo = vnew(G(nblk), sizeof G(curf)->rpo[0], PFn);
   for (Blk* b = G(curf)->start; b; b = b->link) {
     SQ_ASSERT(b->dlink == 0);
   }
@@ -720,6 +720,8 @@ SqBlock sq_block_declare_named(const char* name) {
   Blk* blk = _sqblock_to_internal_blk(ret);
   memset(blk, 0, sizeof(Blk));
   blk->id = ret.u;
+	blk->ins = vnew(0, sizeof blk->ins[0], PFn);
+	blk->pred = vnew(0, sizeof blk->pred[0], PFn);
   SQ_NAMED_IF_DEBUG(blk->name, name);
   return ret;
 }

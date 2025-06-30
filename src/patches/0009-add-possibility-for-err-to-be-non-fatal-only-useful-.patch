@@ -1,4 +1,4 @@
-From c23b75fed8c0a4b4967f3e148d19c15b1a76d197 Mon Sep 17 00:00:00 2001
+From 527e3ae8b96f699920f5e82d1ffa12a859fe02dc Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
 Subject: [PATCH 09/10] add possibility for err to be non-fatal, only useful in
@@ -669,5 +669,5 @@ index 1a5f7c0..8acfb93 100644
  	}
  
 -- 
-2.43.0
+2.49.0.vfs.0.4
 
