@@ -1,6 +1,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <alloca.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #endif  // _WIN32
