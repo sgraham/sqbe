@@ -1,4 +1,4 @@
-From 30731289d8b3067c229b1bb7615220a40e20290e Mon Sep 17 00:00:00 2001
+From 3b2d0c8a1c9b5ceb94addc11a5c6b3443c161120 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 8 Jan 2026 12:50:54 -0800
 Subject: [PATCH 14/14] winabi: fix allocation of parameters to regs with

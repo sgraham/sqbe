@@ -1,4 +1,4 @@
-From 2320d4ba6c8a826a145f011408e58f75540ebcd3 Mon Sep 17 00:00:00 2001
+From 5d99c9f138833bf66ecb954f8e7d329e5f92cd57 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
 Subject: [PATCH 06/14] Rename `R` to `NULL_R`
@@ -972,7 +972,7 @@ index 3b3fbb4..60d242a 100755
  
    int num_created_instrs = &GC(insb)[NIns] - GC(curi);
 diff --git a/arm64/abi.c b/arm64/abi.c
-index bea37ed..d76a4a9 100644
+index 7c47838..dc55132 100644
 --- a/arm64/abi.c
 +++ b/arm64/abi.c
 @@ -148,7 +148,7 @@ sttmps(Ref tmp[], int cls[], uint nreg, Ref mem, Fn *fn)
@@ -1063,7 +1063,7 @@ index bea37ed..d76a4a9 100644
  	for (i=i0, c=ca; i<i1; i++, c++) {
  		if ((c->class & Cstk) != 0)
  			continue;
- 		if (i->op == Oarg || i->op == Oarge)
+ 		if (i->op == Oarg || i->op == Oarge || isargbh(i->op))
 -			emit(Ocopy, *c->cls, TMP(*c->reg), i->arg[0], R);
 +			emit(Ocopy, *c->cls, TMP(*c->reg), i->arg[0], NULL_R);
  		if (i->op == Oargc)
@@ -1252,10 +1252,10 @@ index bea37ed..d76a4a9 100644
  		}
  		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 8f70aec..b876272 100644
+index 17eaf83..2b403bf 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
-@@ -454,7 +454,7 @@ emitins(Ins *i, E *e)
+@@ -479,7 +479,7 @@ emitins(Ins *i, E *e)
  		break;
  	case Osalloc:
  		emitf("sub sp, sp, %0", i, e);
@@ -2173,10 +2173,10 @@ index 2eec69e..81fb65a 100644
  		break;
  	case Odbgloc:
 diff --git a/rv64/isel.c b/rv64/isel.c
-index 2bfb1cc..b3d51d4 100644
+index 7010523..b9fb677 100644
 --- a/rv64/isel.c
 +++ b/rv64/isel.c
-@@ -47,10 +47,10 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -48,10 +48,10 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  			sprintf(buf, "\"%sfp%d\"", GC(T).asloc, n);
  			*c = (Con){.type = CAddr};
  			c->sym.id = intern(buf);
@@ -2189,7 +2189,7 @@ index 2bfb1cc..b3d51d4 100644
  		break;
  	case RTmp:
  		if (isreg(r0))
-@@ -66,7 +66,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -67,7 +67,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  				break;
  			}
  			r1 = newtmp("isel", k, fn);
@@ -2198,7 +2198,7 @@ index 2bfb1cc..b3d51d4 100644
  			break;
  		}
  		if (k == Kw && fn->tmp[r0.val].cls == Kl) {
-@@ -74,7 +74,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -75,7 +75,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  			 * for 32-bit arithmetic instructions
  			 */
  			r1 = newtmp("isel", k, fn);
@@ -2207,7 +2207,7 @@ index 2bfb1cc..b3d51d4 100644
  		} else {
  			assert(k == fn->tmp[r0.val].cls);
  		}
-@@ -103,7 +103,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+@@ -104,7 +104,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
  	switch (op) {
  	case Cieq:
  		r = newtmp("isel", k, fn);
@@ -2216,7 +2216,7 @@ index 2bfb1cc..b3d51d4 100644
  		emit(Oxor, k, r, i.arg[0], i.arg[1]);
  		icmp = GC(curi);
  		fixarg(&icmp->arg[0], k, icmp, fn);
-@@ -111,7 +111,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+@@ -112,7 +112,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
  		return;
  	case Cine:
  		r = newtmp("isel", k, fn);

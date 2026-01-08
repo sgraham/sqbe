@@ -1,4 +1,4 @@
-From 354a131a87a2cb547d87b6c9db4d3e374038a44e Mon Sep 17 00:00:00 2001
+From a183aecb19afc7f466b328c597f839777eb5a3fb Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Thu, 9 Jan 2025 15:28:55 -0800
 Subject: [PATCH 03/14] fix -Wsometimes-uninitialized warning in non DEBUG
@@ -23,10 +23,10 @@ index e685d2a..cef1ddf 100644
  	if (rtype(r) != RTmp)
  		return NOBID;
 diff --git a/rv64/isel.c b/rv64/isel.c
-index 000c112..0fb85b3 100644
+index ca62359..dace4c4 100644
 --- a/rv64/isel.c
 +++ b/rv64/isel.c
-@@ -154,7 +154,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+@@ -155,7 +155,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
  		i.op = KWIDE(k) ? Oceqd : Oceqs;
  		break;
  	default:

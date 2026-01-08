@@ -1,4 +1,4 @@
-From e9c7d24cf3802a2cec8b668345dd571073689fea Mon Sep 17 00:00:00 2001
+From 60a168037851b4cfd80a8516bbe9f75b90458579 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 13:03:39 -0700
 Subject: [PATCH 13/14] fix strict aliasing warning in emitfin
@@ -8,10 +8,10 @@ Subject: [PATCH 13/14] fix strict aliasing warning in emitfin
  1 file changed, 8 insertions(+), 7 deletions(-)
 
 diff --git a/emit.c b/emit.c
-index ddd5716..f4f1661 100644
+index d02d4b4..f077429 100644
 --- a/emit.c
 +++ b/emit.c
-@@ -152,7 +152,8 @@ emitfin(FILE *f, char *sec[3])
+@@ -156,7 +156,8 @@ emitfin(FILE *f, char *sec[3])
  {
  	Asmbits *b;
  	int lg, i;
@@ -21,7 +21,7 @@ index ddd5716..f4f1661 100644
  
  	if (!G(stash))
  		return;
-@@ -171,18 +172,18 @@ emitfin(FILE *f, char *sec[3])
+@@ -175,18 +176,18 @@ emitfin(FILE *f, char *sec[3])
  						"\n\t.quad %"PRId64
  						"\n\t.quad 0\n\n",
  						(int64_t)b->n);

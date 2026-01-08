@@ -1,4 +1,4 @@
-From dadc85c8f63895af85c5205d24254bab3ca670f7 Mon Sep 17 00:00:00 2001
+From 1163020588fb24ca31ccc4101e59a8d020d8f5c5 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
 Subject: [PATCH 08/14] Replace sprintf with snprintf and remove static return
@@ -15,12 +15,12 @@ footgun later for multi-context/multi-thread use).
 ---
  amd64/emit.c | 10 ++++++----
  amd64/isel.c |  2 +-
- arm64/emit.c | 37 +++++++++++++++++++++++++++++--------
+ arm64/emit.c | 41 +++++++++++++++++++++++++++++++----------
  arm64/isel.c |  2 +-
  parse.c      |  2 +-
  rv64/emit.c  |  2 +-
  rv64/isel.c  |  2 +-
- 7 files changed, 40 insertions(+), 17 deletions(-)
+ 7 files changed, 42 insertions(+), 19 deletions(-)
 
 diff --git a/amd64/emit.c b/amd64/emit.c
 index 67d16cf..11f26f6 100644
@@ -62,13 +62,14 @@ index 138ebb0..1ecdbdf 100644
  		fn->mem[fn->nmem-1] = a;
  	}
 diff --git a/arm64/emit.c b/arm64/emit.c
-index b876272..7caf300 100644
+index 2b403bf..d2e719c 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
-@@ -111,32 +111,53 @@ static struct {
- 	{ NOp, 0, 0 }
+@@ -114,39 +114,60 @@ static struct {
+ enum {
+ 	V31 = 0x1fffffff,  /* local name for V31 */
  };
- 
++ 
 +static char* w_regs[] = {
 +    "w0",  "w1",  "w2",  "w3",  "w4",  "w5",  "w6",  "w7",  "w8",  "w9",  "w10",
 +    "w11", "w12", "w13", "w14", "w15", "w16", "w17", "w18", "w19", "w20", "w21",
@@ -92,7 +93,7 @@ index b876272..7caf300 100644
 +    "d11", "d12", "d13", "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21",
 +    "d22", "d23", "d24", "d25", "d26", "d27", "d28", "d29", "d30",
 +};
-+
+ 
  static char *
  rname(int r, int k)
  {
@@ -120,6 +121,14 @@ index b876272..7caf300 100644
  		case Kx:
 -		case Kd: sprintf(buf, "d%d", r-V0); break;
 +		case Kd: return d_regs[r-V0]; break;
+ 		}
+ 	else if (r == V31)
+ 		switch (k) {
+ 		default: die("invalid class");
+-		case Ks: sprintf(buf, "s31"); break;
+-		case Kd: sprintf(buf, "d31"); break;
++		case Ks: return "s31";
++		case Kd: return "d31";
  		}
  	else
  		die("invalid register");
@@ -167,10 +176,10 @@ index 81fb65a..ed24e7e 100644
  			off[0] = 0;
  		fprintf(f, "\tlui %s, %%tprel_hi(%s)%s\n",
 diff --git a/rv64/isel.c b/rv64/isel.c
-index b3d51d4..1a5f7c0 100644
+index b9fb677..6060861 100644
 --- a/rv64/isel.c
 +++ b/rv64/isel.c
-@@ -44,7 +44,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -45,7 +45,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  			n = stashbits(c->bits.i, KWIDE(k) ? 8 : 4);
  			vgrow(&fn->con, ++fn->ncon);
  			c = &fn->con[fn->ncon-1];

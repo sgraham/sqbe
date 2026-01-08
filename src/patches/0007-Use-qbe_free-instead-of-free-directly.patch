@@ -1,4 +1,4 @@
-From 34921ffd40eab7f3654910b4f62228cd3a4687ce Mon Sep 17 00:00:00 2001
+From e91a29531838e37deef91615d82e37d6dee084fa Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
 Subject: [PATCH 07/14] Use qbe_free() instead of free() directly
@@ -58,10 +58,10 @@ index ae931b3..2e8af68 100644
  
  static int
 diff --git a/emit.c b/emit.c
-index 20395ec..ddd5716 100644
+index 0d0d7ff..d02d4b4 100644
 --- a/emit.c
 +++ b/emit.c
-@@ -188,7 +188,7 @@ emitfin(FILE *f, char *sec[3])
+@@ -192,7 +192,7 @@ emitfin(FILE *f, char *sec[3])
  		}
  	while ((b=G(stash))) {
  		G(stash) = b->link;

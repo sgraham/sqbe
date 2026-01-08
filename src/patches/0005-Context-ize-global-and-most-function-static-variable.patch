@@ -1,4 +1,4 @@
-From 68b82b9db16c9b68d39260a89684341203df9a64 Mon Sep 17 00:00:00 2001
+From a6c6a05c7cfaccfc5dbd5f8043fada142e63f798 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
 Subject: [PATCH 05/14] Context-ize global and (most) function-static variables
@@ -700,7 +700,7 @@ index 57ec00c..3b3fbb4 100755
      printfn(func, stderr);
    }
 diff --git a/arm64/abi.c b/arm64/abi.c
-index 7a2b6f9..bea37ed 100644
+index 2bafec7..7c47838 100644
 --- a/arm64/abi.c
 +++ b/arm64/abi.c
 @@ -78,7 +78,7 @@ isfloatv(Typ *t, char *cls)
@@ -871,7 +871,7 @@ index 7a2b6f9..bea37ed 100644
  		printfn(fn, stderr);
  	}
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 9b6cf0f..8f70aec 100644
+index c339e41..17eaf83 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
 @@ -1,5 +1,7 @@
@@ -882,7 +882,7 @@ index 9b6cf0f..8f70aec 100644
  typedef struct E E;
  
  struct E {
-@@ -146,7 +148,7 @@ slot(Ref r, E *e)
+@@ -156,7 +158,7 @@ slot(Ref r, E *e)
  	if (s == -1)
  		return 16 + e->frame;
  	if (s < 0) {
@@ -891,7 +891,7 @@ index 9b6cf0f..8f70aec 100644
  			return 16 + e->frame + 192 - (s+2);
  		else
  			return 16 + e->frame - (s+2);
-@@ -261,7 +263,7 @@ loadaddr(Con *c, char *rn, E *e)
+@@ -271,7 +273,7 @@ loadaddr(Con *c, char *rn, E *e)
  	default:
  		die("unreachable");
  	case SGlo:
@@ -900,7 +900,7 @@ index 9b6cf0f..8f70aec 100644
  			s = "\tadrp\tR, S@pageO\n"
  			    "\tadd\tR, R, S@pageoffO\n";
  		else
-@@ -269,7 +271,7 @@ loadaddr(Con *c, char *rn, E *e)
+@@ -279,7 +281,7 @@ loadaddr(Con *c, char *rn, E *e)
  			    "\tadd\tR, R, #:lo12:SO\n";
  		break;
  	case SThr:
@@ -909,7 +909,7 @@ index 9b6cf0f..8f70aec 100644
  			s = "\tadrp\tR, S@tlvppage\n"
  			    "\tldr\tR, [R, S@tlvppageoff]\n";
  		else
-@@ -280,7 +282,7 @@ loadaddr(Con *c, char *rn, E *e)
+@@ -290,7 +292,7 @@ loadaddr(Con *c, char *rn, E *e)
  	}
  
  	l = str(c->sym.id);
@@ -918,7 +918,7 @@ index 9b6cf0f..8f70aec 100644
  	for (; *s; s++)
  		switch (*s) {
  		default:
-@@ -447,7 +449,7 @@ emitins(Ins *i, E *e)
+@@ -472,7 +474,7 @@ emitins(Ins *i, E *e)
  		|| c->bits.i)
  			die("invalid call argument");
  		l = str(c->sym.id);
@@ -927,7 +927,7 @@ index 9b6cf0f..8f70aec 100644
  		fprintf(e->f, "\tbl\t%s%s\n", p, l);
  		break;
  	case Osalloc:
-@@ -512,7 +514,6 @@ arm64_emitfn(Fn *fn, FILE *out)
+@@ -537,7 +539,6 @@ arm64_emitfn(Fn *fn, FILE *out)
  		CMP(X)
  	#undef X
  	};
@@ -935,7 +935,7 @@ index 9b6cf0f..8f70aec 100644
  	int s, n, c, lbl, *r;
  	uint64_t o;
  	Blk *b, *t;
-@@ -520,13 +521,13 @@ arm64_emitfn(Fn *fn, FILE *out)
+@@ -545,13 +546,13 @@ arm64_emitfn(Fn *fn, FILE *out)
  	E *e;
  
  	e = &(E){.f = out, .fn = fn};
@@ -951,7 +951,7 @@ index 9b6cf0f..8f70aec 100644
  		for (n=7; n>=0; n--)
  			fprintf(e->f, "\tstr\tq%d, [sp, -16]!\n", n);
  		for (n=7; n>=0; n-=2)
-@@ -571,7 +572,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+@@ -596,7 +597,7 @@ arm64_emitfn(Fn *fn, FILE *out)
  
  	for (lbl=0, b=e->fn->start; b; b=b->link) {
  		if (lbl || b->npred > 1)
@@ -960,7 +960,7 @@ index 9b6cf0f..8f70aec 100644
  		for (i=b->ins; i!=&b->ins[b->nins]; i++)
  			emitins(i, e);
  		lbl = 1;
-@@ -591,7 +592,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+@@ -616,7 +617,7 @@ arm64_emitfn(Fn *fn, FILE *out)
  			if (e->fn->dynalloc)
  				fputs("\tmov sp, x29\n", e->f);
  			o = e->frame + 16;
@@ -969,7 +969,7 @@ index 9b6cf0f..8f70aec 100644
  				o += 192;
  			if (o <= 504)
  				fprintf(e->f,
-@@ -626,7 +627,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+@@ -651,7 +652,7 @@ arm64_emitfn(Fn *fn, FILE *out)
  			if (b->s1 != b->link)
  				fprintf(e->f,
  					"\tb\t%s%d\n",
@@ -978,7 +978,7 @@ index 9b6cf0f..8f70aec 100644
  				);
  			else
  				lbl = 0;
-@@ -643,12 +644,12 @@ arm64_emitfn(Fn *fn, FILE *out)
+@@ -668,12 +669,12 @@ arm64_emitfn(Fn *fn, FILE *out)
  				c = cmpneg(c);
  			fprintf(e->f,
  				"\tb%s\t%s%d\n",
@@ -1151,7 +1151,7 @@ index 43b9490..be0fe10 100644
  
  	/* if s1 ends with a jnz on either b
 diff --git a/emit.c b/emit.c
-index 594dddd..20395ec 100644
+index 246219a..0d0d7ff 100644
 --- a/emit.c
 +++ b/emit.c
 @@ -1,5 +1,7 @@
@@ -1174,9 +1174,9 @@ index 594dddd..20395ec 100644
  		l->sec = "__DATA";
  		l->secf = "__thread_data,thread_local_regular";
  		sfx = "$tlv$init";
-@@ -67,41 +69,40 @@ emitdat(Dat *d, FILE *f)
- 		[DW] = "\t.int",
- 		[DL] = "\t.quad"
+@@ -70,41 +72,40 @@ emitdat(Dat *d, FILE *f)
+ 		[DW] = {"\t.int", 0xffffffffL},
+ 		[DL] = {"\t.quad", -1L},
  	};
 -	static int64_t zero;
  	char *p;
@@ -1228,16 +1228,16 @@ index 594dddd..20395ec 100644
  		}
  		if (d->isstr) {
  			if (d->type != DB)
-@@ -109,7 +110,7 @@ emitdat(Dat *d, FILE *f)
+@@ -112,7 +113,7 @@ emitdat(Dat *d, FILE *f)
  			fprintf(f, "\t.ascii %s\n", d->u.str);
  		}
  		else if (d->isref) {
 -			p = d->u.ref.name[0] == '"' ? "" : T.assym;
 +			p = d->u.ref.name[0] == '"' ? "" : GC(T).assym;
  			fprintf(f, "%s %s%s%+"PRId64"\n",
- 				dtoa[d->type], p, d->u.ref.name,
+ 				di[d->type].decl, p, d->u.ref.name,
  				d->u.ref.off);
-@@ -122,16 +123,12 @@ emitdat(Dat *d, FILE *f)
+@@ -126,16 +127,12 @@ emitdat(Dat *d, FILE *f)
  	}
  }
  
@@ -1254,7 +1254,7 @@ index 594dddd..20395ec 100644
  int
  stashbits(bits n, int size)
  {
-@@ -139,7 +136,7 @@ stashbits(bits n, int size)
+@@ -143,7 +140,7 @@ stashbits(bits n, int size)
  	int i;
  
  	assert(size == 4 || size == 8 || size == 16);
@@ -1263,7 +1263,7 @@ index 594dddd..20395ec 100644
  		if (size <= b->size && b->n == n)
  			return i;
  	b = emalloc(sizeof *b);
-@@ -157,17 +154,17 @@ emitfin(FILE *f, char *sec[3])
+@@ -161,17 +158,17 @@ emitfin(FILE *f, char *sec[3])
  	int lg, i;
  	union { int32_t i; float f; } u;
  
@@ -1284,7 +1284,7 @@ index 594dddd..20395ec 100644
  				);
  				if (lg == 4)
  					fprintf(f,
-@@ -189,8 +186,8 @@ emitfin(FILE *f, char *sec[3])
+@@ -193,8 +190,8 @@ emitfin(FILE *f, char *sec[3])
  				}
  			}
  		}
@@ -1295,7 +1295,7 @@ index 594dddd..20395ec 100644
  		free(b);
  	}
  }
-@@ -228,13 +225,9 @@ pe_emitfin(FILE *f)
+@@ -232,13 +229,9 @@ pe_emitfin(FILE *f)
  {
  	static char *sec[3] = { ".rodata", ".rodata", ".rodata" };
  
@@ -1310,7 +1310,7 @@ index 594dddd..20395ec 100644
  void
  emitdbgfile(char *fn, FILE *f)
  {
-@@ -242,26 +235,26 @@ emitdbgfile(char *fn, FILE *f)
+@@ -246,26 +239,26 @@ emitdbgfile(char *fn, FILE *f)
  	uint n;
  
  	id = intern(fn);
@@ -3475,10 +3475,10 @@ index 39b55ea..2eec69e 100644
  	elf_emitfnfin(fn->name, f);
  }
 diff --git a/rv64/isel.c b/rv64/isel.c
-index 0fb85b3..2bfb1cc 100644
+index dace4c4..7010523 100644
 --- a/rv64/isel.c
 +++ b/rv64/isel.c
-@@ -44,7 +44,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -45,7 +45,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  			n = stashbits(c->bits.i, KWIDE(k) ? 8 : 4);
  			vgrow(&fn->con, ++fn->ncon);
  			c = &fn->con[fn->ncon-1];
@@ -3487,7 +3487,7 @@ index 0fb85b3..2bfb1cc 100644
  			*c = (Con){.type = CAddr};
  			c->sym.id = intern(buf);
  			emit(Oload, k, r1, CON(c-fn->con), R);
-@@ -105,7 +105,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+@@ -106,7 +106,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
  		r = newtmp("isel", k, fn);
  		emit(Oreqz, i.cls, i.to, r, R);
  		emit(Oxor, k, r, i.arg[0], i.arg[1]);
@@ -3496,7 +3496,7 @@ index 0fb85b3..2bfb1cc 100644
  		fixarg(&icmp->arg[0], k, icmp, fn);
  		fixarg(&icmp->arg[1], k, icmp, fn);
  		return;
-@@ -113,7 +113,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+@@ -114,7 +114,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
  		r = newtmp("isel", k, fn);
  		emit(Ornez, i.cls, i.to, r, R);
  		emit(Oxor, k, r, i.arg[0], i.arg[1]);
@@ -3505,7 +3505,7 @@ index 0fb85b3..2bfb1cc 100644
  		fixarg(&icmp->arg[0], k, icmp, fn);
  		fixarg(&icmp->arg[1], k, icmp, fn);
  		return;
-@@ -141,11 +141,11 @@ selcmp(Ins i, int k, int op, Fn *fn)
+@@ -142,11 +142,11 @@ selcmp(Ins i, int k, int op, Fn *fn)
  		emit(Oand, i.cls, i.to, r0, r1);
  		op = KWIDE(k) ? Oceqd : Oceqs;
  		emit(op, i.cls, r0, i.arg[0], i.arg[0]);
@@ -3519,7 +3519,7 @@ index 0fb85b3..2bfb1cc 100644
  		fixarg(&icmp->arg[0], k, icmp, fn);
  		fixarg(&icmp->arg[1], k, icmp, fn);
  		return;
-@@ -166,7 +166,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
+@@ -167,7 +167,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
  	if (neg)
  		negate(&i.to, fn);
  	emiti(i);
@@ -3528,7 +3528,7 @@ index 0fb85b3..2bfb1cc 100644
  	fixarg(&icmp->arg[0], k, icmp, fn);
  	fixarg(&icmp->arg[1], k, icmp, fn);
  }
-@@ -178,7 +178,7 @@ sel(Ins i, Fn *fn)
+@@ -179,7 +179,7 @@ sel(Ins i, Fn *fn)
  	int ck, cc;
  
  	if (INRANGE(i.op, Oalloc, Oalloc1)) {
@@ -3537,7 +3537,7 @@ index 0fb85b3..2bfb1cc 100644
  		salloc(i.to, i.arg[0], fn);
  		fixarg(&i0->arg[0], Kl, i0, fn);
  		return;
-@@ -189,7 +189,7 @@ sel(Ins i, Fn *fn)
+@@ -190,7 +190,7 @@ sel(Ins i, Fn *fn)
  	}
  	if (i.op != Onop) {
  		emiti(i);
@@ -3546,7 +3546,7 @@ index 0fb85b3..2bfb1cc 100644
  		fixarg(&i0->arg[0], argcls(&i, 0), i0, fn);
  		fixarg(&i0->arg[1], argcls(&i, 1), i0, fn);
  	}
-@@ -234,7 +234,7 @@ rv64_isel(Fn *fn)
+@@ -235,7 +235,7 @@ rv64_isel(Fn *fn)
  			}
  
  	for (b=fn->start; b; b=b->link) {
@@ -3555,7 +3555,7 @@ index 0fb85b3..2bfb1cc 100644
  		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
  			for (p=(*sb)->phi; p; p=p->link) {
  				for (n=0; p->blk[n] != b; n++)
-@@ -244,10 +244,10 @@ rv64_isel(Fn *fn)
+@@ -245,10 +245,10 @@ rv64_isel(Fn *fn)
  		seljmp(b, fn);
  		for (i=&b->ins[b->nins]; i!=b->ins;)
  			sel(*--i, fn);

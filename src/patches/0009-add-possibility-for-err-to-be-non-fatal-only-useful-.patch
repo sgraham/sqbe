@@ -1,4 +1,4 @@
-From 352fabcac69f24704a2f2bf50ef59aba342a7600 Mon Sep 17 00:00:00 2001
+From f9f66c8486400d2fc91ff915a47f67abbdeb9e5c Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
 Subject: [PATCH 09/14] add possibility for err to be non-fatal, only useful in
@@ -163,7 +163,7 @@ index 60d242a..c23c9e7 100755
    if (GC(debug)['A']) {
      fprintf(stderr, "\n> After ABI lowering:\n");
 diff --git a/arm64/abi.c b/arm64/abi.c
-index d76a4a9..6c3c718 100644
+index dc55132..d404402 100644
 --- a/arm64/abi.c
 +++ b/arm64/abi.c
 @@ -188,6 +188,7 @@ selret(Blk *b, Fn *fn)
@@ -645,10 +645,10 @@ index 8b247e6..d0053ed 100644
  				break;
  			case Ovastart:
 diff --git a/rv64/isel.c b/rv64/isel.c
-index 1a5f7c0..8acfb93 100644
+index 6060861..afe5487 100644
 --- a/rv64/isel.c
 +++ b/rv64/isel.c
-@@ -180,6 +180,7 @@ sel(Ins i, Fn *fn)
+@@ -181,6 +181,7 @@ sel(Ins i, Fn *fn)
  	if (INRANGE(i.op, Oalloc, Oalloc1)) {
  		i0 = GC(curi) - 1;
  		salloc(i.to, i.arg[0], fn);
@@ -656,7 +656,7 @@ index 1a5f7c0..8acfb93 100644
  		fixarg(&i0->arg[0], Kl, i0, fn);
  		return;
  	}
-@@ -242,8 +243,10 @@ rv64_isel(Fn *fn)
+@@ -243,8 +244,10 @@ rv64_isel(Fn *fn)
  				fixarg(&p->arg[n], p->cls, 0, fn);
  			}
  		seljmp(b, fn);

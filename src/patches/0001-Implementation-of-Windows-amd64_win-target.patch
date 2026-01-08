@@ -1,4 +1,4 @@
-From 2a360fdf9988f8554bd1683f3ab9c586d0a49664 Mon Sep 17 00:00:00 2001
+From 4dc5e4cbdb5b6a838568ce9b2c0e3cc88e4c90a1 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Fri, 7 Feb 2025 17:03:52 -0800
 Subject: [PATCH 01/14] Implementation of Windows amd64_win target
@@ -1197,10 +1197,10 @@ index 0000000..bc88f05
 +
 +should pass.
 diff --git a/emit.c b/emit.c
-index 04837a5..594dddd 100644
+index d2fab43..246219a 100644
 --- a/emit.c
 +++ b/emit.c
-@@ -223,6 +223,14 @@ macho_emitfin(FILE *f)
+@@ -227,6 +227,14 @@ macho_emitfin(FILE *f)
  	emitfin(f, sec);
  }
  
