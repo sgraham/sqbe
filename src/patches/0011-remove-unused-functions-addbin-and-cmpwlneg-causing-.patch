@@ -1,7 +1,7 @@
-From 528ce5237325625727b0a80314e2424329f6fd83 Mon Sep 17 00:00:00 2001
+From 7f2e1b43839e384166675562c815f1c9396833e8 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:53:27 -0700
-Subject: [PATCH 11/13] remove unused functions addbin and cmpwlneg causing
+Subject: [PATCH 11/14] remove unused functions addbin and cmpwlneg causing
  warnings
 
 also remove sort of (?) unused var in gvndup
@@ -87,5 +87,5 @@ index 43d4472..493da61 100644
  clsmerge(short *pk, short k)
  {
 -- 
-2.49.0.vfs.0.4
+2.39.5 (Apple Git-154)
 

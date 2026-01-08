@@ -1,0 +1,71 @@
+From 30731289d8b3067c229b1bb7615220a40e20290e Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Thu, 8 Jan 2026 12:50:54 -0800
+Subject: [PATCH 14/14] winabi: fix allocation of parameters to regs with
+ hidden arg
+
+In the presence of the hidden arg for return-by-value, the
+registers used for natural arguments were incorrect.
+---
+ amd64/winabi.c |  3 ++-
+ test/abi9.ssa  | 20 ++++++++++++++++++++
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+ create mode 100644 test/abi9.ssa
+
+diff --git a/amd64/winabi.c b/amd64/winabi.c
+index c23c9e7..8426b20 100755
+--- a/amd64/winabi.c
++++ b/amd64/winabi.c
+@@ -622,6 +622,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+   // when adding to it.
+   GC(curi) = &GC(insb)[NIns];
+ 
++  int reg_counter = 0;
+   RegisterUsage reg_usage = {0};
+   if (func->retty >= 0) {
+     bool by_copy = type_is_by_copy(&GC(typ)[func->retty]);
+@@ -631,6 +632,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+       Ref ret_ref = newtmp("abi.ret", Kl, func);
+       emit(Ocopy, Kl, ret_ref, TMP(RCX), NULL_R);
+       func->retr = ret_ref;
++      ++reg_counter;
+     }
+   }
+   Ref env = NULL_R;
+@@ -642,7 +644,6 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+   // Copy from the registers or stack slots into the named parameters. Depending
+   // on how they're passed, they either need to be copied or loaded.
+   ArgClass* arg = arg_classes;
+-  int reg_counter = 0;
+   uint slot_offset = SHADOW_SPACE_SIZE / 4 + 4;
+   for (Ins* instr = start_of_params; instr < end_of_params; ++instr, ++arg) {
+     switch (arg->style) {
+diff --git a/test/abi9.ssa b/test/abi9.ssa
+new file mode 100644
+index 0000000..3de14b0
+--- /dev/null
++++ b/test/abi9.ssa
+@@ -0,0 +1,20 @@
++type :obj = { l, l, l, l }
++
++export
++function :obj $f(l %self) {
++@_0
++        %_1 =l alloc8 16
++       storel 77, %_1
++        ret %_1
++}
++
++# >>> driver
++# #include <stdio.h>
++# typedef struct { long long a, b, c, d; } obj;
++# extern obj f();
++# int main() { obj ret = f(); printf("%lld\n", ret.a); return 0; }
++# <<<
++
++# >>> output
++# 77
++# <<<
+-- 
+2.39.5 (Apple Git-154)
+

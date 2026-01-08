@@ -1,7 +1,7 @@
-From f2f60a2037d8bc78b0efa59a825678006a53a3c1 Mon Sep 17 00:00:00 2001
+From 34921ffd40eab7f3654910b4f62228cd3a4687ce Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
-Subject: [PATCH 07/13] Use qbe_free() instead of free() directly
+Subject: [PATCH 07/14] Use qbe_free() instead of free() directly
 
 Pair emalloc() with qbe_free() rather than free() directly. This is so
 that when emalloc() is overridden in a library context, free() can also
@@ -194,5 +194,5 @@ index 5313593..43d4472 100644
  }
  
 -- 
-2.49.0.vfs.0.4
+2.39.5 (Apple Git-154)
 

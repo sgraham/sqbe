@@ -1,7 +1,7 @@
-From 9253a66ad06e63f34c201c9fe69e1f5f392148b6 Mon Sep 17 00:00:00 2001
+From 352fabcac69f24704a2f2bf50ef59aba342a7600 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
-Subject: [PATCH 09/13] add possibility for err to be non-fatal, only useful in
+Subject: [PATCH 09/14] add possibility for err to be non-fatal, only useful in
  library context
 
 ---
@@ -669,5 +669,5 @@ index 1a5f7c0..8acfb93 100644
  	}
  
 -- 
-2.49.0.vfs.0.4
+2.39.5 (Apple Git-154)
 

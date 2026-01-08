@@ -1,7 +1,7 @@
-From af8e284562d9709a66d49195845797f094ee88dd Mon Sep 17 00:00:00 2001
+From 2a360fdf9988f8554bd1683f3ab9c586d0a49664 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Fri, 7 Feb 2025 17:03:52 -0800
-Subject: [PATCH 01/13] Implementation of Windows amd64_win target
+Subject: [PATCH 01/14] Implementation of Windows amd64_win target
 
 This is an implementation of the Windows ABI. It supports most features
 (struct passing/returning, varargs, env). TLS is not yet supported.
@@ -1382,5 +1382,5 @@ index 7af62a5..fe6f94d 100755
  		reason="output"
  	else
 -- 
-2.49.0.vfs.0.4
+2.39.5 (Apple Git-154)
 
