@@ -1,4 +1,4 @@
-From cb49baa1e29f1a2cf7c4189f883cfb677b8fe4e0 Mon Sep 17 00:00:00 2001
+From 38fe38a78aa45d94a2d2e0be2fae946c375db107 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Sun, 12 Jan 2025 22:08:28 -0800
 Subject: [PATCH 02/14] Fix warnings from clang about unprototyped vs (void)

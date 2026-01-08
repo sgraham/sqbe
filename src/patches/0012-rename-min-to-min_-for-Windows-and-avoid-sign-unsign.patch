@@ -1,4 +1,4 @@
-From cd4d8e0d7c98b9c1778c4b5c0ffb5509dea71349 Mon Sep 17 00:00:00 2001
+From f980281888e508f0cb6e7fc4fc002f203938f014 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:55:16 -0700
 Subject: [PATCH 12/14] rename min() to min_() for Windows, and avoid

@@ -1,4 +1,4 @@
-From c35374242c46350bd621677887b316f6a6259558 Mon Sep 17 00:00:00 2001
+From 4e2f4a19caa1dd2c5b4f3b0c4f7cd53da82ed426 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:53:27 -0700
 Subject: [PATCH 11/14] remove unused functions addbin and cmpwlneg causing

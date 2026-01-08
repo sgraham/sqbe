@@ -1,4 +1,4 @@
-From 1163020588fb24ca31ccc4101e59a8d020d8f5c5 Mon Sep 17 00:00:00 2001
+From 0cd0898afdfd94903e7e58c59f54efd9b80eee15 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
 Subject: [PATCH 08/14] Replace sprintf with snprintf and remove static return
@@ -62,7 +62,7 @@ index 138ebb0..1ecdbdf 100644
  		fn->mem[fn->nmem-1] = a;
  	}
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 2b403bf..d2e719c 100644
+index 311ab78..0f78c6d 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
 @@ -114,39 +114,60 @@ static struct {

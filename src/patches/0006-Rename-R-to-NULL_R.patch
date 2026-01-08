@@ -1,4 +1,4 @@
-From 5d99c9f138833bf66ecb954f8e7d329e5f92cd57 Mon Sep 17 00:00:00 2001
+From 5f2bd3777ce43cdf0248d5aa780b209545513ac6 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
 Subject: [PATCH 06/14] Rename `R` to `NULL_R`
@@ -1252,7 +1252,7 @@ index 7c47838..dc55132 100644
  		}
  		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 17eaf83..2b403bf 100644
+index ac8e7cc..311ab78 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
 @@ -479,7 +479,7 @@ emitins(Ins *i, E *e)

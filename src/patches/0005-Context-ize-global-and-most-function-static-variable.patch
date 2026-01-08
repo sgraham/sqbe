@@ -1,4 +1,4 @@
-From a6c6a05c7cfaccfc5dbd5f8043fada142e63f798 Mon Sep 17 00:00:00 2001
+From 547b872e4889d5b83b8cdaa52ff4a64f93bfdde6 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
 Subject: [PATCH 05/14] Context-ize global and (most) function-static variables
@@ -21,7 +21,7 @@ be maintained as-is because they're used to return created strings.)
  amd64/sysv.c   |  28 ++--
  amd64/winabi.c |  16 +-
  arm64/abi.c    |  42 ++---
- arm64/emit.c   |  29 ++--
+ arm64/emit.c   |  31 ++--
  arm64/isel.c   |  20 +--
  cfg.c          |   5 +-
  copy.c         |  10 +-
@@ -42,7 +42,7 @@ be maintained as-is because they're used to return created strings.)
  spill.c        | 159 +++++++++---------
  ssa.c          |  25 ++-
  util.c         |  65 +++-----
- 27 files changed, 835 insertions(+), 758 deletions(-)
+ 27 files changed, 836 insertions(+), 759 deletions(-)
 
 diff --git a/all.h b/all.h
 index d8cef38..a0aff79 100644
@@ -871,7 +871,7 @@ index 2bafec7..7c47838 100644
  		printfn(fn, stderr);
  	}
 diff --git a/arm64/emit.c b/arm64/emit.c
-index c339e41..17eaf83 100644
+index c339e41..ac8e7cc 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
 @@ -1,5 +1,7 @@
@@ -918,6 +918,15 @@ index c339e41..17eaf83 100644
  	for (; *s; s++)
  		switch (*s) {
  		default:
+@@ -380,7 +382,7 @@ emitins(Ins *i, E *e)
+ 		if (isload(i->op))
+ 			fixarg(&i->arg[0], loadsz(i), IP1, e);
+ 		if (isstore(i->op)) {
+-			t = T.apple ? -1 : R18;
++			t = GC(T).apple ? -1 : R18;
+ 			if (fixarg(&i->arg[1], storesz(i), t, e)) {
+ 				if (req(i->arg[0], TMP(IP1))) {
+ 					fprintf(e->f,
 @@ -472,7 +474,7 @@ emitins(Ins *i, E *e)
  		|| c->bits.i)
  			die("invalid call argument");

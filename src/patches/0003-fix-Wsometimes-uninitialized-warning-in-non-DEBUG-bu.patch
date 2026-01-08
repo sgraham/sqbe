@@ -1,4 +1,4 @@
-From a183aecb19afc7f466b328c597f839777eb5a3fb Mon Sep 17 00:00:00 2001
+From fa36b1ac0dde4f0e6199f93784ed73f29c5f40e0 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Thu, 9 Jan 2025 15:28:55 -0800
 Subject: [PATCH 03/14] fix -Wsometimes-uninitialized warning in non DEBUG
