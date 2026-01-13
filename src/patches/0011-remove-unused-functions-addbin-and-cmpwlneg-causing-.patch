@@ -1,29 +1,21 @@
-From 4e2f4a19caa1dd2c5b4f3b0c4f7cd53da82ed426 Mon Sep 17 00:00:00 2001
+From f9ce65304d156d4797ef3da9c4610da3567dda4a Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:53:27 -0700
-Subject: [PATCH 11/14] remove unused functions addbin and cmpwlneg causing
+Subject: [PATCH 11/15] remove unused functions addbin and cmpwlneg causing
  warnings
 
 also remove sort of (?) unused var in gvndup
 ---
- all.h  |  2 --
+ all.h  |  1 -
  gvn.c  |  4 ++--
- util.c | 19 -------------------
- 3 files changed, 2 insertions(+), 23 deletions(-)
+ util.c | 10 ----------
+ 3 files changed, 2 insertions(+), 13 deletions(-)
 
 diff --git a/all.h b/all.h
-index 7f951e4..210833d 100644
+index e89c313..950fafd 100644
 --- a/all.h
 +++ b/all.h
-@@ -640,7 +640,6 @@ void *vnew(ulong, size_t, Pool);
- void vfree(void *);
- void vgrow(void *, ulong);
- void addins(Ins **, uint *, Ins *);
--void addbins(Blk *, Ins **, uint *);
- void strf(char[NString], char *, ...);
- uint32_t intern(char *);
- char *str(uint32_t);
-@@ -654,7 +653,6 @@ void idup(Blk *, Ins *, ulong);
+@@ -659,7 +659,6 @@ void idup(Blk *, Ins *, ulong);
  Ins *icpy(Ins *, Ins *, ulong);
  int cmpop(int);
  int cmpneg(int);
@@ -32,7 +24,7 @@ index 7f951e4..210833d 100644
  int phicls(int, Tmp *);
  uint phiargn(Phi *, Blk *);
 diff --git a/gvn.c b/gvn.c
-index 67e50c7..e82b321 100644
+index be2994a..8cd52b4 100644
 --- a/gvn.c
 +++ b/gvn.c
 @@ -41,11 +41,11 @@ static uint gvntbln;
@@ -50,26 +42,10 @@ index 67e50c7..e82b321 100644
  		if (!ii)
  			break;
 diff --git a/util.c b/util.c
-index 43d4472..493da61 100644
+index e1e2dcb..d0495fe 100644
 --- a/util.c
 +++ b/util.c
-@@ -153,15 +153,6 @@ addins(Ins **pvins, uint *pnins, Ins *i)
- 	(*pvins)[(*pnins)-1] = *i;
- }
- 
--void
--addbins(Blk *b, Ins **pvins, uint *pnins)
--{
--	Ins *i;
--
--	for (i=b->ins; i<&b->ins[b->nins]; i++)
--		addins(pvins, pnins, i);
--}
--
- void
- strf(char str[NString], char *s, ...)
- {
-@@ -357,16 +348,6 @@ cmpop(int c)
+@@ -368,16 +368,6 @@ cmpop(int c)
  	return cmptab[c][1];
  }
  

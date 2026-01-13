@@ -1,12 +1,12 @@
-From 90b502b568ba04294229f8f7b47da02744b662e6 Mon Sep 17 00:00:00 2001
+From a21496f2499b2757b13e16ccff22c7de9f2c9a34 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
-Subject: [PATCH 09/14] add possibility for err to be non-fatal, only useful in
+Subject: [PATCH 09/15] add possibility for err to be non-fatal, only useful in
  library context
 
 ---
  all.h          | 10 +++++-
- amd64/isel.c   |  5 ++-
+ amd64/isel.c   |  9 ++++--
  amd64/sysv.c   |  8 +++--
  amd64/winabi.c |  5 ++-
  arm64/abi.c    |  5 +++
@@ -15,10 +15,10 @@ Subject: [PATCH 09/14] add possibility for err to be non-fatal, only useful in
  parse.c        | 83 ++++++++++++++++++++++++++------------------------
  rv64/abi.c     | 14 +++++++--
  rv64/isel.c    |  5 ++-
- 10 files changed, 95 insertions(+), 50 deletions(-)
+ 10 files changed, 98 insertions(+), 51 deletions(-)
 
 diff --git a/all.h b/all.h
-index 6232c51..4d6d5d3 100644
+index 215a375..aebb33c 100644
 --- a/all.h
 +++ b/all.h
 @@ -7,6 +7,12 @@
@@ -34,7 +34,7 @@ index 6232c51..4d6d5d3 100644
  
  typedef unsigned char uchar;
  typedef unsigned int uint;
-@@ -605,6 +611,8 @@ typedef struct GlobalContext {
+@@ -610,6 +616,8 @@ typedef struct GlobalContext {
  	// ['T'] = 0, /* types */
  	Ins *curi;
  
@@ -43,7 +43,7 @@ index 6232c51..4d6d5d3 100644
  } GlobalContext;
  
  extern GlobalContext global_context;
-@@ -686,7 +694,7 @@ void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
+@@ -691,7 +699,7 @@ void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
  void printfn(Fn *, FILE *);
  void printtyp(Typ*, FILE *);
  void printref(Ref, Fn *, FILE *);
@@ -53,10 +53,10 @@ index 6232c51..4d6d5d3 100644
  /* abi.c */
  void elimsb(Fn *);
 diff --git a/amd64/isel.c b/amd64/isel.c
-index 1ecdbdf..c2d1c27 100644
+index 4284f24..693491e 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
-@@ -339,6 +339,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -343,6 +343,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		emit(Oor, Kl, tmp[3], tmp[0], tmp[2]);
  		emit(Oshr, Kl, tmp[2], i.arg[0], tmp[1]);
  		sel(*GC(curi)++, 0, fn);
@@ -64,18 +64,30 @@ index 1ecdbdf..c2d1c27 100644
  		emit(Oshr, Kl, tmp[1], i.arg[0], getcon(63, fn));
  		fixarg(&GC(curi)->arg[0], Kl, GC(curi), fn);
  		emit(Oand, Kl, tmp[0], i.arg[0], getcon(1, fn));
-@@ -826,8 +827,10 @@ amd64_isel(Fn *fn)
- 		memset(num, 0, n * sizeof num[0]);
- 		anumber(num, b, fn->con);
- 		seljmp(b, fn);
--		for (i=&b->ins[b->nins]; i!=b->ins;)
-+		for (i=&b->ins[b->nins]; i!=b->ins;) {
- 			sel(*--i, num, fn);
-+      ret_on_err();
-+    }
+@@ -572,6 +573,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
+ 	for (isel1=i; isel0<isel1; --isel1) {
+ 		isel1->op = Oxsel+c;
+ 		sel(*isel1, tn, fn);
++    ret_on_err_i();
+ 	}
+ 	assert(!gencmp || !gencpy);
+ 	if (gencmp)
+@@ -918,10 +920,13 @@ amd64_isel(Fn *fn)
+ 		for (i=&b->ins[b->nins]; i!=b->ins;) {
+ 			--i;
+ 			assert(i->op != Osel0);
+-			if (i->op == Osel1)
++			if (i->op == Osel1) {
+ 				i = selsel(fn, b, i, num);
+-			else
++        ret_on_err();
++      } else {
+ 				sel(*i, num, fn);
++        ret_on_err();
++      }
+ 		}
  		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
- 	qbe_free(num);
 diff --git a/amd64/sysv.c b/amd64/sysv.c
 index cce3e01..0040466 100644
 --- a/amd64/sysv.c
@@ -229,7 +241,7 @@ index 07f7051..362db4b 100644
  		c.bits.i &= 0xffffffff;
  	r = newcon(&c, fn);
 diff --git a/main.c b/main.c
-index 7253656..971b35a 100644
+index f450793..950e2db 100644
 --- a/main.c
 +++ b/main.c
 @@ -38,6 +38,7 @@ data(Dat *d)
@@ -260,7 +272,7 @@ index 7253656..971b35a 100644
 +  ret_on_err();
  	gvn(fn);
  	fillcfg(fn);
- 	filluse(fn);
+ 	simplcfg(fn);
 diff --git a/parse.c b/parse.c
 index 38b5929..ad22742 100644
 --- a/parse.c

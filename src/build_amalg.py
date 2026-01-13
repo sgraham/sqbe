@@ -24,6 +24,7 @@ SQBE_C_FILES = [
     "fold.c",
     "gcm.c",
     "gvn.c",
+    "ifopt.c",
     "live.c",
     "load.c",
     "main.c",
@@ -590,7 +591,7 @@ def main():
                 # regcounts, etc. before the decl, so just hardcode and rely on
                 # the MAKESUREs to make sure they match.
                 contents = contents.replace(
-                    "extern Amd64Op amd64_op[];", "static Amd64Op amd64_op[138];"
+                    "extern Amd64Op amd64_op[];", "static Amd64Op amd64_op[158];"
                 )
                 contents = contents.replace(
                     "extern int amd64_sysv_rsave[];", "static int amd64_sysv_rsave[25];"
@@ -613,7 +614,7 @@ def main():
                     "extern int arm64_rclob[];", "static int arm64_rclob[19];"
                 )
                 contents = contents.replace(
-                    "extern Rv64Op rv64_op[];", "static Rv64Op rv64_op[138];"
+                    "extern Rv64Op rv64_op[];", "static Rv64Op rv64_op[158];"
                 )
                 contents = contents.replace(
                     "extern int rv64_rsave[];", "static int rv64_rsave[34];"

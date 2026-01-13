@@ -1,7 +1,7 @@
-From 568d98a700a4df1f4063a77911c1329a95b235d5 Mon Sep 17 00:00:00 2001
+From 259fc7752ec44d128e1759cb31c71c1d1c271a4b Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Tue, 14 Jan 2025 16:50:50 -0800
-Subject: [PATCH 04/14] Add printtyp() and debug['T']
+Subject: [PATCH 04/15] Add printtyp() and debug['T']
 
 ---
  all.h   |  1 +
@@ -10,10 +10,10 @@ Subject: [PATCH 04/14] Add printtyp() and debug['T']
  3 files changed, 42 insertions(+)
 
 diff --git a/all.h b/all.h
-index e5124fa..d8cef38 100644
+index 9e1e633..961b4fe 100644
 --- a/all.h
 +++ b/all.h
-@@ -535,6 +535,7 @@ bshas(BSet *bs, uint elt)
+@@ -539,6 +539,7 @@ bshas(BSet *bs, uint elt)
  extern Op optab[NOp];
  void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
  void printfn(Fn *, FILE *);
@@ -22,10 +22,10 @@ index e5124fa..d8cef38 100644
  void err(char *, ...) __attribute__((noreturn));
  
 diff --git a/main.c b/main.c
-index b9069d0..37e9f00 100644
+index ed1ac94..ebde93c 100644
 --- a/main.c
 +++ b/main.c
-@@ -16,6 +16,7 @@ char debug['Z'+1] = {
+@@ -17,6 +17,7 @@ char debug['Z'+1] = {
  	['L'] = 0, /* liveness */
  	['S'] = 0, /* spilling */
  	['R'] = 0, /* reg. allocation */

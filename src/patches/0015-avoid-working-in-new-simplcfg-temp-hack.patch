@@ -1,0 +1,25 @@
+From 107fec94eef9e245b247bc20fa8dd3cd721148a4 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Tue, 13 Jan 2026 11:23:29 -0800
+Subject: [PATCH 15/15] avoid working in new simplcfg, temp hack
+
+---
+ cfg.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cfg.c b/cfg.c
+index f0f496d..1bd93ef 100644
+--- a/cfg.c
++++ b/cfg.c
+@@ -509,7 +509,7 @@ simplcfg(Fn *fn)
+ 		jmp[b->id].s2 = b->s2;
+ 		empty[b->id] = !b->phi;
+ 		for (i=b->ins; i<&b->ins[b->nins]; i++)
+-			if (i->op != Onop || i->op != Odbgloc) {
++			if (i->op != Onop && i->op != Odbgloc) {
+ 				empty[b->id] = 0;
+ 				break;
+ 			}
+-- 
+2.39.5 (Apple Git-154)
+

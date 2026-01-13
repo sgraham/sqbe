@@ -1,7 +1,7 @@
-From 38fe38a78aa45d94a2d2e0be2fae946c375db107 Mon Sep 17 00:00:00 2001
+From 377d0d9e1821b212bf25cae91d33d705ee03460a Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Sun, 12 Jan 2025 22:08:28 -0800
-Subject: [PATCH 02/14] Fix warnings from clang about unprototyped vs (void)
+Subject: [PATCH 02/15] Fix warnings from clang about unprototyped vs (void)
 
 e.g.
 
@@ -19,7 +19,7 @@ cfg.c:4:7: warning: a function declaration without a prototype is deprecated in 
  4 files changed, 12 insertions(+), 12 deletions(-)
 
 diff --git a/cfg.c b/cfg.c
-index 8047c12..5db8c13 100644
+index de142f4..6efd7b4 100644
 --- a/cfg.c
 +++ b/cfg.c
 @@ -1,7 +1,7 @@
@@ -130,7 +130,7 @@ index ab98cd6..3be4c34 100644
  	int i;
  	enum PMStat *status;
 diff --git a/util.c b/util.c
-index 3b5c09d..ad26f23 100644
+index c891c4e..17fd399 100644
 --- a/util.c
 +++ b/util.c
 @@ -90,7 +90,7 @@ alloc(size_t n)

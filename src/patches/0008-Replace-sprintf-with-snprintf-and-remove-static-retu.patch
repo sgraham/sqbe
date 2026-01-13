@@ -1,7 +1,7 @@
-From 0cd0898afdfd94903e7e58c59f54efd9b80eee15 Mon Sep 17 00:00:00 2001
+From ef90ad71a16974786b6d0a8639c9c3cf5f1a7b09 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
-Subject: [PATCH 08/14] Replace sprintf with snprintf and remove static return
+Subject: [PATCH 08/15] Replace sprintf with snprintf and remove static return
  buffers
 
 ASAN builds complain about sprintf being deprecated (at least on Mac) and it's
@@ -23,10 +23,10 @@ footgun later for multi-context/multi-thread use).
  7 files changed, 42 insertions(+), 19 deletions(-)
 
 diff --git a/amd64/emit.c b/amd64/emit.c
-index 67d16cf..11f26f6 100644
+index cde6edf..f031fdc 100644
 --- a/amd64/emit.c
 +++ b/amd64/emit.c
-@@ -204,15 +204,17 @@ emitcon(Con *con, E *e)
+@@ -214,15 +214,17 @@ emitcon(Con *con, E *e)
  	}
  }
  
@@ -49,7 +49,7 @@ index 67d16cf..11f26f6 100644
  		return rname[reg][sz];
  }
 diff --git a/amd64/isel.c b/amd64/isel.c
-index 138ebb0..1ecdbdf 100644
+index 84e1b84..4284f24 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
 @@ -92,7 +92,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
@@ -163,7 +163,7 @@ index b0b1529..38b5929 100644
  }
  
 diff --git a/rv64/emit.c b/rv64/emit.c
-index 81fb65a..ed24e7e 100644
+index 1bf3ca2..3cffea3 100644
 --- a/rv64/emit.c
 +++ b/rv64/emit.c
 @@ -235,7 +235,7 @@ loadaddr(Con *c, char *rn, FILE *f)

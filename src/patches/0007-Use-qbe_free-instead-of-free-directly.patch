@@ -1,7 +1,7 @@
-From f336444a746d2599a9aa9ee86994feb854a37101 Mon Sep 17 00:00:00 2001
+From 123537e302977da16e4eff39232669aaedf5c05b Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
-Subject: [PATCH 07/14] Use qbe_free() instead of free() directly
+Subject: [PATCH 07/15] Use qbe_free() instead of free() directly
 
 Pair emalloc() with qbe_free() rather than free() directly. This is so
 that when emalloc() is overridden in a library context, free() can also
@@ -9,7 +9,7 @@ be revectored.
 ---
  all.h        |  1 +
  amd64/isel.c |  2 +-
- cfg.c        |  2 +-
+ cfg.c        |  6 +++---
  emit.c       |  2 +-
  gvn.c        |  4 ++--
  mem.c        |  2 +-
@@ -17,13 +17,13 @@ be revectored.
  spill.c      |  2 +-
  ssa.c        |  4 ++--
  util.c       | 12 +++++++++---
- 10 files changed, 20 insertions(+), 13 deletions(-)
+ 10 files changed, 22 insertions(+), 15 deletions(-)
 
 diff --git a/all.h b/all.h
-index 0f7cc79..6232c51 100644
+index 6d6b485..215a375 100644
 --- a/all.h
 +++ b/all.h
-@@ -626,6 +626,7 @@ uint32_t hash(char *);
+@@ -631,6 +631,7 @@ uint32_t hash(char *);
  void die_(char *, char *, ...) __attribute__((noreturn));
  void *emalloc(size_t);
  void *alloc(size_t);
@@ -32,11 +32,11 @@ index 0f7cc79..6232c51 100644
  void *vnew(ulong, size_t, Pool);
  void vfree(void *);
 diff --git a/amd64/isel.c b/amd64/isel.c
-index 7317d9c..138ebb0 100644
+index 8746e2c..84e1b84 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
-@@ -830,7 +830,7 @@ amd64_isel(Fn *fn)
- 			sel(*--i, num, fn);
+@@ -925,7 +925,7 @@ amd64_isel(Fn *fn)
+ 		}
  		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
 -	free(num);
@@ -45,10 +45,10 @@ index 7317d9c..138ebb0 100644
  	if (GC(debug)['I']) {
  		fprintf(stderr, "\n> After instruction selection:\n");
 diff --git a/cfg.c b/cfg.c
-index ae931b3..2e8af68 100644
+index 690c871..f0f496d 100644
 --- a/cfg.c
 +++ b/cfg.c
-@@ -356,7 +356,7 @@ simpljmp(Fn *fn)
+@@ -359,7 +359,7 @@ simpljmp(Fn *fn)
  		}
  	}
  	*p = ret;
@@ -57,6 +57,17 @@ index ae931b3..2e8af68 100644
  }
  
  static int
+@@ -558,8 +558,8 @@ simplcfg(Fn *fn)
+ 		}
+ 
+ 	fillcfg(fn);
+-	free(empty);
+-	free(jmp);
++	qbe_free(empty);
++	qbe_free(jmp);
+ 
+ 	if (GC(debug)['C']) {
+ 		fprintf(stderr, "\n> After CFG simplification:\n");
 diff --git a/emit.c b/emit.c
 index 0d0d7ff..d02d4b4 100644
 --- a/emit.c
@@ -71,10 +82,10 @@ index 0d0d7ff..d02d4b4 100644
  }
  
 diff --git a/gvn.c b/gvn.c
-index d599724..67e50c7 100644
+index 18cd630..be2994a 100644
 --- a/gvn.c
 +++ b/gvn.c
-@@ -448,7 +448,7 @@ rebuildcfg(Fn *fn)
+@@ -452,7 +452,7 @@ rebuildcfg(Fn *fn)
  			if (gvndup(i, 0) == i)
  				addins(&s->ins, &s->nins, i);
  	}
@@ -83,7 +94,7 @@ index d599724..67e50c7 100644
  }
  
  /* requires rpo pred ssa use
-@@ -492,7 +492,7 @@ gvn(Fn *fn)
+@@ -496,7 +496,7 @@ gvn(Fn *fn)
  		dedupjmp(fn, b);
  	}
  	rebuildcfg(fn);
@@ -119,7 +130,7 @@ index e93763d..b0b1529 100644
  		G(tmph) = emalloc(G(tmphcap) * sizeof G(tmph)[0]);
  		for (t=Tmp0; t<G(curf)->ntmp; t++) {
 diff --git a/spill.c b/spill.c
-index 5d7a22e..bceef96 100644
+index 9b0c24e..07d1fa4 100644
 --- a/spill.c
 +++ b/spill.c
 @@ -164,7 +164,7 @@ limit(BSet *b, int k, BSet *f)
@@ -154,7 +165,7 @@ index 90f9807..0c38681 100644
  		fprintf(stderr, "\n> After SSA construction:\n");
  		printfn(fn, stderr);
 diff --git a/util.c b/util.c
-index 5313593..43d4472 100644
+index bc2cf21..e1e2dcb 100644
 --- a/util.c
 +++ b/util.c
 @@ -57,6 +57,12 @@ emalloc(size_t n)

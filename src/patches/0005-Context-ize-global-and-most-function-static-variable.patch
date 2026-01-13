@@ -1,7 +1,7 @@
-From 547b872e4889d5b83b8cdaa52ff4a64f93bfdde6 Mon Sep 17 00:00:00 2001
+From 1f6e05ac703d712608b6ddcb507857a2610ba07f Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
-Subject: [PATCH 05/14] Context-ize global and (most) function-static variables
+Subject: [PATCH 05/15] Context-ize global and (most) function-static variables
 
 Moves all mutable globals into a single GlobalContext struct.
 
@@ -15,7 +15,7 @@ In the future, it might help enable multithreaded compilation too
 (though currently, there are still function-static buffers that have to
 be maintained as-is because they're used to return created strings.)
 ---
- all.h          | 158 +++++++++++++++++-
+ all.h          | 159 +++++++++++++++++-
  amd64/emit.c   |  35 ++--
  amd64/isel.c   |  36 ++--
  amd64/sysv.c   |  28 ++--
@@ -23,15 +23,16 @@ be maintained as-is because they're used to return created strings.)
  arm64/abi.c    |  42 ++---
  arm64/emit.c   |  31 ++--
  arm64/isel.c   |  20 +--
- cfg.c          |   5 +-
+ cfg.c          |   9 +-
  copy.c         |  10 +-
  emit.c         |  77 ++++-----
  fold.c         |   1 +
  gcm.c          |   6 +-
  gvn.c          |   8 +-
+ ifopt.c        |   6 +-
  live.c         |  18 +-
  load.c         |  70 ++++----
- main.c         |  73 ++++-----
+ main.c         |  76 ++++-----
  mem.c          |   6 +-
  parse.c        | 434 +++++++++++++++++++++++--------------------------
  rega.c         | 201 +++++++++++------------
@@ -42,10 +43,10 @@ be maintained as-is because they're used to return created strings.)
  spill.c        | 159 +++++++++---------
  ssa.c          |  25 ++-
  util.c         |  65 +++-----
- 27 files changed, 836 insertions(+), 759 deletions(-)
+ 28 files changed, 843 insertions(+), 766 deletions(-)
 
 diff --git a/all.h b/all.h
-index d8cef38..a0aff79 100644
+index 961b4fe..95df2a7 100644
 --- a/all.h
 +++ b/all.h
 @@ -33,6 +33,12 @@ typedef struct Dat Dat;
@@ -61,7 +62,7 @@ index d8cef38..a0aff79 100644
  enum {
  	NString = 80,
  	NIns    = 1 << 20,
-@@ -462,9 +468,153 @@ struct Dat {
+@@ -466,9 +472,154 @@ struct Dat {
  	char isstr;
  };
  
@@ -197,6 +198,7 @@ index d8cef38..a0aff79 100644
 +	// ['N'] = 0, /* ssa construction */
 +	// ['C'] = 0, /* copy elimination */
 +	// ['F'] = 0, /* constant folding */
++	// ['K'] = 0, /* if-conversion */
 +	// ['A'] = 0, /* abi lowering */
 +	// ['I'] = 0, /* instruction selection */
 +	// ['L'] = 0, /* liveness */
@@ -218,7 +220,7 @@ index d8cef38..a0aff79 100644
  
  /* util.c */
  typedef enum {
-@@ -472,8 +622,6 @@ typedef enum {
+@@ -476,8 +627,6 @@ typedef enum {
  	PFn, /* discarded after processing the function */
  } Pool;
  
@@ -228,7 +230,7 @@ index d8cef38..a0aff79 100644
  void die_(char *, char *, ...) __attribute__((noreturn));
  void *emalloc(size_t);
 diff --git a/amd64/emit.c b/amd64/emit.c
-index df81e52..5283047 100644
+index 4a3bb99..f206dd6 100644
 --- a/amd64/emit.c
 +++ b/amd64/emit.c
 @@ -1,5 +1,6 @@
@@ -238,7 +240,7 @@ index df81e52..5283047 100644
  
  typedef struct E E;
  
-@@ -168,7 +169,7 @@ slot(Ref r, E *e)
+@@ -178,7 +179,7 @@ slot(Ref r, E *e)
  	else if (e->fp == RSP)
  		return 4*s + e->nclob*8;
  	else if (e->fn->vararg) {
@@ -247,7 +249,7 @@ index df81e52..5283047 100644
  			return -4 * (e->fn->slot - s);
  		else
  			return -176 + -4 * (e->fn->slot - s);
-@@ -184,9 +185,9 @@ emitcon(Con *con, E *e)
+@@ -194,9 +195,9 @@ emitcon(Con *con, E *e)
  	switch (con->type) {
  	case CAddr:
  		l = str(con->sym.id);
@@ -259,7 +261,7 @@ index df81e52..5283047 100644
  				fprintf(e->f, "%s%s@TLVP", p, l);
  			else
  				fprintf(e->f, "%%fs:%s%s@tpoff", p, l);
-@@ -370,7 +371,7 @@ Next:
+@@ -380,7 +381,7 @@ Next:
  			off = e->fn->con[ref.val];
  			emitcon(&off, e);
  			if (off.type == CAddr)
@@ -268,7 +270,7 @@ index df81e52..5283047 100644
  				fprintf(e->f, "(%%rip)");
  			break;
  		case RTmp:
-@@ -460,7 +461,7 @@ emitins(Ins i, E *e)
+@@ -472,7 +473,7 @@ emitins(Ins i, E *e)
  			fprintf(e->f,
  				"\txorp%c %sfp%d(%%rip), %%%s\n",
  				"xxsd"[i.cls],
@@ -277,7 +279,7 @@ index df81e52..5283047 100644
  				stashbits(negmask[i.cls], 16),
  				regtoa(i.to.val, SLong)
  			);
-@@ -520,7 +521,7 @@ emitins(Ins i, E *e)
+@@ -532,7 +533,7 @@ emitins(Ins i, E *e)
  		emitf("mov%k %0, %=", &i, e);
  		break;
  	case Oaddr:
@@ -286,7 +288,7 @@ index df81e52..5283047 100644
  		&& rtype(i.arg[0]) == RCon
  		&& e->fn->con[i.arg[0].val].sym.type == SThr) {
  			/* derive the symbol address from the TCB
-@@ -530,7 +531,7 @@ emitins(Ins i, E *e)
+@@ -542,7 +543,7 @@ emitins(Ins i, E *e)
  			sym = str(con->sym.id);
  			emitf("movq %%fs:0, %L=", &i, e);
  			fprintf(e->f, "\tleaq %s%s@tpoff",
@@ -295,7 +297,7 @@ index df81e52..5283047 100644
  			if (con->bits.i)
  				fprintf(e->f, "%+"PRId64,
  					con->bits.i);
-@@ -611,7 +612,6 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+@@ -632,7 +633,6 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
  		CMP(X)
  	#undef X
  	};
@@ -303,7 +305,7 @@ index df81e52..5283047 100644
  	Blk *b, *s;
  	Ins *i, itmp;
  	int *r, c, o, n, lbl;
-@@ -650,7 +650,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+@@ -671,7 +671,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
  					break;
  			if (p != b->npred)
  				fprintf(f, ".p2align 4\n");
@@ -312,7 +314,7 @@ index df81e52..5283047 100644
  		}
  		for (i=b->ins; i!=&b->ins[b->nins]; i++)
  			emitins(*i, e);
-@@ -682,7 +682,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+@@ -703,7 +703,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
  		Jmp:
  			if (b->s1 != b->link)
  				fprintf(f, "\tjmp %sbb%d\n",
@@ -321,7 +323,7 @@ index df81e52..5283047 100644
  			else
  				lbl = 0;
  			break;
-@@ -696,14 +696,14 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+@@ -717,14 +717,14 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
  				} else
  					c = cmpneg(c);
  				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
@@ -339,7 +341,7 @@ index df81e52..5283047 100644
  		elf_emitfnfin(fn->name, f);
  }
  
-@@ -736,7 +736,6 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -757,7 +757,6 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  		CMP(X)
  	#undef X
  	};
@@ -347,7 +349,7 @@ index df81e52..5283047 100644
  	Blk *b, *s;
  	Ins *i, itmp;
  	int *r, c, lbl;
-@@ -768,7 +767,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -789,7 +788,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  
  	for (lbl=0, b=fn->start; b; b=b->link) {
  		if (lbl || b->npred > 1)
@@ -356,7 +358,7 @@ index df81e52..5283047 100644
  		for (i=b->ins; i!=&b->ins[b->nins]; i++)
  			emitins(*i, e);
  		lbl = 1;
-@@ -799,7 +798,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -820,7 +819,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  		Jmp:
  			if (b->s1 != b->link)
  				fprintf(f, "\tjmp %sbb%d\n",
@@ -365,7 +367,7 @@ index df81e52..5283047 100644
  			else
  				lbl = 0;
  			break;
-@@ -813,11 +812,11 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+@@ -834,11 +833,11 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
  				} else
  					c = cmpneg(c);
  				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
@@ -380,7 +382,7 @@ index df81e52..5283047 100644
 +	G(amd64_winabi_emitfn_id0) += fn->nblk;
  }
 diff --git a/amd64/isel.c b/amd64/isel.c
-index 4aff0d6..4896fdf 100644
+index 73e0860..3d26e25 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
 @@ -92,7 +92,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
@@ -401,7 +403,7 @@ index 4aff0d6..4896fdf 100644
  	&& c->type == CAddr && c->sym.type == SThr) {
  		r1 = newtmp("isel", Kl, fn);
  		if (c->bits.i) {
-@@ -227,12 +227,12 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
+@@ -231,12 +231,12 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
  		arg[0] = r;
  	}
  	emit(Oxcmp, k, R, arg[1], arg[0]);
@@ -416,7 +418,7 @@ index 4aff0d6..4896fdf 100644
  	}
  	fixarg(&icmp->arg[0], k, icmp, fn);
  	fixarg(&icmp->arg[1], k, icmp, fn);
-@@ -252,7 +252,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -256,7 +256,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		chuse(i.arg[1], -1, fn);
  		return;
  	}
@@ -425,7 +427,7 @@ index 4aff0d6..4896fdf 100644
  	k = i.cls;
  	switch (i.op) {
  	case Odiv:
-@@ -285,7 +285,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -289,7 +289,7 @@ sel(Ins i, Num *tn, Fn *fn)
  			emit(Ocopy, k, TMP(RDX), CON_Z, R);
  		}
  		emit(Ocopy, k, TMP(RAX), i.arg[0], R);
@@ -434,7 +436,7 @@ index 4aff0d6..4896fdf 100644
  		if (rtype(i.arg[1]) == RCon)
  			emit(Ocopy, k, r0, i.arg[1], R);
  		break;
-@@ -301,7 +301,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -305,7 +305,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		i.arg[1] = TMP(RCX);
  		emit(Ocopy, Kw, R, TMP(RCX), R);
  		emiti(i);
@@ -443,7 +445,7 @@ index 4aff0d6..4896fdf 100644
  		emit(Ocopy, Kw, TMP(RCX), r0, R);
  		fixarg(&i1->arg[0], argcls(&i, 0), i1, fn);
  		break;
-@@ -309,7 +309,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -313,7 +313,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		r0 = newtmp("utof", Kl, fn);
  		emit(Osltof, k, i.to, r0, R);
  		emit(Oextuw, Kl, r0, i.arg[0], R);
@@ -452,7 +454,7 @@ index 4aff0d6..4896fdf 100644
  		break;
  	case Oultof:
  		/* %mask =l and %arg.0, 1
-@@ -338,11 +338,11 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -342,11 +342,11 @@ sel(Ins i, Num *tn, Fn *fn)
  		emit(Osltof, k, r0, tmp[3], R);
  		emit(Oor, Kl, tmp[3], tmp[0], tmp[2]);
  		emit(Oshr, Kl, tmp[2], i.arg[0], tmp[1]);
@@ -467,7 +469,7 @@ index 4aff0d6..4896fdf 100644
  		break;
  	case Ostoui:
  		i.op = Ostosi;
-@@ -380,12 +380,12 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -384,12 +384,12 @@ sel(Ins i, Num *tn, Fn *fn)
  		emit(Oand, Kl, tmp[3], tmp[2], tmp[1]);
  		emit(i.op, Kl, tmp[2], r0, R);
  		emit(Oadd, kc, r0, tmp[4], i.arg[0]);
@@ -482,8 +484,8 @@ index 4aff0d6..4896fdf 100644
  		break;
  	case Onop:
  		break;
-@@ -428,7 +428,7 @@ sel(Ins i, Num *tn, Fn *fn)
- 	case_OExt:
+@@ -433,7 +433,7 @@ sel(Ins i, Num *tn, Fn *fn)
+ 	case_Oext:
  Emit:
  		emiti(i);
 -		i1 = curi; /* fixarg() can change curi */
@@ -491,7 +493,7 @@ index 4aff0d6..4896fdf 100644
  		fixarg(&i1->arg[0], argcls(&i, 0), i1, fn);
  		fixarg(&i1->arg[1], argcls(&i, 1), i1, fn);
  		break;
-@@ -473,7 +473,7 @@ Emit:
+@@ -480,7 +480,7 @@ Emit:
  		die("unknown instruction %s", optab[i.op].name);
  	}
  
@@ -500,7 +502,7 @@ index 4aff0d6..4896fdf 100644
  		assert(rslot(i0->arg[0], fn) == -1);
  		assert(rslot(i0->arg[1], fn) == -1);
  	}
-@@ -816,7 +816,7 @@ amd64_isel(Fn *fn)
+@@ -905,7 +905,7 @@ amd64_isel(Fn *fn)
  	n = fn->ntmp;
  	num = emalloc(n * sizeof num[0]);
  	for (b=fn->start; b; b=b->link) {
@@ -509,10 +511,10 @@ index 4aff0d6..4896fdf 100644
  		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
  			for (p=(*sb)->phi; p; p=p->link) {
  				for (a=0; p->blk[a] != b; a++)
-@@ -828,11 +828,11 @@ amd64_isel(Fn *fn)
- 		seljmp(b, fn);
- 		for (i=&b->ins[b->nins]; i!=b->ins;)
- 			sel(*--i, num, fn);
+@@ -923,11 +923,11 @@ amd64_isel(Fn *fn)
+ 			else
+ 				sel(*i, num, fn);
+ 		}
 -		idup(b, curi, &insb[NIns]-curi);
 +		idup(b, GC(curi), &GC(insb)[NIns]-GC(curi));
  	}
@@ -1092,7 +1094,7 @@ index ff3b30b..1ef3388 100644
  		printfn(fn, stderr);
  	}
 diff --git a/cfg.c b/cfg.c
-index 5db8c13..ae931b3 100644
+index 6efd7b4..690c871 100644
 --- a/cfg.c
 +++ b/cfg.c
 @@ -1,13 +1,14 @@
@@ -1112,6 +1114,24 @@ index 5db8c13..ae931b3 100644
  	b->ins = vnew(0, sizeof b->ins[0], PFn);
  	b->pred = vnew(0, sizeof b->pred[0], PFn);
  	return b;
+@@ -481,7 +482,7 @@ simplcfg(Fn *fn)
+ 	int *empty, done;
+ 	uint n;
+ 
+-	if (debug['C']) {
++	if (GC(debug)['C']) {
+ 		fprintf(stderr, "\n> Before CFG simplification:\n");
+ 		printfn(fn, stderr);
+ 	}
+@@ -560,7 +561,7 @@ simplcfg(Fn *fn)
+ 	free(empty);
+ 	free(jmp);
+ 
+-	if (debug['C']) {
++	if (GC(debug)['C']) {
+ 		fprintf(stderr, "\n> After CFG simplification:\n");
+ 		printfn(fn, stderr);
+ 	}
 diff --git a/copy.c b/copy.c
 index 43b9490..be0fe10 100644
 --- a/copy.c
@@ -1398,7 +1418,7 @@ index cef1ddf..0aa5596 100644
  		printfn(fn, stderr);
  	}
 diff --git a/gvn.c b/gvn.c
-index 1db5bbc..0aef3f9 100644
+index 92ee5eb..f7eb858 100644
 --- a/gvn.c
 +++ b/gvn.c
 @@ -1,7 +1,5 @@
@@ -1409,7 +1429,7 @@ index 1db5bbc..0aef3f9 100644
  static inline uint
  mix(uint x0, uint x1)
  {
-@@ -465,8 +463,8 @@ gvn(Fn *fn)
+@@ -469,8 +467,8 @@ gvn(Fn *fn)
  	Ins *i;
  	uint n, nins;
  
@@ -1420,13 +1440,42 @@ index 1db5bbc..0aef3f9 100644
  
  	/* copy.c uses the visit bit */
  	for (b=fn->start; b; b=b->link)
-@@ -497,7 +495,7 @@ gvn(Fn *fn)
+@@ -501,7 +499,7 @@ gvn(Fn *fn)
  	free(gvntbl);
  	gvntbl = 0;
  
 -	if (debug['G']) {
 +	if (GC(debug)['G']) {
  		fprintf(stderr, "\n> After GVN:\n");
+ 		printfn(fn, stderr);
+ 	}
+diff --git a/ifopt.c b/ifopt.c
+index 3e45f52..9c214db 100644
+--- a/ifopt.c
++++ b/ifopt.c
+@@ -100,13 +100,13 @@ ifconvert(Fn *fn)
+ {
+ 	Blk *ifb, *thenb, *elseb, *joinb;
+ 
+-	if (debug['K'])
++	if (GC(debug)['K'])
+ 		fputs("\n> If-conversion:\n", stderr);
+ 
+ 	for (ifb=fn->start; ifb; ifb=ifb->link)
+ 		if (ifgraph(ifb, &thenb, &elseb, &joinb))
+ 		if (okgraph(ifb, thenb, elseb, joinb)) {
+-			if (debug['K'])
++			if (GC(debug)['K'])
+ 				fprintf(stderr,
+ 					"    @%s -> @%s, @%s -> @%s\n",
+ 					ifb->name, thenb->name, elseb->name,
+@@ -114,7 +114,7 @@ ifconvert(Fn *fn)
+ 			convert(ifb, thenb, elseb, joinb);
+ 		}
+ 
+-	if (debug['K']) {
++	if (GC(debug)['K']) {
+ 		fprintf(stderr, "\n> After if-conversion:\n");
  		printfn(fn, stderr);
  	}
 diff --git a/live.c b/live.c
@@ -1697,10 +1746,10 @@ index bac382c..b6e0dbe 100644
  		printfn(fn, stderr);
  	}
 diff --git a/main.c b/main.c
-index 37e9f00..7253656 100644
+index ebde93c..f450793 100644
 --- a/main.c
 +++ b/main.c
-@@ -3,21 +3,17 @@
+@@ -3,22 +3,17 @@
  #include <ctype.h>
  #include <getopt.h>
  
@@ -1713,6 +1762,7 @@ index 37e9f00..7253656 100644
 -	['N'] = 0, /* ssa construction */
 -	['C'] = 0, /* copy elimination */
 -	['F'] = 0, /* constant folding */
+-	['K'] = 0, /* if-conversion */
 -	['A'] = 0, /* abi lowering */
 -	['I'] = 0, /* instruction selection */
 -	['L'] = 0, /* liveness */
@@ -1732,7 +1782,7 @@ index 37e9f00..7253656 100644
  
  extern Target T_amd64_sysv;
  extern Target T_amd64_apple;
-@@ -35,17 +31,15 @@ static Target *tlist[] = {
+@@ -36,17 +31,15 @@ static Target *tlist[] = {
  	&T_rv64,
  	0
  };
@@ -1753,7 +1803,7 @@ index 37e9f00..7253656 100644
  		freeall();
  	}
  }
-@@ -55,13 +49,13 @@ func(Fn *fn)
+@@ -56,13 +49,13 @@ func(Fn *fn)
  {
  	uint n;
  
@@ -1770,10 +1820,18 @@ index 37e9f00..7253656 100644
  	fillcfg(fn);
  	filluse(fn);
  	promote(fn);
-@@ -84,11 +78,12 @@ func(Fn *fn)
+@@ -86,18 +79,19 @@ func(Fn *fn)
  	gcm(fn);
  	filluse(fn);
  	ssacheck(fn);
+-	if (T.cansel) {
++	if (GC(T).cansel) {
+ 		ifconvert(fn);
+ 		fillcfg(fn);
+ 		filluse(fn);
+ 		filldom(fn);
+ 		ssacheck(fn);
+ 	}
 -	T.abi1(fn);
 +	GC(T).abi1(fn);
  	simpl(fn);
@@ -1785,7 +1843,7 @@ index 37e9f00..7253656 100644
  	fillcfg(fn);
  	filllive(fn);
  	fillloop(fn);
-@@ -105,9 +100,9 @@ func(Fn *fn)
+@@ -114,9 +108,9 @@ func(Fn *fn)
  			break;
  		} else
  			fn->rpo[n]->link = fn->rpo[n+1];
@@ -1798,7 +1856,7 @@ index 37e9f00..7253656 100644
  	} else
  		fprintf(stderr, "\n");
  	freeall();
-@@ -116,7 +111,7 @@ func(Fn *fn)
+@@ -125,7 +119,7 @@ func(Fn *fn)
  static void
  dbgfile(char *fn)
  {
@@ -1807,7 +1865,7 @@ index 37e9f00..7253656 100644
  }
  
  int
-@@ -127,21 +122,23 @@ main(int ac, char *av[])
+@@ -136,21 +130,23 @@ main(int ac, char *av[])
  	char *f, *sep;
  	int c;
  
@@ -1837,7 +1895,7 @@ index 37e9f00..7253656 100644
  					fprintf(stderr, "cannot open '%s'\n", optarg);
  					exit(1);
  				}
-@@ -149,7 +146,7 @@ main(int ac, char *av[])
+@@ -158,7 +154,7 @@ main(int ac, char *av[])
  			break;
  		case 't':
  			if (strcmp(optarg, "?") == 0) {
@@ -1846,7 +1904,7 @@ index 37e9f00..7253656 100644
  				exit(0);
  			}
  			for (t=tlist;; t++) {
-@@ -158,7 +155,7 @@ main(int ac, char *av[])
+@@ -167,7 +163,7 @@ main(int ac, char *av[])
  					exit(1);
  				}
  				if (strcmp(optarg, (*t)->name) == 0) {
@@ -1855,7 +1913,7 @@ index 37e9f00..7253656 100644
  					break;
  				}
  			}
-@@ -197,8 +194,8 @@ main(int ac, char *av[])
+@@ -206,8 +202,8 @@ main(int ac, char *av[])
  		fclose(inf);
  	} while (++optind < ac);
  
@@ -3432,7 +3490,7 @@ index 1c51bfc..a4c8fe7 100644
  		printfn(fn, stderr);
  	}
 diff --git a/rv64/emit.c b/rv64/emit.c
-index 39b55ea..2eec69e 100644
+index c1f29ac..e53d057 100644
 --- a/rv64/emit.c
 +++ b/rv64/emit.c
 @@ -1,5 +1,7 @@
@@ -3450,7 +3508,7 @@ index 39b55ea..2eec69e 100644
 -	static int id0;
  	int lbl, neg, off, frame, *pr, r;
  	Blk *b, *s;
- 	Ins *i;
+ 	Ins *i, ii;
 @@ -494,7 +495,7 @@ rv64_emitfn(Fn *fn, FILE *f)
  
  	for (lbl=0, b=fn->start; b; b=b->link) {
@@ -3469,7 +3527,7 @@ index 39b55ea..2eec69e 100644
  			else
  				lbl = 0;
  			break;
-@@ -554,11 +555,11 @@ rv64_emitfn(Fn *fn, FILE *f)
+@@ -559,11 +560,11 @@ rv64_emitfn(Fn *fn, FILE *f)
  				"\tb%sz %s, .L%d\n",
  				neg ? "ne" : "eq",
  				rname[b->jmp.arg.val],
@@ -3612,7 +3670,7 @@ index 3774f29..e91c9d2 100644
  	}
  }
 diff --git a/spill.c b/spill.c
-index 67c6540..c545fe9 100644
+index 4fb7a29..d8a8044 100644
 --- a/spill.c
 +++ b/spill.c
 @@ -1,5 +1,7 @@
@@ -3909,34 +3967,30 @@ index 67c6540..c545fe9 100644
  				bscopy(w, u);
  				bsinter(u, hd->gen);
  				bsdiff(w, hd->gen);
-@@ -404,7 +397,7 @@ spill(Fn *fn)
+@@ -404,11 +397,11 @@ spill(Fn *fn)
  		} else {
  			bscopy(v, b->out);
  			if (rtype(b->jmp.arg) == RCall)
 -				v->t[0] |= T.retregs(b->jmp.arg, 0);
 +				v->t[0] |= GC(T).retregs(b->jmp.arg, 0);
  		}
- 		for (t=Tmp0; bsiter(b->out, &t); t++)
- 			if (!bshas(v, t))
-@@ -414,7 +407,7 @@ spill(Fn *fn)
- 		/* 2. process the block instructions */
  		if (rtype(b->jmp.arg) == RTmp) {
  			t = b->jmp.arg.val;
 -			assert(KBASE(tmp[t].cls) == 0);
 +			assert(KBASE(G(tmp)[t].cls) == 0);
- 			lvarg[0] = bshas(v, t);
  			bsset(v, t);
- 			bscopy(u, v);
-@@ -426,7 +419,7 @@ spill(Fn *fn)
- 			}
- 			reloads(u, v);
- 		}
+ 			limit2(v, 0, 0, NULL);
+ 			if (!bshas(v, t))
+@@ -420,7 +413,7 @@ spill(Fn *fn)
+ 		bscopy(b->out, v);
+ 
+ 		/* 2. process the block instructions */
 -		curi = &insb[NIns];
 +		GC(curi) = &GC(insb)[NIns];
  		for (i=&b->ins[b->nins]; i!=b->ins;) {
  			i--;
  			if (regcpy(i)) {
-@@ -447,7 +440,7 @@ spill(Fn *fn)
+@@ -441,7 +434,7 @@ spill(Fn *fn)
  					bsset(w, t);
  				}
  			}
@@ -3945,7 +3999,7 @@ index 67c6540..c545fe9 100644
  			for (n=0; n<2; n++)
  				if (rtype(i->arg[n]) == RMem)
  					j--;
-@@ -490,7 +483,7 @@ spill(Fn *fn)
+@@ -484,7 +477,7 @@ spill(Fn *fn)
  			reloads(u, v);
  			if (!req(i->to, R)) {
  				t = i->to.val;
@@ -3954,7 +4008,7 @@ index 67c6540..c545fe9 100644
  				if (t >= Tmp0)
  					/* in case i->to was a
  					 * dead temporary */
-@@ -502,30 +495,30 @@ spill(Fn *fn)
+@@ -496,30 +489,30 @@ spill(Fn *fn)
  				sethint(v, r);
  		}
  		if (b == fn->start)
@@ -4070,7 +4124,7 @@ index 89cde44..4c0a992 100644
  		printfn(fn, stderr);
  	}
 diff --git a/util.c b/util.c
-index ad26f23..68181ff 100644
+index 17fd399..5866be9 100644
 --- a/util.c
 +++ b/util.c
 @@ -1,9 +1,10 @@
@@ -4195,7 +4249,7 @@ index ad26f23..68181ff 100644
  }
  
  int
-@@ -301,9 +285,9 @@ argcls(Ins *i, int n)
+@@ -312,9 +296,9 @@ argcls(Ins *i, int n)
  void
  emit(int op, int k, Ref to, Ref arg0, Ref arg1)
  {
@@ -4207,7 +4261,7 @@ index ad26f23..68181ff 100644
  		.op = op, .cls = k,
  		.to = to, .arg = {arg0, arg1}
  	};
-@@ -432,14 +416,13 @@ phiarg(Phi *p, Blk *b)
+@@ -443,14 +427,13 @@ phiarg(Phi *p, Blk *b)
  Ref
  newtmp(char *prfx, int k,  Fn *fn)
  {

@@ -1,7 +1,7 @@
-From d6cdc9b4bf0bf70bb77a6f865a3d18fd48c4f05b Mon Sep 17 00:00:00 2001
+From e2d9b4bcd94ba770f47c34b86f98c4a13776d41e Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Fri, 7 Feb 2025 17:03:52 -0800
-Subject: [PATCH 01/14] Implementation of Windows amd64_win target
+Subject: [PATCH 01/15] Implementation of Windows amd64_win target
 
 This is an implementation of the Windows ABI. It supports most features
 (struct passing/returning, varargs, env). TLS is not yet supported.
@@ -40,19 +40,19 @@ Windows.
  create mode 100644 doc/native_win.txt
 
 diff --git a/Makefile b/Makefile
-index 7acaf35..5c25950 100644
+index 79d9a99..c3bbefc 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -6,7 +6,7 @@ BINDIR = $(PREFIX)/bin
- 
+@@ -7,7 +7,7 @@ BINDIR = $(PREFIX)/bin
  COMMOBJ  = main.o util.o parse.o abi.o cfg.o mem.o ssa.o alias.o load.o \
-            copy.o fold.o gvn.o gcm.o simpl.o live.o spill.o rega.o emit.o
+            copy.o fold.o gvn.o gcm.o simpl.o ifopt.o live.o spill.o rega.o \
+            emit.o
 -AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o
 +AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o amd64/winabi.o
  ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o
  RV64OBJ  = rv64/targ.o rv64/abi.o rv64/isel.o rv64/emit.o
  OBJ      = $(COMMOBJ) $(AMD64OBJ) $(ARM64OBJ) $(RV64OBJ)
-@@ -80,6 +80,9 @@ check-arm64: qbe
+@@ -81,6 +81,9 @@ check-arm64: qbe
  check-rv64: qbe
  	TARGET=rv64 tools/test.sh all
  
@@ -63,7 +63,7 @@ index 7acaf35..5c25950 100644
  	@echo $(SRCALL)
  
 diff --git a/all.h b/all.h
-index df72617..e5124fa 100644
+index cb28457..9e1e633 100644
 --- a/all.h
 +++ b/all.h
 @@ -44,6 +44,7 @@ enum {
@@ -74,7 +74,7 @@ index df72617..e5124fa 100644
  	int gpr0;   /* first general purpose reg */
  	int ngpr;
  	int fpr0;   /* first floating point reg */
-@@ -618,3 +619,4 @@ int stashbits(bits, int);
+@@ -627,3 +628,4 @@ int stashbits(bits, int);
  void elf_emitfnfin(char *, FILE *);
  void elf_emitfin(FILE *);
  void macho_emitfin(FILE *);
@@ -141,10 +141,10 @@ index 3a2db0e..8946dbb 100644
 +void amd64_sysv_emitfn(Fn *, FILE *);
 +void amd64_winabi_emitfn(Fn *, FILE *);
 diff --git a/amd64/emit.c b/amd64/emit.c
-index 6cf37ec..df81e52 100644
+index 8d715d0..4a3bb99 100644
 --- a/amd64/emit.c
 +++ b/amd64/emit.c
-@@ -167,9 +167,12 @@ slot(Ref r, E *e)
+@@ -177,9 +177,12 @@ slot(Ref r, E *e)
  	}
  	else if (e->fp == RSP)
  		return 4*s + e->nclob*8;
@@ -160,7 +160,7 @@ index 6cf37ec..df81e52 100644
  		return -4 * (e->fn->slot - s);
  }
  
-@@ -580,14 +583,14 @@ emitins(Ins i, E *e)
+@@ -601,14 +604,14 @@ emitins(Ins i, E *e)
  }
  
  static void
@@ -177,7 +177,7 @@ index 6cf37ec..df81e52 100644
  			o ^= e->fn->reg >> amd64_sysv_rclob[i];
  		o &= 1;
  	}
-@@ -601,7 +604,7 @@ framesz(E *e)
+@@ -622,7 +625,7 @@ framesz(E *e)
  }
  
  void
@@ -185,8 +185,8 @@ index 6cf37ec..df81e52 100644
 +amd64_sysv_emitfn(Fn *fn, FILE *f)
  {
  	static char *ctoa[] = {
- 	#define X(c, s) [c] = s,
-@@ -623,7 +626,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+ 	#define X(c, s, _) [c] = s,
+@@ -644,7 +647,7 @@ amd64_emitfn(Fn *fn, FILE *f)
  		fputs("\tpushq %rbp\n\tmovq %rsp, %rbp\n", f);
  	} else
  		e->fp = RSP;
@@ -195,7 +195,7 @@ index 6cf37ec..df81e52 100644
  	if (e->fsz)
  		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
  	if (fn->vararg) {
-@@ -633,7 +636,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+@@ -654,7 +657,7 @@ amd64_emitfn(Fn *fn, FILE *f)
  		for (n=0; n<8; ++n, o+=16)
  			fprintf(f, "\tmovaps %%xmm%d, %d(%%rbp)\n", n, o);
  	}
@@ -204,7 +204,7 @@ index 6cf37ec..df81e52 100644
  		if (fn->reg & BIT(*r)) {
  			itmp.arg[0] = TMP(*r);
  			emitf("pushq %L0", &itmp, e);
-@@ -662,7 +665,7 @@ amd64_emitfn(Fn *fn, FILE *f)
+@@ -683,7 +686,7 @@ amd64_emitfn(Fn *fn, FILE *f)
  					"\tmovq %%rbp, %%rsp\n"
  					"\tsubq $%"PRIu64", %%rsp\n",
  					e->fsz + e->nclob * 8);
@@ -213,7 +213,7 @@ index 6cf37ec..df81e52 100644
  				if (fn->reg & BIT(*--r)) {
  					itmp.arg[0] = TMP(*r);
  					emitf("popq %L0", &itmp, e);
-@@ -703,3 +706,118 @@ amd64_emitfn(Fn *fn, FILE *f)
+@@ -724,3 +727,118 @@ amd64_emitfn(Fn *fn, FILE *f)
  	if (!T.apple)
  		elf_emitfnfin(fn->name, f);
  }
@@ -243,7 +243,7 @@ index 6cf37ec..df81e52 100644
 +amd64_winabi_emitfn(Fn *fn, FILE *f)
 +{
 +	static char *ctoa[] = {
-+	#define X(c, s) [c] = s,
++	#define X(c, s, _) [c] = s,
 +		CMP(X)
 +	#undef X
 +	};
@@ -348,10 +348,10 @@ index fd10bfd..98964c9 100644
  
  /* layout of call's second argument (RCall)
 diff --git a/amd64/targ.c b/amd64/targ.c
-index fba9144..00949b2 100644
+index a7e4552..575ae52 100644
 --- a/amd64/targ.c
 +++ b/amd64/targ.c
-@@ -19,20 +19,20 @@ amd64_memargs(int op)
+@@ -19,21 +19,21 @@ amd64_memargs(int op)
  	.nfpr = NFPR, \
  	.rglob = BIT(RBP) | BIT(RSP), \
  	.nrglob = 2, \
@@ -364,6 +364,7 @@ index fba9144..00949b2 100644
 -	.abi1 = amd64_sysv_abi, \
  	.isel = amd64_isel, \
 -	.emitfn = amd64_emitfn, \
+ 	.cansel = 1, \
  
  Target T_amd64_sysv = {
  	.name = "amd64_sysv",
@@ -378,7 +379,7 @@ index fba9144..00949b2 100644
  	AMD64_COMMON
  };
  
-@@ -42,5 +42,25 @@ Target T_amd64_apple = {
+@@ -43,5 +43,25 @@ Target T_amd64_apple = {
  	.emitfin = macho_emitfin,
  	.asloc = "L",
  	.assym = "_",
@@ -1216,10 +1217,10 @@ index d2fab43..246219a 100644
  static uint nfile;
  static uint curfile;
 diff --git a/main.c b/main.c
-index 7a97f8a..b9069d0 100644
+index 61065dd..ed1ac94 100644
 --- a/main.c
 +++ b/main.c
-@@ -20,6 +20,7 @@ char debug['Z'+1] = {
+@@ -21,6 +21,7 @@ char debug['Z'+1] = {
  
  extern Target T_amd64_sysv;
  extern Target T_amd64_apple;
@@ -1227,7 +1228,7 @@ index 7a97f8a..b9069d0 100644
  extern Target T_arm64;
  extern Target T_arm64_apple;
  extern Target T_rv64;
-@@ -27,6 +28,7 @@ extern Target T_rv64;
+@@ -28,6 +29,7 @@ extern Target T_rv64;
  static Target *tlist[] = {
  	&T_amd64_sysv,
  	&T_amd64_apple,
