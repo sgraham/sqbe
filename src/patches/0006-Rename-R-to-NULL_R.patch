@@ -1,7 +1,7 @@
 From e478aa0e36b157d2898e01f682124895f50bd558 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
-Subject: [PATCH 06/16] Rename `R` to `NULL_R`
+Subject: [PATCH 06/15] Rename `R` to `NULL_R`
 
 This is unfortunately necessary because windows.h has a struct bitfield
 named `R` that conflicts when included.
