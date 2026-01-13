@@ -1,0 +1,98 @@
+From e247929a71ca7c2e984c579ab387f5ee3687da5e Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Tue, 13 Jan 2026 11:43:15 -0800
+Subject: [PATCH 16/16] don't reuse struct name as label, MSVC fails
+
+---
+ amd64/emit.c | 8 ++++----
+ arm64/emit.c | 4 ++--
+ rv64/emit.c  | 4 ++--
+ 3 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/amd64/emit.c b/amd64/emit.c
+index f031fdc..291bbc2 100644
+--- a/amd64/emit.c
++++ b/amd64/emit.c
+@@ -702,7 +702,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+ 			fputs("\tret\n", f);
+ 			break;
+ 		case Jjmp:
+-		Jmp:
++		lblJmp:
+ 			if (b->s1 != b->link)
+ 				fprintf(f, "\tjmp %sbb%d\n",
+ 					GC(T).asloc, G(amd64_sysv_emitfn_id0)+b->s1->id);
+@@ -720,7 +720,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
+ 					c = cmpneg(c);
+ 				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
+ 					GC(T).asloc, G(amd64_sysv_emitfn_id0)+b->s2->id);
+-				goto Jmp;
++				goto lblJmp;
+ 			}
+ 			die("unhandled jump %d", b->jmp.type);
+ 		}
+@@ -818,7 +818,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+ 			fputs("\tret\n", f);
+ 			break;
+ 		case Jjmp:
+-		Jmp:
++		lblJmp:
+ 			if (b->s1 != b->link)
+ 				fprintf(f, "\tjmp %sbb%d\n",
+ 					GC(T).asloc, G(amd64_winabi_emitfn_id0)+b->s1->id);
+@@ -836,7 +836,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
+ 					c = cmpneg(c);
+ 				fprintf(f, "\tj%s %sbb%d\n", ctoa[c],
+ 					GC(T).asloc, G(amd64_winabi_emitfn_id0)+b->s2->id);
+-				goto Jmp;
++				goto lblJmp;
+ 			}
+ 			die("unhandled jump %d", b->jmp.type);
+ 		}
+diff --git a/arm64/emit.c b/arm64/emit.c
+index 0f78c6d..7576acc 100644
+--- a/arm64/emit.c
++++ b/arm64/emit.c
+@@ -669,7 +669,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 			fprintf(e->f, "\tret\n");
+ 			break;
+ 		case Jjmp:
+-		Jmp:
++		lblJmp:
+ 			if (b->s1 != b->link)
+ 				fprintf(e->f,
+ 					"\tb\t%s%d\n",
+@@ -692,7 +692,7 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 				"\tb%s\t%s%d\n",
+ 				ctoa[c], GC(T).asloc, G(arm64_emitfn_id0)+b->s2->id
+ 			);
+-			goto Jmp;
++			goto lblJmp;
+ 		}
+ 	}
+ 	G(arm64_emitfn_id0) += e->fn->nblk;
+diff --git a/rv64/emit.c b/rv64/emit.c
+index 3cffea3..87686f3 100644
+--- a/rv64/emit.c
++++ b/rv64/emit.c
+@@ -536,7 +536,7 @@ rv64_emitfn(Fn *fn, FILE *f)
+ 			);
+ 			break;
+ 		case Jjmp:
+-		Jmp:
++		lblJmp:
+ 			if (b->s1 != b->link)
+ 				fprintf(f, "\tj .L%d\n", G(rv64_emitfn_id0)+b->s1->id);
+ 			else
+@@ -562,7 +562,7 @@ rv64_emitfn(Fn *fn, FILE *f)
+ 				rname[b->jmp.arg.val],
+ 				G(rv64_emitfn_id0)+b->s2->id
+ 			);
+-			goto Jmp;
++			goto lblJmp;
+ 		}
+ 	}
+ 	G(rv64_emitfn_id0) += fn->nblk;
+-- 
+2.39.5 (Apple Git-154)
+

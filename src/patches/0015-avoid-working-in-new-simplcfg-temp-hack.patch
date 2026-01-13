@@ -1,7 +1,7 @@
 From 107fec94eef9e245b247bc20fa8dd3cd721148a4 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Tue, 13 Jan 2026 11:23:29 -0800
-Subject: [PATCH 15/15] avoid working in new simplcfg, temp hack
+Subject: [PATCH 15/16] avoid working in new simplcfg, temp hack
 
 ---
  cfg.c | 2 +-
