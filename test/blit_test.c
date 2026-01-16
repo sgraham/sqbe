@@ -46,9 +46,11 @@ int main(int argc, char** argv) {
   sq_i_storel(sq_const_int(0), sq_i_add(sq_type_long, data, sq_const_int(16)));
   sq_i_storel(sq_const_int(0), sq_i_add(sq_type_long, data, sq_const_int(24)));
 
-  sq_i_call1(sq_type_word, sq_ref_extern("puts"), (SqCallArg){sq_type_long, target});
   sq_i_call1(sq_type_word, sq_ref_extern("puts"),
-             (SqCallArg){sq_type_long, sq_i_add(sq_type_long, target, sq_const_int(8))});
+             (SqCallArg){sq_type_long, sq_i_load(sq_type_long, target)});
+  sq_i_call1(sq_type_word, sq_ref_extern("puts"),
+             (SqCallArg){sq_type_long,
+                         sq_i_load(sq_type_long, sq_i_add(sq_type_long, target, sq_const_int(8)))});
 
   sq_i_ret(sq_const_int(0));
 

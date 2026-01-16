@@ -154,6 +154,7 @@ def do_test(f):
         print("EXPECTED:")
         print(expected)
         print(hexdump(expected.encode("utf-8")))
+        sys.exit(1)
     else:
         print("ok")
 
