@@ -1,4 +1,4 @@
-From ef90ad71a16974786b6d0a8639c9c3cf5f1a7b09 Mon Sep 17 00:00:00 2001
+From 03bc2c21d48365662277c7c51571c969180f6c12 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
 Subject: [PATCH 08/15] Replace sprintf with snprintf and remove static return
@@ -62,14 +62,13 @@ index 84e1b84..4284f24 100644
  		fn->mem[fn->nmem-1] = a;
  	}
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 311ab78..0f78c6d 100644
+index 311ab78..89f701c 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
-@@ -114,39 +114,60 @@ static struct {
- enum {
+@@ -115,38 +115,59 @@ enum {
  	V31 = 0x1fffffff,  /* local name for V31 */
  };
-+ 
+ 
 +static char* w_regs[] = {
 +    "w0",  "w1",  "w2",  "w3",  "w4",  "w5",  "w6",  "w7",  "w8",  "w9",  "w10",
 +    "w11", "w12", "w13", "w14", "w15", "w16", "w17", "w18", "w19", "w20", "w21",
@@ -93,7 +92,7 @@ index 311ab78..0f78c6d 100644
 +    "d11", "d12", "d13", "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21",
 +    "d22", "d23", "d24", "d25", "d26", "d27", "d28", "d29", "d30",
 +};
- 
++
  static char *
  rname(int r, int k)
  {

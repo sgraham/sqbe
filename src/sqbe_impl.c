@@ -930,6 +930,23 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
   return _internal_ref_to_sqref(tmp);
 }
 
+void sq_i_blit(SqRef from, SqRef to, int num_bytes) {
+  SQ_ERR_CHECK_VOID();
+  memset(GC(curi), 0, 2 * sizeof(Ins));
+  GC(curi)->op = Oblit0;
+  GC(curi)->arg[0] = _sqref_to_internal_ref(from);
+  GC(curi)->arg[1] = _sqref_to_internal_ref(to);
+  ++GC(curi);
+  GC(curi)->op = Oblit1;
+  Ref r = INT(num_bytes);
+  if (rsval(r) < 0 || rsval(r) != num_bytes) {
+    err_("invalid blit size");
+  }
+  GC(curi)->arg[0] = r;
+  ++GC(curi);
+  SQC(pfs.ps) = PIns;
+}
+
 static void _normal_two_op_instr_into(int op, Ref into, SqType size_class, SqRef arg0, SqRef arg1) {
   SQ_ERR_CHECK_VOID();
   SQ_ASSERT(/*size_class.u >= SQ_TYPE_W && */ size_class.u <= SQ_TYPE_D);

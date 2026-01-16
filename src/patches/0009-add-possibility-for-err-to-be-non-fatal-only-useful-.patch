@@ -1,4 +1,4 @@
-From a21496f2499b2757b13e16ccff22c7de9f2c9a34 Mon Sep 17 00:00:00 2001
+From c4a2dc91e9f7db2b8ce85eb38368617c7395f0c5 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
 Subject: [PATCH 09/15] add possibility for err to be non-fatal, only useful in

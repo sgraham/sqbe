@@ -197,6 +197,8 @@ void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false);
 // TODO: only 2-branch phi supported currently
 SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1);
 
+void sq_i_blit(SqRef from, SqRef to, int num_bytes);
+
 typedef struct SqCallArg {
   SqType type;
   SqRef value;

@@ -1,4 +1,4 @@
-From ea5b37aaa646beaa8e49e8d15f24ce22aea3456c Mon Sep 17 00:00:00 2001
+From 78419f54a2a5d4b6de2d5c3cbaac612dd49b1d6a Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 13:03:39 -0700
 Subject: [PATCH 13/15] fix strict aliasing warning in emitfin

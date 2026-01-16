@@ -1,4 +1,4 @@
-From e0bb6176cef33e6e3ce72aedc143bf14b17d54e3 Mon Sep 17 00:00:00 2001
+From d0b04cf53bf80f11203d7e2bd419ef7efb5f343e Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Tue, 13 Jan 2026 11:43:15 -0800
 Subject: [PATCH 15/15] don't reuse struct name as label, MSVC fails
@@ -50,7 +50,7 @@ index f031fdc..291bbc2 100644
  			die("unhandled jump %d", b->jmp.type);
  		}
 diff --git a/arm64/emit.c b/arm64/emit.c
-index 0f78c6d..7576acc 100644
+index 89f701c..0bedc8f 100644
 --- a/arm64/emit.c
 +++ b/arm64/emit.c
 @@ -669,7 +669,7 @@ arm64_emitfn(Fn *fn, FILE *out)
