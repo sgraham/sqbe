@@ -336,6 +336,8 @@ def label_renames(contents):
     contents = re.sub(r"\bRef:", "Label_Ref:", contents)
     contents = contents.replace("goto Mem;", "goto Label_Mem;")
     contents = re.sub(r"\bMem:", "Label_Mem:", contents)
+    contents = contents.replace("goto Jmp;", "goto Label_Jmp;")
+    contents = re.sub(r"\bJmp:", "Label_Jmp:", contents)
     return contents
 
 

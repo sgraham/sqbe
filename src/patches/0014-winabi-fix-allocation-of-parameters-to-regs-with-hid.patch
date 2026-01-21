@@ -1,7 +1,7 @@
 From 0a3e50d86a0c4295da0c59beec3e0c3d3dd881ca Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 8 Jan 2026 12:50:54 -0800
-Subject: [PATCH 14/15] winabi: fix allocation of parameters to regs with
+Subject: [PATCH 14/14] winabi: fix allocation of parameters to regs with
  hidden arg
 
 In the presence of the hidden arg for return-by-value, the

@@ -1,7 +1,7 @@
 From 1f6e05ac703d712608b6ddcb507857a2610ba07f Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
-Subject: [PATCH 05/15] Context-ize global and (most) function-static variables
+Subject: [PATCH 05/14] Context-ize global and (most) function-static variables
 
 Moves all mutable globals into a single GlobalContext struct.
 
