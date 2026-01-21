@@ -59,6 +59,7 @@ typedef struct SqConfiguration {
   // - N: ssa construction
   // - C: copy elimination
   // - F: constant folding
+  // - K: if-conversion
   // - A: abi lowering
   // - I: instruction selection
   // - L: liveness
