@@ -1,4 +1,4 @@
-From e478aa0e36b157d2898e01f682124895f50bd558 Mon Sep 17 00:00:00 2001
+From ecbfa1b40db949777b53005d7851334a961421c5 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
 Subject: [PATCH 06/14] Rename `R` to `NULL_R`
@@ -9,7 +9,7 @@ named `R` that conflicts when included.
  alias.c        |   4 +-
  all.h          |   4 +-
  amd64/emit.c   |   8 ++--
- amd64/isel.c   |  94 ++++++++++++++++++++++-----------------------
+ amd64/isel.c   |  96 +++++++++++++++++++++++-----------------------
  amd64/sysv.c   | 102 ++++++++++++++++++++++++-------------------------
  amd64/winabi.c |  96 +++++++++++++++++++++++-----------------------
  arm64/abi.c    |  84 ++++++++++++++++++++--------------------
@@ -33,7 +33,7 @@ named `R` that conflicts when included.
  ssa.c          |  10 ++---
  tools/pmov.c   |   4 +-
  util.c         |   4 +-
- 27 files changed, 343 insertions(+), 343 deletions(-)
+ 27 files changed, 344 insertions(+), 344 deletions(-)
 
 diff --git a/alias.c b/alias.c
 index 9b41084..7a7114b 100644
@@ -118,10 +118,19 @@ index f206dd6..cde6edf 100644
  		break;
  	case Oswap:
 diff --git a/amd64/isel.c b/amd64/isel.c
-index 3d26e25..8746e2c 100644
+index 8eef2f8..126d918 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
 @@ -102,7 +102,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+ 		 * produce an indirect call
+ 		 */
+ 		r1 = newtmp("isel", Kl, fn);
+-		emit(Ocopy, Kl, r1, r0, R);
++		emit(Ocopy, Kl, r1, r0, NULL_R);
+ 	}
+ 	else if (op != Ocopy && k == Kl && noimm(r0, fn)) {
+ 		/* load constants that do not fit in
+@@ -110,7 +110,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  		 * long temporary
  		 */
  		r1 = newtmp("isel", Kl, fn);
@@ -130,7 +139,7 @@ index 3d26e25..8746e2c 100644
  	}
  	else if (s != -1) {
  		/* load fast locals' addresses into
-@@ -110,7 +110,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -118,7 +118,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  		 * instruction
  		 */
  		r1 = newtmp("isel", Kl, fn);
@@ -139,7 +148,7 @@ index 3d26e25..8746e2c 100644
  	}
  	else if (GC(T).apple && hascon(r0, &c, fn)
  	&& c->type == CAddr && c->sym.type == SThr) {
-@@ -123,16 +123,16 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -131,16 +131,16 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  			emit(Oadd, Kl, r1, r2, r3);
  		} else
  			r2 = r1;
@@ -161,7 +170,7 @@ index 3d26e25..8746e2c 100644
  		if (rtype(r0) == RMem) {
  			m = &fn->mem[r0.val];
  			m->offset.type = CUndef;
-@@ -148,24 +148,24 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -156,24 +156,24 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  		 * relative leaq instead
  		 */
  		r1 = newtmp("isel", Kl, fn);
@@ -190,7 +199,7 @@ index 3d26e25..8746e2c 100644
  	}
  	*r = r1;
  }
-@@ -181,19 +181,19 @@ seladdr(Ref *r, Num *tn, Fn *fn)
+@@ -189,19 +189,19 @@ seladdr(Ref *r, Num *tn, Fn *fn)
  		memset(&a, 0, sizeof a);
  		if (!amatch(&a, tn, r0, fn))
  			return;
@@ -213,7 +222,7 @@ index 3d26e25..8746e2c 100644
  			}
  		}
  		chuse(r0, -1, fn);
-@@ -230,12 +230,12 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
+@@ -238,12 +238,12 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
  		arg[1] = arg[0];
  		arg[0] = r;
  	}
@@ -228,7 +237,7 @@ index 3d26e25..8746e2c 100644
  		fixarg(&GC(curi)->arg[0], k, GC(curi), fn);
  	}
  	fixarg(&icmp->arg[0], k, icmp, fn);
-@@ -269,8 +269,8 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -277,8 +277,8 @@ sel(Ins i, Num *tn, Fn *fn)
  			r0 = TMP(RAX), r1 = TMP(RDX);
  		else
  			r0 = TMP(RDX), r1 = TMP(RAX);
@@ -239,7 +248,7 @@ index 3d26e25..8746e2c 100644
  		if (rtype(i.arg[1]) == RCon) {
  			/* immediates not allowed for
  			 * divisions in x86
-@@ -282,16 +282,16 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -290,16 +290,16 @@ sel(Ins i, Num *tn, Fn *fn)
  			err("unlikely argument %%%s in %s",
  				fn->tmp[r0.val].name, optab[i.op].name);
  		if (i.op == Odiv || i.op == Orem) {
@@ -262,7 +271,7 @@ index 3d26e25..8746e2c 100644
  		break;
  	case Osar:
  	case Oshr:
-@@ -303,16 +303,16 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -311,16 +311,16 @@ sel(Ins i, Num *tn, Fn *fn)
  			err("unlikely argument %%%s in %s",
  				fn->tmp[r0.val].name, optab[i.op].name);
  		i.arg[1] = TMP(RCX);
@@ -283,7 +292,7 @@ index 3d26e25..8746e2c 100644
  		fixarg(&GC(curi)->arg[0], k, GC(curi), fn);
  		break;
  	case Oultof:
-@@ -335,11 +335,11 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -343,11 +343,11 @@ sel(Ins i, Num *tn, Fn *fn)
  			tmp[j] = newtmp("utof", Kl, fn);
  		for (; j<7; j++)
  			tmp[j] = newtmp("utof", kc, fn);
@@ -298,7 +307,7 @@ index 3d26e25..8746e2c 100644
  		emit(Oor, Kl, tmp[3], tmp[0], tmp[2]);
  		emit(Oshr, Kl, tmp[2], i.arg[0], tmp[1]);
  		sel(*GC(curi)++, 0, fn);
-@@ -360,7 +360,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -368,7 +368,7 @@ sel(Ins i, Num *tn, Fn *fn)
  	Oftoui:
  		if (k == Kw) {
  			r0 = newtmp("ftou", Kl, fn);
@@ -307,7 +316,7 @@ index 3d26e25..8746e2c 100644
  			i.cls = Kl;
  			i.to = r0;
  			goto Emit;
-@@ -382,13 +382,13 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -390,13 +390,13 @@ sel(Ins i, Num *tn, Fn *fn)
  			tmp[j] = newtmp("ftou", Kl, fn);
  		emit(Oor, Kl, i.to, tmp[0], tmp[3]);
  		emit(Oand, Kl, tmp[3], tmp[2], tmp[1]);
@@ -323,7 +332,7 @@ index 3d26e25..8746e2c 100644
  		fixarg(&GC(curi)->arg[0], Kl, GC(curi), fn);
  		break;
  	case Onop:
-@@ -459,21 +459,21 @@ Emit:
+@@ -467,21 +467,21 @@ Emit:
  				r0 = newtmp("isel", Kw, fn);
  				r1 = newtmp("isel", Kw, fn);
  				emit(Oand, Kw, i.to, r0, r1);
@@ -348,7 +357,7 @@ index 3d26e25..8746e2c 100644
  			selcmp(i.arg, kc, swap, fn);
  			break;
  		}
-@@ -519,7 +519,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
+@@ -527,7 +527,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
  	assert(rtype(r) == RTmp);
  	t = &fn->tmp[r.val];
  	fi = flagi(b->ins, isel0);
@@ -357,7 +366,7 @@ index 3d26e25..8746e2c 100644
  	gencmp = gencpy = swap = 0;
  	k = Kw;
  	c = Cine;
-@@ -552,7 +552,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
+@@ -560,7 +560,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
  	     && (rtype(fi->arg[0]) == RTmp ||
  	         rtype(fi->arg[1]) == RTmp)) {
  		fi->op = Oxtest;
@@ -366,7 +375,7 @@ index 3d26e25..8746e2c 100644
  		if (rtype(fi->arg[1]) == RCon) {
  			r = fi->arg[1];
  			fi->arg[1] = fi->arg[0];
-@@ -577,7 +577,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
+@@ -585,7 +585,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
  	if (gencmp)
  		selcmp(cr, k, swap, fn);
  	if (gencpy)
@@ -375,7 +384,7 @@ index 3d26e25..8746e2c 100644
  	*isel0 = (Ins){.op = Onop};
  	return isel0;
  }
-@@ -597,7 +597,7 @@ seljmp(Blk *b, Fn *fn)
+@@ -605,7 +605,7 @@ seljmp(Blk *b, Fn *fn)
  	assert(b->jmp.type == Jjnz);
  	r = b->jmp.arg;
  	t = &fn->tmp[r.val];
@@ -384,7 +393,7 @@ index 3d26e25..8746e2c 100644
  	assert(rtype(r) == RTmp);
  	if (b->s1 == b->s2) {
  		chuse(r, -1, fn);
-@@ -626,7 +626,7 @@ seljmp(Blk *b, Fn *fn)
+@@ -634,7 +634,7 @@ seljmp(Blk *b, Fn *fn)
  	     && (rtype(fi->arg[0]) == RTmp ||
  	         rtype(fi->arg[1]) == RTmp)) {
  		fi->op = Oxtest;
@@ -393,7 +402,7 @@ index 3d26e25..8746e2c 100644
  		b->jmp.type = Jjf + Cine;
  		if (rtype(fi->arg[1]) == RCon) {
  			r = fi->arg[1];
-@@ -640,7 +640,7 @@ seljmp(Blk *b, Fn *fn)
+@@ -648,7 +648,7 @@ seljmp(Blk *b, Fn *fn)
  		 * has to be marked as live
  		 */
  		if (t->nuse == 1)
@@ -402,7 +411,7 @@ index 3d26e25..8746e2c 100644
  		b->jmp.type = Jjf + Cine;
  	}
  }
-@@ -790,7 +790,7 @@ adisp(Con *c, Num *tn, Ref r, Fn *fn, int s)
+@@ -798,7 +798,7 @@ adisp(Con *c, Num *tn, Ref r, Fn *fn, int s)
  	Ref v[2];
  	int n;
  
@@ -411,7 +420,7 @@ index 3d26e25..8746e2c 100644
  		assert(rtype(r) == RTmp);
  		n = refn(r, tn, fn->con);
  		if (!(match[n] & BIT(Pob)))
-@@ -834,13 +834,13 @@ amatch(Addr *a, Num *tn, Ref r, Fn *fn)
+@@ -842,13 +842,13 @@ amatch(Addr *a, Num *tn, Ref r, Fn *fn)
  	if (*p < 0 && co.type != CUndef)
  	if (amatch(a, tn, rb, fn))
  		return addcon(&a->offset, &co, 1);
@@ -427,7 +436,7 @@ index 3d26e25..8746e2c 100644
  		assert(rtype(rs) == RCon);
  		c = &fn->con[rs.val];
  		assert(c->type == CBits);
-@@ -857,7 +857,7 @@ amatch(Addr *a, Num *tn, Ref r, Fn *fn)
+@@ -865,7 +865,7 @@ amatch(Addr *a, Num *tn, Ref r, Fn *fn)
  		a->base = ri;
  		a->index = rb;
  	}

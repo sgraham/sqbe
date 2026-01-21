@@ -1,4 +1,4 @@
-From 377d0d9e1821b212bf25cae91d33d705ee03460a Mon Sep 17 00:00:00 2001
+From 5bfe62b9d8be1bd2de05d7ef92e4636eab1c6950 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Sun, 12 Jan 2025 22:08:28 -0800
 Subject: [PATCH 02/14] Fix warnings from clang about unprototyped vs (void)
@@ -19,7 +19,7 @@ cfg.c:4:7: warning: a function declaration without a prototype is deprecated in 
  4 files changed, 12 insertions(+), 12 deletions(-)
 
 diff --git a/cfg.c b/cfg.c
-index de142f4..6efd7b4 100644
+index 6d160f0..4096843 100644
 --- a/cfg.c
 +++ b/cfg.c
 @@ -1,7 +1,7 @@

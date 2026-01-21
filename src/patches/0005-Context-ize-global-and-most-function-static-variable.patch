@@ -1,4 +1,4 @@
-From 1f6e05ac703d712608b6ddcb507857a2610ba07f Mon Sep 17 00:00:00 2001
+From a97fc755443440a9351fc724d6c4c8086989e7bb Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
 Subject: [PATCH 05/14] Context-ize global and (most) function-static variables
@@ -382,7 +382,7 @@ index 4a3bb99..f206dd6 100644
 +	G(amd64_winabi_emitfn_id0) += fn->nblk;
  }
 diff --git a/amd64/isel.c b/amd64/isel.c
-index 73e0860..3d26e25 100644
+index 889c647..8eef2f8 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
 @@ -92,7 +92,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
@@ -394,7 +394,7 @@ index 73e0860..3d26e25 100644
  		a.offset.sym.id = intern(buf);
  		fn->mem[fn->nmem-1] = a;
  	}
-@@ -112,7 +112,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
+@@ -120,7 +120,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
  		r1 = newtmp("isel", Kl, fn);
  		emit(Oaddr, Kl, r1, SLOT(s), R);
  	}
@@ -403,7 +403,7 @@ index 73e0860..3d26e25 100644
  	&& c->type == CAddr && c->sym.type == SThr) {
  		r1 = newtmp("isel", Kl, fn);
  		if (c->bits.i) {
-@@ -231,12 +231,12 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
+@@ -239,12 +239,12 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
  		arg[0] = r;
  	}
  	emit(Oxcmp, k, R, arg[1], arg[0]);
@@ -418,7 +418,7 @@ index 73e0860..3d26e25 100644
  	}
  	fixarg(&icmp->arg[0], k, icmp, fn);
  	fixarg(&icmp->arg[1], k, icmp, fn);
-@@ -256,7 +256,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -264,7 +264,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		chuse(i.arg[1], -1, fn);
  		return;
  	}
@@ -427,7 +427,7 @@ index 73e0860..3d26e25 100644
  	k = i.cls;
  	switch (i.op) {
  	case Odiv:
-@@ -289,7 +289,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -297,7 +297,7 @@ sel(Ins i, Num *tn, Fn *fn)
  			emit(Ocopy, k, TMP(RDX), CON_Z, R);
  		}
  		emit(Ocopy, k, TMP(RAX), i.arg[0], R);
@@ -436,7 +436,7 @@ index 73e0860..3d26e25 100644
  		if (rtype(i.arg[1]) == RCon)
  			emit(Ocopy, k, r0, i.arg[1], R);
  		break;
-@@ -305,7 +305,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -313,7 +313,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		i.arg[1] = TMP(RCX);
  		emit(Ocopy, Kw, R, TMP(RCX), R);
  		emiti(i);
@@ -445,7 +445,7 @@ index 73e0860..3d26e25 100644
  		emit(Ocopy, Kw, TMP(RCX), r0, R);
  		fixarg(&i1->arg[0], argcls(&i, 0), i1, fn);
  		break;
-@@ -313,7 +313,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -321,7 +321,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		r0 = newtmp("utof", Kl, fn);
  		emit(Osltof, k, i.to, r0, R);
  		emit(Oextuw, Kl, r0, i.arg[0], R);
@@ -454,7 +454,7 @@ index 73e0860..3d26e25 100644
  		break;
  	case Oultof:
  		/* %mask =l and %arg.0, 1
-@@ -342,11 +342,11 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -350,11 +350,11 @@ sel(Ins i, Num *tn, Fn *fn)
  		emit(Osltof, k, r0, tmp[3], R);
  		emit(Oor, Kl, tmp[3], tmp[0], tmp[2]);
  		emit(Oshr, Kl, tmp[2], i.arg[0], tmp[1]);
@@ -469,7 +469,7 @@ index 73e0860..3d26e25 100644
  		break;
  	case Ostoui:
  		i.op = Ostosi;
-@@ -384,12 +384,12 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -392,12 +392,12 @@ sel(Ins i, Num *tn, Fn *fn)
  		emit(Oand, Kl, tmp[3], tmp[2], tmp[1]);
  		emit(i.op, Kl, tmp[2], r0, R);
  		emit(Oadd, kc, r0, tmp[4], i.arg[0]);
@@ -484,7 +484,7 @@ index 73e0860..3d26e25 100644
  		break;
  	case Onop:
  		break;
-@@ -433,7 +433,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -441,7 +441,7 @@ sel(Ins i, Num *tn, Fn *fn)
  	case_Oext:
  Emit:
  		emiti(i);
@@ -493,7 +493,7 @@ index 73e0860..3d26e25 100644
  		fixarg(&i1->arg[0], argcls(&i, 0), i1, fn);
  		fixarg(&i1->arg[1], argcls(&i, 1), i1, fn);
  		break;
-@@ -480,7 +480,7 @@ Emit:
+@@ -488,7 +488,7 @@ Emit:
  		die("unknown instruction %s", optab[i.op].name);
  	}
  
@@ -502,7 +502,7 @@ index 73e0860..3d26e25 100644
  		assert(rslot(i0->arg[0], fn) == -1);
  		assert(rslot(i0->arg[1], fn) == -1);
  	}
-@@ -905,7 +905,7 @@ amd64_isel(Fn *fn)
+@@ -913,7 +913,7 @@ amd64_isel(Fn *fn)
  	n = fn->ntmp;
  	num = emalloc(n * sizeof num[0]);
  	for (b=fn->start; b; b=b->link) {
@@ -511,7 +511,7 @@ index 73e0860..3d26e25 100644
  		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
  			for (p=(*sb)->phi; p; p=p->link) {
  				for (a=0; p->blk[a] != b; a++)
-@@ -923,11 +923,11 @@ amd64_isel(Fn *fn)
+@@ -931,11 +931,11 @@ amd64_isel(Fn *fn)
  			else
  				sel(*i, num, fn);
  		}
@@ -1094,7 +1094,7 @@ index ff3b30b..1ef3388 100644
  		printfn(fn, stderr);
  	}
 diff --git a/cfg.c b/cfg.c
-index 6efd7b4..690c871 100644
+index 4096843..5d54308 100644
 --- a/cfg.c
 +++ b/cfg.c
 @@ -1,13 +1,14 @@

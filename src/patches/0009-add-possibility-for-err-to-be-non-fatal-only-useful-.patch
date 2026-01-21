@@ -1,4 +1,4 @@
-From c4a2dc91e9f7db2b8ce85eb38368617c7395f0c5 Mon Sep 17 00:00:00 2001
+From 0f08e50ceb1f1d8a1508d12235650c2ea1a22e98 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
 Subject: [PATCH 09/14] add possibility for err to be non-fatal, only useful in
@@ -53,10 +53,10 @@ index 215a375..aebb33c 100644
  /* abi.c */
  void elimsb(Fn *);
 diff --git a/amd64/isel.c b/amd64/isel.c
-index 4284f24..693491e 100644
+index 3c50b54..7f4e6c7 100644
 --- a/amd64/isel.c
 +++ b/amd64/isel.c
-@@ -343,6 +343,7 @@ sel(Ins i, Num *tn, Fn *fn)
+@@ -351,6 +351,7 @@ sel(Ins i, Num *tn, Fn *fn)
  		emit(Oor, Kl, tmp[3], tmp[0], tmp[2]);
  		emit(Oshr, Kl, tmp[2], i.arg[0], tmp[1]);
  		sel(*GC(curi)++, 0, fn);
@@ -64,7 +64,7 @@ index 4284f24..693491e 100644
  		emit(Oshr, Kl, tmp[1], i.arg[0], getcon(63, fn));
  		fixarg(&GC(curi)->arg[0], Kl, GC(curi), fn);
  		emit(Oand, Kl, tmp[0], i.arg[0], getcon(1, fn));
-@@ -572,6 +573,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
+@@ -580,6 +581,7 @@ selsel(Fn *fn, Blk *b, Ins *i, Num *tn)
  	for (isel1=i; isel0<isel1; --isel1) {
  		isel1->op = Oxsel+c;
  		sel(*isel1, tn, fn);
@@ -72,7 +72,7 @@ index 4284f24..693491e 100644
  	}
  	assert(!gencmp || !gencpy);
  	if (gencmp)
-@@ -918,10 +920,13 @@ amd64_isel(Fn *fn)
+@@ -926,10 +928,13 @@ amd64_isel(Fn *fn)
  		for (i=&b->ins[b->nins]; i!=b->ins;) {
  			--i;
  			assert(i->op != Osel0);
