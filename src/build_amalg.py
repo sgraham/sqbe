@@ -657,8 +657,6 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
 
 
 def write_noop_impls(out, qbe_root, h_contents, instrs):
-    out.write(h_contents)
-
     out.write("\n")
     out.write("#ifdef SQBE_NOOP\n")
     out.write("#undef SQBE_NOOP\n")
