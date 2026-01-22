@@ -174,6 +174,14 @@ def rv64_reg_rename(contents):
     return contents
 
 
+class InstrResults:
+
+    def __init__(self, decls, real_defns, noop_defns):
+        self.decls = decls
+        self.defns = real_defns
+        self.noop_defns = noop_defns
+
+
 def make_instr_prototypes(ops_h_contents):
     external_only = []
     for x in ops_h_contents.splitlines():
@@ -211,6 +219,7 @@ def make_instr_prototypes(ops_h_contents):
 
     decls = ""
     defns = ""
+    noop_defns = ""
     for op in external_only:
         assert op.startswith("O(")
         toks = re.split("[ \t,T()]+", op[2:])
@@ -233,6 +242,9 @@ def make_instr_prototypes(ops_h_contents):
                     proto_i +
                     " { _normal_one_op_instr_into(O%s, _sqref_to_internal_ref(into), %s, arg0); }\n"
                     % (op, size_class0))
+
+                noop_defns += "#define sq_i_%s(a0) (SqRef){0}\n" % op
+                noop_defns += "#define sq_i_%s_into(into, a0)\n" % op
             else:
                 proto = "SqRef sq_i_%s(SqType size_class, SqRef arg0 /*%s*/)" % (
                     op,
@@ -248,6 +260,9 @@ def make_instr_prototypes(ops_h_contents):
                     proto_i +
                     " { _normal_one_op_instr_into(O%s, _sqref_to_internal_ref(into), size_class, arg0); }\n"
                     % (op))
+
+                noop_defns += "#define sq_i_%s(s, a0) (SqRef){0}\n" % op
+                noop_defns += "#define sq_i_%s_into(into, s, a0)\n" % op
         else:
             if is_no_return(op):
                 proto = "void sq_i_%s(SqRef arg0 /*%s*/, SqRef arg1 /*%s*/)" % (
@@ -257,6 +272,8 @@ def make_instr_prototypes(ops_h_contents):
                 )
                 proto_i = None
                 defns += (proto + " { _normal_two_op_void_instr(O%s, arg0, arg1); }\n" % op)
+
+                noop_defns += "#define sq_i_%s(a0, a1)\n" % op
             else:
                 # None of these have trivial size classes, only the single op
                 # ones have that case.
@@ -271,11 +288,14 @@ def make_instr_prototypes(ops_h_contents):
                     proto_i +
                     " { _normal_two_op_instr_into(O%s, _sqref_to_internal_ref(into), size_class, arg0, arg1); }\n"
                     % op)
+
+                noop_defns += "#define sq_i_%s(s, a0, a1) (SqRef){0}\n" % op
+                noop_defns += "#define sq_i_%s_into(into, s, a0, a1)\n" % op
         decls += proto + ";\n"
         if proto_i:
             decls += proto_i + ";\n"
 
-    return (decls, defns)
+    return InstrResults(decls, defns, noop_defns)
 
 
 def replace_noreturn(contents):
@@ -397,14 +417,6 @@ def staticize_prototypes(contents):
 
 
 def write_tail(out, qbe_root):
-    out.write("""\
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
-""")
-    out.write("#endif // SQBE_IMPLEMENTATION\n\n")
-
     out.write("/*\n\nQBE LICENSE:\n\n")
     with open(os.path.join(qbe_root, "LICENSE"), "r") as f:
         license_contents = f.read()
@@ -415,10 +427,12 @@ def write_tail(out, qbe_root):
     out.write("*/\n\n")
 
 
-def write_native_header(qbe_root, ops_h_contents, h_contents, instr_defns):
+def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
     with open("sqbe.h", "w", newline="\n") as out:
+
         out.write(h_contents)
 
+        out.write("\n")
         out.write("// --------------------\n")
         out.write("//    IMPLEMENTATION\n")
         out.write("// --------------------\n")
@@ -627,16 +641,106 @@ def write_native_header(qbe_root, ops_h_contents, h_contents, instr_defns):
             out.write("#undef G\n")
             out.write("/*** END FILE: %s ***/\n" % file)
 
-        out.write(instr_defns)
+        out.write(instrs.defns)
+
+        out.write("""\
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+""")
+        out.write("#endif // SQBE_IMPLEMENTATION\n\n")
+
+        write_noop_impls(out, qbe_root, h_contents, instrs)
 
         write_tail(out, qbe_root)
 
 
-def write_noop_header(qbe_root, h_contents):
-    with open("sqbe_noop.h", "w", newline="\n") as out:
-        out.write(h_contents)
+def write_noop_impls(out, qbe_root, h_contents, instrs):
+    out.write(h_contents)
 
-        write_tail(out, qbe_root)
+    out.write("\n")
+    out.write("#ifdef SQBE_NOOP\n")
+    out.write("#undef SQBE_NOOP\n")
+    out.write("\n")
+
+    out.write("// --------------------------\n")
+    out.write("//    NO-OP IMPLEMENTATION\n")
+    out.write("// --------------------------\n")
+    out.write("\n")
+
+    out.write(instrs.noop_defns)
+
+    out.write("#define sq_init(config)\n")
+    out.write("#define sq_shutdown() true\n")
+    out.write("\n")
+    out.write(
+        "#define sq_linkage_create(alignment, exported, tls, common, section_name, section_flags) (SqLinkage){0}\n"
+    )
+    out.write("\n")
+    out.write("#define sq_type_struct_start(name, align)\n")
+    out.write("#define sq_type_add_field(field)\n")
+    out.write("#define sq_type_add_field_with_count(field, count)\n")
+    out.write("#define sq_type_struct_end() (SqType){0}\n")
+    out.write("\n")
+    out.write("#define sq_itemctx_activate(ctx)\n")
+    out.write("\n")
+    out.write("#define sq_data_start(linkage, name) (SqItemCtx){0}\n")
+    out.write("#define sq_data_byte(val)\n")
+    out.write("#define sq_data_half(val)\n")
+    out.write("#define sq_data_word(val)\n")
+    out.write("#define sq_data_long(val)\n")
+    out.write("#define sq_data_string(str)\n")
+    out.write("#define sq_data_single(f)\n")
+    out.write("#define sq_data_double(d)\n")
+    out.write("#define sq_data_ref(ref, offset)\n")
+    out.write("#define sq_data_end(void) (SqSymbol){0}\n")
+    out.write("\n")
+    out.write("#define sq_func_start(linkage, return_type, name) (SqItemCtx){0}\n")
+    out.write("#define sq_func_end() (SqSymbol){0}\n")
+    out.write("\n")
+    out.write("#define sq_func_get_entry_block() (SqBlock){0}\n")
+    out.write("\n")
+    out.write("#define sq_const_int(i) (SqRef){0}\n")
+    out.write("#define sq_const_single(f) (SqRef){0}\n")
+    out.write("#define sq_const_double(d) (SqRef){0}\n")
+    out.write("\n")
+    out.write("#define sq_ref_for_symbol(sym) (SqRef){0}\n")
+    out.write("\n")
+    out.write("#define sq_ref_declare() (SqRef){0}\n")
+    out.write("\n")
+    out.write("#define sq_ref_extern(name) (SqRef){0}\n")
+    out.write("\n")
+    out.write("#define sq_func_param_named(type, name) (SqRef){0}\n")
+    out.write("\n")
+    out.write("#define sq_block_declare_named(name) (SqBlock){0}\n")
+    out.write("\n")
+    out.write("#define sq_block_start(block)\n")
+    out.write("\n")
+    out.write("#define sq_block_declare_and_start_named(name) (SqBlock){0}\n")
+    out.write("\n")
+    out.write("#define sq_i_ret_void();\n")
+    out.write("#define sq_i_ret(val);\n")
+    out.write("#define sq_i_jmp(block);\n")
+    out.write("#define sq_i_jnz(cond, if_true, if_false)\n")
+    out.write("\n")
+    out.write("#define sq_i_phi(size_class, block0, val0, block1, val1) (SqRef){0}\n")
+    out.write("\n")
+    out.write("#define sq_i_blit(from, to, num_bytes)\n")
+    out.write("\n")
+    out.write("#define sq_i_calla(result, func, num_args, cas) (SqRef){0}\n")
+    out.write("\n")
+    out.write("#define sq_i_call0 sq_i_call_noop\n")
+    out.write("#define sq_i_call1 sq_i_call_noop\n")
+    out.write("#define sq_i_call2 sq_i_call_noop\n")
+    out.write("#define sq_i_call3 sq_i_call_noop\n")
+    out.write("#define sq_i_call4 sq_i_call_noop\n")
+    out.write("#define sq_i_call5 sq_i_call_noop\n")
+    out.write("#define sq_i_call6 sq_i_call_noop\n")
+    out.write("static inline SqRef sq_i_call_noop(SqType result, ...) { return (SqRef){0}; }\n")
+    out.write("\n")
+    out.write("#endif // SQBE_NOOP\n")
+    out.write("\n")
 
 
 def main():
@@ -655,15 +759,14 @@ def main():
     with open(os.path.join(qbe_root, "ops.h"), "r") as f:
         ops_h_contents = f.read()
 
-    instr_decls, instr_defns = make_instr_prototypes(ops_h_contents)
+    instrs = make_instr_prototypes(ops_h_contents)
 
     with open("sqbe.in.h", "r") as header_in:
         h_contents = header_in.read()
 
-    h_contents = h_contents.replace("%%%INSTRUCTION_DECLARATIONS%%%\n", instr_decls)
+    h_contents = h_contents.replace("%%%INSTRUCTION_DECLARATIONS%%%\n", instrs.decls)
 
-    write_native_header(qbe_root, ops_h_contents, h_contents, instr_defns)
-    #write_noop_header(qbe_root, h_contents)
+    write_final_header(qbe_root, ops_h_contents, h_contents, instrs)
 
     if sys.platform == "win32":
         subprocess.check_call([
