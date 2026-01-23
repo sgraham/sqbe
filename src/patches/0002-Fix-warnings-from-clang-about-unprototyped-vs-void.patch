@@ -1,7 +1,7 @@
 From 5bfe62b9d8be1bd2de05d7ef92e4636eab1c6950 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Sun, 12 Jan 2025 22:08:28 -0800
-Subject: [PATCH 02/14] Fix warnings from clang about unprototyped vs (void)
+Subject: [PATCH 02/15] Fix warnings from clang about unprototyped vs (void)
 
 e.g.
 
@@ -143,5 +143,5 @@ index c891c4e..17fd399 100644
  	void **pp;
  
 -- 
-2.39.5 (Apple Git-154)
+2.50.1 (Apple Git-155)
 

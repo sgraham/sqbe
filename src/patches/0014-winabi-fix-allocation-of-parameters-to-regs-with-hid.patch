@@ -1,7 +1,7 @@
 From 9e736d3ab84e1be4b3d53b475b3ab41a18443d37 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 8 Jan 2026 12:50:54 -0800
-Subject: [PATCH 14/14] winabi: fix allocation of parameters to regs with
+Subject: [PATCH 14/15] winabi: fix allocation of parameters to regs with
  hidden arg
 
 In the presence of the hidden arg for return-by-value, the
@@ -67,5 +67,5 @@ index 0000000..3de14b0
 +# 77
 +# <<<
 -- 
-2.39.5 (Apple Git-154)
+2.50.1 (Apple Git-155)
 

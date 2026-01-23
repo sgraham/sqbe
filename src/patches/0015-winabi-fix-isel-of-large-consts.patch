@@ -1,0 +1,136 @@
+From 335ed96a4c66b9d53f47564f555cf3d3358beb04 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Thu, 22 Jan 2026 17:05:11 -0800
+Subject: [PATCH 15/15] winabi: fix isel of large consts
+
+ABI lowering for winabi was incorrectly using a Kl cls when emitting
+Ostorel, which in turn was causing isel to fail to lower large constants
+in to temporaries ( https://c9x.me/git/qbe.git/tree/amd64/isel.c#n107 )
+when necessary.
+
+(This should be applied on the 'winabi' branch.)
+---
+ amd64/winabi.c | 16 ++++++++--------
+ test/isel6.ssa | 38 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 46 insertions(+), 8 deletions(-)
+ create mode 100644 test/isel6.ssa
+
+diff --git a/amd64/winabi.c b/amd64/winabi.c
+index 8426b20..a46cf94 100755
+--- a/amd64/winabi.c
++++ b/amd64/winabi.c
+@@ -338,7 +338,7 @@ static Ins* lower_call(Fn* func,
+       return_copy->link = (*pextra_alloc);
+       *pextra_alloc = return_copy;
+       Ref copy = newtmp("abi.copy", Kl, func);
+-      emit(Ostorel, Kl, NULL_R, copy, call_instr->to);
++      emit(Ostorel, 0, NULL_R, copy, call_instr->to);
+       emit(Ocopy, Kl, copy, TMP(RAX), NULL_R);
+       reg_usage.rax_returned = true;
+     } else if (is_integer_type(call_instr->cls)) {
+@@ -413,11 +413,11 @@ static Ins* lower_call(Fn* func,
+           // slot. (And, remember that these are emitted backwards, so store,
+           // then load.)
+           Ref smalltmp = newtmp("abi.smalltmp", arg->cls, func);
+-          emit(Ostorel, Kl, NULL_R, smalltmp, slot);
++          emit(Ostorel, 0, NULL_R, smalltmp, slot);
+           emit(Oload, arg->cls, smalltmp, instr->arg[1], NULL_R);
+         } else {
+           // Stash the value into the stack slot.
+-          emit(Ostorel, Kl, NULL_R, instr->arg[0], slot);
++          emit(Ostorel, 0, NULL_R, instr->arg[0], slot);
+         }
+         emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
+         slot_offset += arg->size;
+@@ -443,7 +443,7 @@ static Ins* lower_call(Fn* func,
+         } else {
+           assert(arg->style == APS_CopyAndPointerOnStack);
+           Ref slot = newtmp("abi.off", Kl, func);
+-          emit(Ostorel, Kl, NULL_R, copy_ref, slot);
++          emit(Ostorel, 0, NULL_R, copy_ref, slot);
+           emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
+           slot_offset += 8;
+         }
+@@ -525,7 +525,7 @@ static void lower_vastart(Fn* func,
+   // that were actually passed.
+ 
+   Ref offset = newtmp("abi.vastart", Kl, func);
+-  emit(Ostorel, Kl, NULL_R, offset, valist);
++  emit(Ostorel, 0, NULL_R, offset, valist);
+ 
+   // *8 for sizeof(u64), +16 because the return address and rbp have been pushed
+   // by the time we get to the body of the function.
+@@ -539,7 +539,7 @@ static void lower_vaarg(Fn* func, Ins* vaarg_instr) {
+   // (All emitted backwards as usual.)
+   Ref inc = newtmp("abi.vaarg.inc", Kl, func);
+   Ref ptr = newtmp("abi.vaarg.ptr", Kl, func);
+-  emit(Ostorel, Kl, NULL_R, inc, vaarg_instr->arg[0]);
++  emit(Ostorel, 0, NULL_R, inc, vaarg_instr->arg[0]);
+   emit(Oadd, Kl, inc, ptr, getcon(8, func));
+   emit(Oload, vaarg_instr->cls, vaarg_instr->to, ptr, NULL_R);
+   emit(Oload, Kl, ptr, vaarg_instr->arg[0], NULL_R);
+@@ -653,7 +653,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+         // an alloca so we have something to point at (same for InlineOnStack).
+         if (instr->op == Oparc) {
+           arg->ref = newtmp("abi", Kl, func);
+-          emit(Ostorel, Kl, NULL_R, arg->ref, instr->to);
++          emit(Ostorel, 0, NULL_R, arg->ref, instr->to);
+           emit(Ocopy, instr->cls, arg->ref, from, NULL_R);
+           emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), NULL_R);
+         } else {
+@@ -664,7 +664,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+       case APS_InlineOnStack:
+         if (instr->op == Oparc) {
+           arg->ref = newtmp("abi", Kl, func);
+-          emit(Ostorel, Kl, NULL_R, arg->ref, instr->to);
++          emit(Ostorel, 0, NULL_R, arg->ref, instr->to);
+           emit(Ocopy, instr->cls, arg->ref, SLOT(-slot_offset), NULL_R);
+           emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), NULL_R);
+         } else {
+diff --git a/test/isel6.ssa b/test/isel6.ssa
+new file mode 100644
+index 0000000..cea2047
+--- /dev/null
++++ b/test/isel6.ssa
+@@ -0,0 +1,38 @@
++# make sure large consts are lowered
++# without an offset
++#  i.e. not movq $9223372036854775807, 64(%rax)
++
++export function w $main() {
++@_0
++        %_1 =w call $myfunc(l 1, l 2, l 3, l 4, l 5, l 6, l 7, l 8, l 9223372036854775807)
++        ret 0
++}
++
++# >>> driver
++# #include <stdio.h>
++# #include <stdint.h>
++# #include <inttypes.h>
++# void myfunc(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h, int64_t i) {
++#    printf("%" PRId64 "\n", a);
++#    printf("%" PRId64 "\n", b);
++#    printf("%" PRId64 "\n", c);
++#    printf("%" PRId64 "\n", d);
++#    printf("%" PRId64 "\n", e);
++#    printf("%" PRId64 "\n", f);
++#    printf("%" PRId64 "\n", g);
++#    printf("%" PRId64 "\n", h);
++#    printf("%" PRId64 "\n", i);
++# }
++# <<<
++
++# >>> output
++# 1
++# 2
++# 3
++# 4
++# 5
++# 6
++# 7
++# 8
++# 9223372036854775807
++# <<<
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,7 +1,7 @@
 From ecbfa1b40db949777b53005d7851334a961421c5 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
-Subject: [PATCH 06/14] Rename `R` to `NULL_R`
+Subject: [PATCH 06/15] Rename `R` to `NULL_R`
 
 This is unfortunately necessary because windows.h has a struct bitfield
 named `R` that conflicts when included.
@@ -2429,5 +2429,5 @@ index 5866be9..bc2cf21 100644
  		emit(Oadd, Kl, r1, rs, getcon(15, fn));
  		if (fn->tmp[rs.val].slot != -1)
 -- 
-2.39.5 (Apple Git-154)
+2.50.1 (Apple Git-155)
 
