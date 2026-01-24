@@ -14,19 +14,23 @@ int main(int argc, char** argv) {
   sq_init(&config);
 
   SqItemCtx str0 = sq_data_start(sq_linkage_default, "str0");
-  sq_data_string("first\0");
+  sq_data_string("first");
+  sq_data_byte(0);
   SqSymbol sym_str0 = sq_data_end();
 
   SqItemCtx str1 = sq_data_start(sq_linkage_default, "str1");
-  sq_data_string("second\0");
+  sq_data_string("second");
+  sq_data_byte(0);
   SqSymbol sym_str1 = sq_data_end();
 
   SqItemCtx str2 = sq_data_start(sq_linkage_default, "str2");
-  sq_data_string("third\0");
+  sq_data_string("third");
+  sq_data_byte(0);
   SqSymbol sym_str2 = sq_data_end();
 
   SqItemCtx str3 = sq_data_start(sq_linkage_default, "str3");
-  sq_data_string("fourth\0");
+  sq_data_string("fourth");
+  sq_data_byte(0);
   SqSymbol sym_str3 = sq_data_end();
 
   SqItemCtx ctx = sq_func_start(sq_linkage_export, sq_type_word, "main");

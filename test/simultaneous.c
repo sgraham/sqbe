@@ -18,7 +18,8 @@ int main(int argc, char** argv) {
 
   // Switch to the data context where str_1 is defined.
   SqItemCtx data1 = sq_data_start(sq_linkage_default, "str_1");
-  sq_data_string("before\0");
+  sq_data_string("before");
+  sq_data_byte(0);
   SqSymbol sym_before = sq_data_end();
 
   // Switch back to the main context, and call puts with str_1.
@@ -31,7 +32,8 @@ int main(int argc, char** argv) {
 
   // Then, have it suspend and make another data string.
   SqItemCtx data2 = sq_data_start(sq_linkage_default, "str_2");
-  sq_data_string("in helper!\0");
+  sq_data_string("in helper!");
+  sq_data_byte(0);
   SqSymbol sym_data2 = sq_data_end();
 
   // Switch back to the helper function, and print str_2.
