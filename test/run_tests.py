@@ -41,11 +41,11 @@ else:
 def gen_cc(in_file, out_bin):
     if sys.platform == "win32":
         subprocess.run(
-            ["C:\\Program Files\\LLVM\\bin\\clang.exe", in_file, "-o", out_bin],
+            ["C:\\Program Files\\LLVM\\bin\\clang.exe", in_file, "test_helper.c", "-o", out_bin],
             check=True,
         )
     else:
-        subprocess.run(["clang", in_file, "-o", out_bin], check=True)
+        subprocess.run(["clang", in_file, "test_helper.c", "-o", out_bin], check=True)
 
 
 def get_expected_output(filename):
@@ -162,6 +162,8 @@ def do_test(f):
 def main():
     os.chdir(os.path.join(ROOT_DIR, "test"))
     for f in glob.glob("*.c"):
+        if f == 'test_helper.c':
+            continue
         do_test(f)
 
 

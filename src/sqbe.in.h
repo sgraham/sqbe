@@ -120,7 +120,7 @@ typedef enum SqTypeKind {
   SQ_TYPE_E = -2,         // error
   SQ_TYPE_M = SQ_TYPE_L,  // memory
   SQ_TYPE_VARARGS = -3,   // for sq_varargs_begin (not in qbe)
-  SQ_TYPE_ENV = -4,       // for sq_env (not in qbe)
+  SQ_TYPE_ENV = -4,       // for sq_type_env (not in qbe)
 } SqTypeKind;
 
 #define sq_type_void ((SqType){SQ_TYPE_0})

@@ -608,16 +608,20 @@ void sq_itemctx_activate(SqItemCtx itemctx) {
 SqRef sq_func_param_named(SqType type, const char* name) {
   SQ_ERR_CHECK((SqRef){0});
   int ty;
-  int k = _sqtype_to_cls_and_ty(type, &ty);
   Ref r = newtmp(0, Kx, G(curf));
   SQ_NAMED_IF_DEBUG(G(curf)->tmp[r.val].name, name);
-  // TODO: env ptr, varargs
-  if (k == Kc) {
-    *GC(curi) = (Ins){Oparc, Kl, r, {TYPE(ty)}};
-  } else if (k >= Ksb) {
-    *GC(curi) = (Ins){Oparsb + (k - Ksb), Kw, r, {NULL_R}};
+  if ((int32_t)type.u == SQ_TYPE_ENV) {
+    *GC(curi) = (Ins){Opare, Kl, r, {NULL_R}};
   } else {
-    *GC(curi) = (Ins){Opar, k, r, {NULL_R}};
+    int k = _sqtype_to_cls_and_ty(type, &ty);
+    // TODO: varargs
+    if (k == Kc) {
+      *GC(curi) = (Ins){Oparc, Kl, r, {TYPE(ty)}};
+    } else if (k >= Ksb) {
+      *GC(curi) = (Ins){Oparsb + (k - Ksb), Kw, r, {NULL_R}};
+    } else {
+      *GC(curi) = (Ins){Opar, k, r, {NULL_R}};
+    }
   }
   ++GC(curi);
   return _internal_ref_to_sqref(r);
