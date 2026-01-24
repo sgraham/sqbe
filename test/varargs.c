@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
   sq_init(&config);
 
   sq_data_start(sq_linkage_default, "fmt");
-  sq_data_string("formatted: %d %d %d\n");
+  sq_data_string("formatted: %d %d %d\n\0");
   SqSymbol fmt = sq_data_end();
 
   sq_func_start(sq_linkage_export, sq_type_word, "main");
