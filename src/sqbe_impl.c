@@ -780,18 +780,23 @@ SqRef sq_i_calla(SqType result, SqRef func, int num_args, SqCallArg* cas) {
   for (int i = 0; i < num_args; ++i) {
     SQ_ASSERT(GC(curi) - GC(insb) < NIns);
     int ty;
-    int k = _sqtype_to_cls_and_ty(cas[i].type, &ty);
+    int k;
     Ref r = _sqref_to_internal_ref(cas[i].value);
-    // TODO: env
-    if (k == K0 && req(r, NULL_R)) {
-      // This is our hacky special case for where '...' would appear in the call.
+    if ((int32_t)cas[i].type.u == SQ_TYPE_VARARGS) {
       *GC(curi) = (Ins){.op = Oargv};
-    } else if (k == Kc) {
-      *GC(curi) = (Ins){Oargc, Kl, NULL_R, {TYPE(ty), r}};
-    } else if (k >= Ksb) {
-      *GC(curi) = (Ins){Oargsb + (k - Ksb), Kw, NULL_R, {r}};
+    } else if ((int32_t)cas[i].type.u == SQ_TYPE_ENV) {
+      *GC(curi) = (Ins){Oarge, Kl, NULL_R, {r}};
     } else {
-      *GC(curi) = (Ins){Oarg, k, NULL_R, {r}};
+      k = _sqtype_to_cls_and_ty(cas[i].type, &ty);
+      if (k == K0 && req(r, NULL_R)) {
+        // This is our hacky special case for where '...' would appear in the call.
+      } else if (k == Kc) {
+        *GC(curi) = (Ins){Oargc, Kl, NULL_R, {TYPE(ty), r}};
+      } else if (k >= Ksb) {
+        *GC(curi) = (Ins){Oargsb + (k - Ksb), Kw, NULL_R, {r}};
+      } else {
+        *GC(curi) = (Ins){Oarg, k, NULL_R, {r}};
+      }
     }
     ++GC(curi);
   }

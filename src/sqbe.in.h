@@ -119,6 +119,8 @@ typedef enum SqTypeKind {
   SQ_TYPE_0 = 9,          // void
   SQ_TYPE_E = -2,         // error
   SQ_TYPE_M = SQ_TYPE_L,  // memory
+  SQ_TYPE_VARARGS = -3,   // for sq_varargs_begin (not in qbe)
+  SQ_TYPE_ENV = -4,       // for sq_env (not in qbe)
 } SqTypeKind;
 
 #define sq_type_void ((SqType){SQ_TYPE_0})
@@ -132,6 +134,7 @@ typedef enum SqTypeKind {
 #define sq_type_shalf ((SqType){SQ_TYPE_SH})
 #define sq_type_ubyte ((SqType){SQ_TYPE_UB})
 #define sq_type_uhalf ((SqType){SQ_TYPE_UH})
+#define sq_type_env ((SqType){SQ_TYPE_ENV})
 
 void sq_type_struct_start(const char* name, int align /*=0 for natural*/);
 void sq_type_add_field(SqType field);
@@ -205,7 +208,7 @@ typedef struct SqCallArg {
   SqRef value;
 } SqCallArg;
 
-#define sq_varargs_begin (SqCallArg){sq_type_void, (SqRef){0}}
+#define sq_varargs_begin (SqCallArg){(SqType){SQ_TYPE_VARARGS},(SqRef){0}}
 
 SqRef sq_i_calla(SqType result,
                  SqRef func,
