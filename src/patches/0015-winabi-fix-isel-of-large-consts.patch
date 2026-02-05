@@ -1,7 +1,7 @@
 From 335ed96a4c66b9d53f47564f555cf3d3358beb04 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 22 Jan 2026 17:05:11 -0800
-Subject: [PATCH 15/15] winabi: fix isel of large consts
+Subject: [PATCH 15/16] winabi: fix isel of large consts
 
 ABI lowering for winabi was incorrectly using a Kl cls when emitting
 Ostorel, which in turn was causing isel to fail to lower large constants

@@ -1,7 +1,7 @@
 From 0f08e50ceb1f1d8a1508d12235650c2ea1a22e98 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
-Subject: [PATCH 09/15] add possibility for err to be non-fatal, only useful in
+Subject: [PATCH 09/16] add possibility for err to be non-fatal, only useful in
  library context
 
 ---
