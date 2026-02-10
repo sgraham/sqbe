@@ -890,6 +890,35 @@ SqRef sq_i_call6(SqType result,
   return sq_i_calla(result, func, 6, cas);
 }
 
+SqRef sq_i_call7(SqType result,
+                 SqRef func,
+                 SqCallArg ca0,
+                 SqCallArg ca1,
+                 SqCallArg ca2,
+                 SqCallArg ca3,
+                 SqCallArg ca4,
+                 SqCallArg ca5,
+                 SqCallArg ca6) {
+  SQ_ERR_CHECK((SqRef){0});
+  SqCallArg cas[7] = {ca0, ca1, ca2, ca3, ca4, ca5, ca6};
+  return sq_i_calla(result, func, 7, cas);
+}
+
+SqRef sq_i_call8(SqType result,
+                 SqRef func,
+                 SqCallArg ca0,
+                 SqCallArg ca1,
+                 SqCallArg ca2,
+                 SqCallArg ca3,
+                 SqCallArg ca4,
+                 SqCallArg ca5,
+                 SqCallArg ca6,
+                 SqCallArg ca7) {
+  SQ_ERR_CHECK((SqRef){0});
+  SqCallArg cas[8] = {ca0, ca1, ca2, ca3, ca4, ca5, ca6, ca7};
+  return sq_i_calla(result, func, 8, cas);
+}
+
 void sq_i_jmp(SqBlock block) {
   SQ_ERR_CHECK_VOID();
 
