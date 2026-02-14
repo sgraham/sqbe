@@ -1,7 +1,7 @@
-From a97fc755443440a9351fc724d6c4c8086989e7bb Mon Sep 17 00:00:00 2001
+From 53b702c32a25a982a7ca09a6a23c0a9a642e66d6 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
-Subject: [PATCH 05/16] Context-ize global and (most) function-static variables
+Subject: [PATCH 04/14] Context-ize global and (most) function-static variables
 
 Moves all mutable globals into a single GlobalContext struct.
 
@@ -19,13 +19,13 @@ be maintained as-is because they're used to return created strings.)
  amd64/emit.c   |  35 ++--
  amd64/isel.c   |  36 ++--
  amd64/sysv.c   |  28 ++--
- amd64/winabi.c |  16 +-
+ amd64/winabi.c |  22 +--
  arm64/abi.c    |  42 ++---
  arm64/emit.c   |  31 ++--
  arm64/isel.c   |  20 +--
  cfg.c          |   9 +-
  copy.c         |  10 +-
- emit.c         |  77 ++++-----
+ emit.c         |  75 ++++-----
  fold.c         |   1 +
  gcm.c          |   6 +-
  gvn.c          |   8 +-
@@ -43,7 +43,7 @@ be maintained as-is because they're used to return created strings.)
  spill.c        | 159 +++++++++---------
  ssa.c          |  25 ++-
  util.c         |  65 +++-----
- 28 files changed, 843 insertions(+), 766 deletions(-)
+ 28 files changed, 845 insertions(+), 768 deletions(-)
 
 diff --git a/all.h b/all.h
 index 961b4fe..95df2a7 100644
@@ -630,10 +630,10 @@ index 98964c9..bb3a5ac 100644
  		printfn(fn, stderr);
  	}
 diff --git a/amd64/winabi.c b/amd64/winabi.c
-index 57ec00c..3b3fbb4 100755
+index 5136e62..464f135 100755
 --- a/amd64/winabi.c
 +++ b/amd64/winabi.c
-@@ -191,7 +191,7 @@ static void classify_arguments(RegisterUsage* reg_usage,
+@@ -199,7 +199,7 @@ static void classify_arguments(RegisterUsage* reg_usage,
        case Oargc:
        case Oparc: {
          int typ_index = instr->arg[0].val;
@@ -642,7 +642,7 @@ index 57ec00c..3b3fbb4 100755
          bool by_copy = type_is_by_copy(type);
          assign_register_or_stack(reg_usage, arg, /*is_float=*/false, by_copy);
          arg->cls = Kl;
-@@ -277,7 +277,7 @@ static Ins* lower_call(Fn* func,
+@@ -285,7 +285,7 @@ static Ins* lower_call(Fn* func,
    bool il_has_struct_return = !req(call_instr->arg[1], R);
    bool is_struct_return = false;
    if (il_has_struct_return) {
@@ -651,7 +651,7 @@ index 57ec00c..3b3fbb4 100755
      is_struct_return = type_is_by_copy(ret_type);
      if (is_struct_return) {
        assign_register_or_stack(&reg_usage, &ret_arg_class, /*is_float=*/false,
-@@ -488,7 +488,7 @@ static void lower_block_return(Fn* func, Blk* block) {
+@@ -496,7 +496,7 @@ static void lower_block_return(Fn* func, Blk* block) {
    RegisterUsage reg_usage = {0};
  
    if (jmp_type == Jretc) {
@@ -660,7 +660,7 @@ index 57ec00c..3b3fbb4 100755
      if (type_is_by_copy(type)) {
        assert(rtype(func->retr) == RTmp);
        emit(Ocopy, Kl, TMP(RAX), func->retr, R);
-@@ -551,7 +551,7 @@ static void lower_args_for_block(Fn* func,
+@@ -559,7 +559,7 @@ static void lower_args_for_block(Fn* func,
                                   ExtraAlloc** pextra_alloc) {
    // global temporary buffer used by emit. Reset to the end, and predecremented
    // when adding to it.
@@ -669,13 +669,25 @@ index 57ec00c..3b3fbb4 100755
  
    lower_block_return(func, block);
  
-@@ -619,11 +619,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -601,8 +601,8 @@ static void lower_args_for_block(Fn* func,
+ 
+   // emit/emiti add instructions from the end to the beginning of the temporary
+   // global buffer. dup the final version into the final block storage.
+-  block->nins = &insb[NIns] - curi;
+-  idup(block, curi, block->nins);
++  block->nins = &GC(insb)[NIns] - GC(curi);
++  idup(block, GC(curi), block->nins);
+ }
+ 
+ static Ins* find_end_of_func_parameters(Blk* start_block) {
+@@ -628,12 +628,12 @@ static RegisterUsage lower_func_parameters(Fn* func) {
  
    // global temporary buffer used by emit. Reset to the end, and predecremented
    // when adding to it.
 -  curi = &insb[NIns];
 +  GC(curi) = &GC(insb)[NIns];
  
+   int reg_counter = 0;
    RegisterUsage reg_usage = {0};
    if (func->retty >= 0) {
 -    bool by_copy = type_is_by_copy(&typ[func->retty]);
@@ -683,7 +695,7 @@ index 57ec00c..3b3fbb4 100755
      if (by_copy) {
        assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false,
                                 by_copy);
-@@ -694,7 +694,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -704,11 +704,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
      emit(Ocopy, Kl, env, TMP(RAX), R);
    }
  
@@ -692,7 +704,12 @@ index 57ec00c..3b3fbb4 100755
    int num_other_after_instrs = (int)(start_block->nins - num_params);
    int new_total_instrs = num_other_after_instrs + num_created_instrs;
    Ins* new_instrs = vnew(new_total_instrs, sizeof(Ins), PFn);
-@@ -746,7 +746,7 @@ void amd64_winabi_abi(Fn* func) {
+-  Ins* instr_p = icpy(new_instrs, curi, num_created_instrs);
++  Ins* instr_p = icpy(new_instrs, GC(curi), num_created_instrs);
+   icpy(instr_p, end_of_params, num_other_after_instrs);
+   start_block->nins = new_total_instrs;
+   start_block->ins = new_instrs;
+@@ -756,7 +756,7 @@ void amd64_winabi_abi(Fn* func) {
    }
    lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
  
@@ -1180,7 +1197,7 @@ index 43b9490..be0fe10 100644
  
  	/* if s1 ends with a jnz on either b
 diff --git a/emit.c b/emit.c
-index 246219a..0d0d7ff 100644
+index 4bd67d1..0d0d7ff 100644
 --- a/emit.c
 +++ b/emit.c
 @@ -1,5 +1,7 @@
@@ -1324,12 +1341,8 @@ index 246219a..0d0d7ff 100644
  		free(b);
  	}
  }
-@@ -232,13 +229,9 @@ pe_emitfin(FILE *f)
- {
- 	static char *sec[3] = { ".rodata", ".rodata", ".rodata" };
- 
--	emitfin(f ,sec);
-+	emitfin(f, sec);
+@@ -235,10 +232,6 @@ pe_emitfin(FILE *f)
+ 	emitfin(f, sec);
  }
  
 -static uint32_t *file;

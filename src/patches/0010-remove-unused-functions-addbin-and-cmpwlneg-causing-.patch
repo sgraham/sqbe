@@ -1,7 +1,7 @@
-From d92511159a2d672465ea69adc82ea034676b0963 Mon Sep 17 00:00:00 2001
+From 99a6bfab592fe64d2395b1dcf43d98650c1c810a Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:53:27 -0700
-Subject: [PATCH 11/16] remove unused functions addbin and cmpwlneg causing
+Subject: [PATCH 10/14] remove unused functions addbin and cmpwlneg causing
  warnings
 
 also remove sort of (?) unused var in gvndup

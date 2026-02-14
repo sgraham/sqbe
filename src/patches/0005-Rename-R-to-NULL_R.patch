@@ -1,7 +1,7 @@
-From ecbfa1b40db949777b53005d7851334a961421c5 Mon Sep 17 00:00:00 2001
+From 9ff07fd7b6c8364d20e7bc388eaa561a2c345c00 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
-Subject: [PATCH 06/16] Rename `R` to `NULL_R`
+Subject: [PATCH 05/14] Rename `R` to `NULL_R`
 
 This is unfortunately necessary because windows.h has a struct bitfield
 named `R` that conflicts when included.
@@ -737,10 +737,10 @@ index bb3a5ac..cce3e01 100644
  
  void
 diff --git a/amd64/winabi.c b/amd64/winabi.c
-index 3b3fbb4..60d242a 100755
+index 464f135..d0347e5 100755
 --- a/amd64/winabi.c
 +++ b/amd64/winabi.c
-@@ -274,7 +274,7 @@ static Ins* lower_call(Fn* func,
+@@ -282,7 +282,7 @@ static Ins* lower_call(Fn* func,
    // Ocall's two arguments are the the function to be called in 0, and, if the
    // the function returns a non-basic type, then arg[1] is a reference to the
    // type of the return. req checks if Refs are equal; `R` is 0.
@@ -749,7 +749,7 @@ index 3b3fbb4..60d242a 100755
    bool is_struct_return = false;
    if (il_has_struct_return) {
      Typ* ret_type = &GC(typ)[call_instr->arg[1].val];
-@@ -285,7 +285,7 @@ static Ins* lower_call(Fn* func,
+@@ -293,7 +293,7 @@ static Ins* lower_call(Fn* func,
      }
      ret_arg_class.size = ret_type->size;
    }
@@ -758,7 +758,7 @@ index 3b3fbb4..60d242a 100755
    classify_arguments(&reg_usage, earliest_arg_instr, call_instr, arg_classes,
                       &env);
  
-@@ -314,7 +314,7 @@ static Ins* lower_call(Fn* func,
+@@ -322,7 +322,7 @@ static Ins* lower_call(Fn* func,
    // allocation to clean up after the call.
    Ref stack_size_ref =
        getcon(-(int64_t)(stack_usage + SHADOW_SPACE_SIZE), func);
@@ -767,7 +767,7 @@ index 3b3fbb4..60d242a 100755
  
    ExtraAlloc* return_pad = NULL;
    if (is_struct_return) {
-@@ -325,7 +325,7 @@ static Ins* lower_call(Fn* func,
+@@ -333,7 +333,7 @@ static Ins* lower_call(Fn* func,
      return_pad->link = (*pextra_alloc);
      *pextra_alloc = return_pad;
      reg_usage.rax_returned = true;
@@ -776,13 +776,13 @@ index 3b3fbb4..60d242a 100755
    } else {
      if (il_has_struct_return) {
        // In the case that at the IL level, a struct return was specified, but as
-@@ -338,16 +338,16 @@ static Ins* lower_call(Fn* func,
+@@ -346,16 +346,16 @@ static Ins* lower_call(Fn* func,
        return_copy->link = (*pextra_alloc);
        *pextra_alloc = return_copy;
        Ref copy = newtmp("abi.copy", Kl, func);
--      emit(Ostorel, Kl, R, copy, call_instr->to);
+-      emit(Ostorel, 0, R, copy, call_instr->to);
 -      emit(Ocopy, Kl, copy, TMP(RAX), R);
-+      emit(Ostorel, Kl, NULL_R, copy, call_instr->to);
++      emit(Ostorel, 0, NULL_R, copy, call_instr->to);
 +      emit(Ocopy, Kl, copy, TMP(RAX), NULL_R);
        reg_usage.rax_returned = true;
      } else if (is_integer_type(call_instr->cls)) {
@@ -797,7 +797,7 @@ index 3b3fbb4..60d242a 100755
        reg_usage.xmm0_returned = true;
      }
    }
-@@ -356,12 +356,12 @@ static Ins* lower_call(Fn* func,
+@@ -364,12 +364,12 @@ static Ins* lower_call(Fn* func,
    // because we've lowered it into register manipulation (that's the `R`),
    // arg[0] of the call is the function, and arg[1] is register usage is
    // documented as above (copied from SysV).
@@ -813,7 +813,7 @@ index 3b3fbb4..60d242a 100755
    }
  
    if (reg_usage.is_varargs_call) {
-@@ -370,7 +370,7 @@ static Ins* lower_call(Fn* func,
+@@ -378,7 +378,7 @@ static Ins* lower_call(Fn* func,
      // done without a prototype and for varargs.
  #define DUP_IF_USED(index, floatreg, intreg)        \
    if (reg_usage.regs_passed[/*float*/ 1][index]) {  \
@@ -822,7 +822,7 @@ index 3b3fbb4..60d242a 100755
    }
      DUP_IF_USED(0, XMM0, RCX);
      DUP_IF_USED(1, XMM1, RDX);
-@@ -382,7 +382,7 @@ static Ins* lower_call(Fn* func,
+@@ -390,7 +390,7 @@ static Ins* lower_call(Fn* func,
    int reg_counter = 0;
    if (is_struct_return) {
      Ref first_reg = register_for_arg(Kl, reg_counter++);
@@ -831,7 +831,7 @@ index 3b3fbb4..60d242a 100755
    }
  
    // This is where we actually do the load of values into registers or into
-@@ -398,10 +398,10 @@ static Ins* lower_call(Fn* func,
+@@ -406,10 +406,10 @@ static Ins* lower_call(Fn* func,
            // If this is a small struct being passed by value. The value in the
            // instruction in this case is a pointer, but it needs to be loaded
            // into the register.
@@ -844,22 +844,22 @@ index 3b3fbb4..60d242a 100755
          }
          break;
        }
-@@ -413,11 +413,11 @@ static Ins* lower_call(Fn* func,
+@@ -421,11 +421,11 @@ static Ins* lower_call(Fn* func,
            // slot. (And, remember that these are emitted backwards, so store,
            // then load.)
            Ref smalltmp = newtmp("abi.smalltmp", arg->cls, func);
--          emit(Ostorel, Kl, R, smalltmp, slot);
+-          emit(Ostorel, 0, R, smalltmp, slot);
 -          emit(Oload, arg->cls, smalltmp, instr->arg[1], R);
-+          emit(Ostorel, Kl, NULL_R, smalltmp, slot);
++          emit(Ostorel, 0, NULL_R, smalltmp, slot);
 +          emit(Oload, arg->cls, smalltmp, instr->arg[1], NULL_R);
          } else {
            // Stash the value into the stack slot.
--          emit(Ostorel, Kl, R, instr->arg[0], slot);
-+          emit(Ostorel, Kl, NULL_R, instr->arg[0], slot);
+-          emit(Ostorel, 0, R, instr->arg[0], slot);
++          emit(Ostorel, 0, NULL_R, instr->arg[0], slot);
          }
          emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
          slot_offset += arg->size;
-@@ -433,17 +433,17 @@ static Ins* lower_call(Fn* func,
+@@ -441,17 +441,17 @@ static Ins* lower_call(Fn* func,
              (Ins){Oalloc8, Kl, copy_ref, {getcon(arg->size, func)}};
          arg_copy->link = (*pextra_alloc);
          *pextra_alloc = arg_copy;
@@ -876,12 +876,12 @@ index 3b3fbb4..60d242a 100755
          } else {
            assert(arg->style == APS_CopyAndPointerOnStack);
            Ref slot = newtmp("abi.off", Kl, func);
--          emit(Ostorel, Kl, R, copy_ref, slot);
-+          emit(Ostorel, Kl, NULL_R, copy_ref, slot);
+-          emit(Ostorel, 0, R, copy_ref, slot);
++          emit(Ostorel, 0, NULL_R, copy_ref, slot);
            emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
            slot_offset += 8;
          }
-@@ -462,12 +462,12 @@ static Ins* lower_call(Fn* func,
+@@ -470,12 +470,12 @@ static Ins* lower_call(Fn* func,
      // The last (first in call order) thing we do is allocate the the stack
      // space we're going to fill with temporaries.
      emit(Osalloc, Kl, arg_stack_slots,
@@ -896,7 +896,7 @@ index 3b3fbb4..60d242a 100755
    }
  
    return instr_past_args;
-@@ -491,20 +491,20 @@ static void lower_block_return(Fn* func, Blk* block) {
+@@ -499,20 +499,20 @@ static void lower_block_return(Fn* func, Blk* block) {
      Typ* type = &GC(typ)[func->retty];
      if (type_is_by_copy(type)) {
        assert(rtype(func->retr) == RTmp);
@@ -923,21 +923,21 @@ index 3b3fbb4..60d242a 100755
        reg_usage.xmm0_returned = true;
      }
    }
-@@ -525,7 +525,7 @@ static void lower_vastart(Fn* func,
+@@ -533,7 +533,7 @@ static void lower_vastart(Fn* func,
    // that were actually passed.
  
    Ref offset = newtmp("abi.vastart", Kl, func);
--  emit(Ostorel, Kl, R, offset, valist);
-+  emit(Ostorel, Kl, NULL_R, offset, valist);
+-  emit(Ostorel, 0, R, offset, valist);
++  emit(Ostorel, 0, NULL_R, offset, valist);
  
    // *8 for sizeof(u64), +16 because the return address and rbp have been pushed
    // by the time we get to the body of the function.
-@@ -539,10 +539,10 @@ static void lower_vaarg(Fn* func, Ins* vaarg_instr) {
+@@ -547,10 +547,10 @@ static void lower_vaarg(Fn* func, Ins* vaarg_instr) {
    // (All emitted backwards as usual.)
    Ref inc = newtmp("abi.vaarg.inc", Kl, func);
    Ref ptr = newtmp("abi.vaarg.ptr", Kl, func);
--  emit(Ostorel, Kl, R, inc, vaarg_instr->arg[0]);
-+  emit(Ostorel, Kl, NULL_R, inc, vaarg_instr->arg[0]);
+-  emit(Ostorel, 0, R, inc, vaarg_instr->arg[0]);
++  emit(Ostorel, 0, NULL_R, inc, vaarg_instr->arg[0]);
    emit(Oadd, Kl, inc, ptr, getcon(8, func));
 -  emit(Oload, vaarg_instr->cls, vaarg_instr->to, ptr, R);
 -  emit(Oload, Kl, ptr, vaarg_instr->arg[0], R);
@@ -946,13 +946,14 @@ index 3b3fbb4..60d242a 100755
  }
  
  static void lower_args_for_block(Fn* func,
-@@ -628,11 +628,11 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -638,12 +638,12 @@ static RegisterUsage lower_func_parameters(Fn* func) {
        assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false,
                                 by_copy);
        Ref ret_ref = newtmp("abi.ret", Kl, func);
 -      emit(Ocopy, Kl, ret_ref, TMP(RCX), R);
 +      emit(Ocopy, Kl, ret_ref, TMP(RCX), NULL_R);
        func->retr = ret_ref;
+       ++reg_counter;
      }
    }
 -  Ref env = R;
@@ -960,14 +961,14 @@ index 3b3fbb4..60d242a 100755
    classify_arguments(&reg_usage, start_of_params, end_of_params, arg_classes,
                       &env);
    func->reg = amd64_winabi_argregs(
-@@ -651,34 +651,34 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -661,34 +661,34 @@ static RegisterUsage lower_func_parameters(Fn* func) {
          // an alloca so we have something to point at (same for InlineOnStack).
          if (instr->op == Oparc) {
            arg->ref = newtmp("abi", Kl, func);
--          emit(Ostorel, Kl, R, arg->ref, instr->to);
+-          emit(Ostorel, 0, R, arg->ref, instr->to);
 -          emit(Ocopy, instr->cls, arg->ref, from, R);
 -          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), R);
-+          emit(Ostorel, Kl, NULL_R, arg->ref, instr->to);
++          emit(Ostorel, 0, NULL_R, arg->ref, instr->to);
 +          emit(Ocopy, instr->cls, arg->ref, from, NULL_R);
 +          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), NULL_R);
          } else {
@@ -979,10 +980,10 @@ index 3b3fbb4..60d242a 100755
        case APS_InlineOnStack:
          if (instr->op == Oparc) {
            arg->ref = newtmp("abi", Kl, func);
--          emit(Ostorel, Kl, R, arg->ref, instr->to);
+-          emit(Ostorel, 0, R, arg->ref, instr->to);
 -          emit(Ocopy, instr->cls, arg->ref, SLOT(-slot_offset), R);
 -          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), R);
-+          emit(Ostorel, Kl, NULL_R, arg->ref, instr->to);
++          emit(Ostorel, 0, NULL_R, arg->ref, instr->to);
 +          emit(Ocopy, instr->cls, arg->ref, SLOT(-slot_offset), NULL_R);
 +          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), NULL_R);
          } else {
@@ -1005,7 +1006,7 @@ index 3b3fbb4..60d242a 100755
          break;
        }
        case APS_EnvTag:
-@@ -690,8 +690,8 @@ static RegisterUsage lower_func_parameters(Fn* func) {
+@@ -700,8 +700,8 @@ static RegisterUsage lower_func_parameters(Fn* func) {
    }
  
    // If there was an `env`, it was passed in RAX, so copy it into the env ref.

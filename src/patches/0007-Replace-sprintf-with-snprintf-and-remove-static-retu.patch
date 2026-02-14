@@ -1,7 +1,7 @@
-From 79d1f396ec079dd6072b32f90a02d044d9099d09 Mon Sep 17 00:00:00 2001
+From d537a0559bd7f023cb11d6227ef16f2cd9f4b482 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
-Subject: [PATCH 08/16] Replace sprintf with snprintf and remove static return
+Subject: [PATCH 07/14] Replace sprintf with snprintf and remove static return
  buffers
 
 ASAN builds complain about sprintf being deprecated (at least on Mac) and it's

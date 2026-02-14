@@ -1,0 +1,36 @@
+From f0e17ade01ecdb91020a4bc2153541317735b6f3 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Fri, 13 Feb 2026 21:07:03 -0800
+Subject: [PATCH 14/14] avoid redefinition of popcnt when amalgamated
+
+---
+ amd64/winabi.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/amd64/winabi.c b/amd64/winabi.c
+index 3be1524..296b7e8 100755
+--- a/amd64/winabi.c
++++ b/amd64/winabi.c
+@@ -70,7 +70,7 @@ bits amd64_winabi_retregs(Ref r, int p[2]) {
+   return b;
+ }
+ 
+-static uint popcnt(bits b) {
++static uint amd64_winbi_popcnt(bits b) {
+   b = (b & 0x5555555555555555) + ((b >> 1) & 0x5555555555555555);
+   b = (b & 0x3333333333333333) + ((b >> 2) & 0x3333333333333333);
+   b = (b & 0x0f0f0f0f0f0f0f0f) + ((b >> 4) & 0x0f0f0f0f0f0f0f0f);
+@@ -104,8 +104,8 @@ bits amd64_winabi_argregs(Ref r, int p[2]) {
+     // returned here wrt to using the same counter for int/float regs on win.
+     // For now, try the number of registers in use even though they're not
+     // contiguous.
+-    p[0] = popcnt(int_passed);
+-    p[1] = popcnt(float_passed);
++    p[0] = amd64_winbi_popcnt(int_passed);
++    p[1] = amd64_winbi_popcnt(float_passed);
+   }
+   return b;
+ }
+-- 
+2.50.1 (Apple Git-155)
+

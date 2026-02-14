@@ -1,7 +1,7 @@
-From 0f08e50ceb1f1d8a1508d12235650c2ea1a22e98 Mon Sep 17 00:00:00 2001
+From 4c887d444326cdd634479d81fd013a27fcd8128f Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
-Subject: [PATCH 09/16] add possibility for err to be non-fatal, only useful in
+Subject: [PATCH 08/14] add possibility for err to be non-fatal, only useful in
  library context
 
 ---
@@ -143,10 +143,10 @@ index cce3e01..0040466 100644
  				break;
  			case Ovastart:
 diff --git a/amd64/winabi.c b/amd64/winabi.c
-index 60d242a..c23c9e7 100755
+index d0347e5..3be1524 100755
 --- a/amd64/winabi.c
 +++ b/amd64/winabi.c
-@@ -300,7 +300,7 @@ static Ins* lower_call(Fn* func,
+@@ -308,7 +308,7 @@ static Ins* lower_call(Fn* func,
      // only have (potentially) 8 bytes to add to stack_usage here.
      if (arg->style == APS_InlineOnStack) {
        if (arg->align > 4) {
@@ -155,7 +155,7 @@ index 60d242a..c23c9e7 100755
        }
        stack_usage += arg->size;
      } else if (arg->style == APS_CopyAndPointerOnStack) {
-@@ -562,6 +562,7 @@ static void lower_args_for_block(Fn* func,
+@@ -570,6 +570,7 @@ static void lower_args_for_block(Fn* func,
        switch (instr->op) {
          case Ocall:
            instr = lower_call(func, block, instr, pextra_alloc);
@@ -163,7 +163,7 @@ index 60d242a..c23c9e7 100755
            break;
          case Ovastart:
            lower_vastart(func, param_reg_usage, instr->arg[0]);
-@@ -743,8 +744,10 @@ void amd64_winabi_abi(Fn* func) {
+@@ -753,8 +754,10 @@ void amd64_winabi_abi(Fn* func) {
    ExtraAlloc* extra_alloc = NULL;
    for (Blk* block = func->start->link; block; block = block->link) {
      lower_args_for_block(func, block, &param_reg_usage, &extra_alloc);
