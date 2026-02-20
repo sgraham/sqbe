@@ -13,6 +13,7 @@ SQBE_C_FILES = [
     "all.h",
     "amd64/all.h",
     "arm64/all.h",
+    "arm64/emitmacho.h",
     "rv64/all.h",
     "abi.c",
     "alias.c",
@@ -40,6 +41,7 @@ SQBE_C_FILES = [
     "amd64/winabi.c",
     "arm64/abi.c",
     "arm64/emit.c",
+    "arm64/emitmacho.c",
     "arm64/isel.c",
     "arm64/targ.c",
     "rv64/abi.c",
@@ -617,6 +619,12 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
             for line in contents.splitlines():
                 if line.startswith('#include "all.h"'):
                     out.write("/* skipping all.h */\n")
+                    continue
+                if line.startswith('#include "emitmacho.h"'):
+                    out.write("/* skipping emitmacho.h */\n")
+                    continue
+                if line.startswith('#include "arm64/emitmacho.h"'):
+                    out.write("/* skipping arm64/emitmacho.h */\n")
                     continue
                 if line.startswith('#include "../all.h"'):
                     out.write("/* skipping ../all.h */\n")

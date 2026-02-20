@@ -1,0 +1,1927 @@
+From 19a97a939ac6d4c5830a8eec37518f3780f41f61 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Fri, 20 Feb 2026 10:50:21 -0800
+Subject: [PATCH 16/16] Add experimental direct Mach-O emission
+
+With `-f macho`, directly emits a macOS .o rather than .s.
+
+Output .o should always be the same as if .s is assembled by clang as
+verified by tools/objtest.sh, but probably isn't always yet!
+---
+ Makefile          |    7 +-
+ all.h             |    3 +
+ arm64/emitmacho.c | 1627 +++++++++++++++++++++++++++++++++++++++++++++
+ arm64/emitmacho.h |    5 +
+ main.c            |   50 +-
+ tools/objtest.sh  |   70 ++
+ 6 files changed, 1750 insertions(+), 12 deletions(-)
+ create mode 100644 arm64/emitmacho.c
+ create mode 100644 arm64/emitmacho.h
+ create mode 100755 tools/objtest.sh
+
+diff --git a/Makefile b/Makefile
+index c3bbefc..54d7853 100644
+--- a/Makefile
++++ b/Makefile
+@@ -8,7 +8,7 @@ COMMOBJ  = main.o util.o parse.o abi.o cfg.o mem.o ssa.o alias.o load.o \
+            copy.o fold.o gvn.o gcm.o simpl.o ifopt.o live.o spill.o rega.o \
+            emit.o
+ AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o amd64/winabi.o
+-ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o
++ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o arm64/emitmacho.o
+ RV64OBJ  = rv64/targ.o rv64/abi.o rv64/isel.o rv64/emit.o
+ OBJ      = $(COMMOBJ) $(AMD64OBJ) $(ARM64OBJ) $(RV64OBJ)
+ 
+@@ -27,7 +27,7 @@ $(OBJ): all.h ops.h
+ $(AMD64OBJ): amd64/all.h
+ $(ARM64OBJ): arm64/all.h
+ $(RV64OBJ): rv64/all.h
+-main.o: config.h
++main.o: config.h arm64/emitmacho.h
+ 
+ config.h:
+ 	@case `uname` in                               \
+@@ -84,6 +84,9 @@ check-rv64: qbe
+ check-amd64_win: qbe
+ 	TARGET=amd64_win tools/test.sh all
+ 
++check-obj: qbe
++	tools/objtest.sh
++
+ src:
+ 	@echo $(SRCALL)
+ 
+diff --git a/all.h b/all.h
+index 950fafd..57ef528 100644
+--- a/all.h
++++ b/all.h
+@@ -38,6 +38,7 @@ typedef struct Field Field;
+ typedef struct Dat Dat;
+ typedef struct Lnk Lnk;
+ typedef struct Target Target;
++typedef struct MachoCtx MachoCtx;
+ 
+ typedef struct Asmbits Asmbits;
+ typedef struct Edge Edge;
+@@ -526,6 +527,8 @@ typedef struct GlobalContext {
+ 	/* main.c */
+ 	FILE* main__outf;
+ 	int main__dbg;
++	int main__objmode;
++	MachoCtx *main__macho_ctx;
+ 
+ 	/* parse.c */
+ 	int parse__lexinit_done;
+diff --git a/arm64/emitmacho.c b/arm64/emitmacho.c
+new file mode 100644
+index 0000000..1d82f8f
+--- /dev/null
++++ b/arm64/emitmacho.c
+@@ -0,0 +1,1627 @@
++#include "all.h"
++
++#include "emitmacho.h"
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++// Mach-O constants
++#define MH_MAGIC_64 0xFEEDFACFu
++#define CPU_TYPE_ARM64 0x0100000Cu
++#define MH_OBJECT 1u
++#define MH_SUBSECTIONS_VIA_SYMBOLS 0x2000u
++#define LC_SEGMENT_64 0x19u
++#define LC_SYMTAB 0x2u
++#define LC_DYSYMTAB 0xBu
++#define N_UNDF 0x0u
++#define N_SECT 0xEu
++#define N_EXT 0x1u
++#define ARM64_RELOC_UNSIGNED 0u
++#define ARM64_RELOC_BRANCH26 2u
++#define ARM64_RELOC_PAGE21 3u
++#define ARM64_RELOC_PAGEOFF12 4u
++#define ARM64_RELOC_TLVP_LOAD_PAGE21 8u
++#define ARM64_RELOC_TLVP_LOAD_PAGEOFF12 9u
++#define ARM64_RELOC_ADDEND 10u
++#define S_REGULAR 0u
++#define S_ZEROFILL 1u
++#define S_ATTR_PURE_INSTRUCTIONS 0x80000000u
++#define S_ATTR_SOME_INSTRUCTIONS 0x00000400u
++
++// Sentinel sect values: resolved to real section numbers in macho_write
++#define SECT_DATA 0xFEu
++#define SECT_BSS 0xFDu
++
++// Mach-O structs (no system headers, exact field layout)
++
++struct mach_header_64 {
++  uint32_t magic, cputype, cpusubtype, filetype;
++  uint32_t ncmds, sizeofcmds, flags, reserved;
++};
++
++struct segment_command_64 {
++  uint32_t cmd, cmdsize;
++  char segname[16];
++  uint64_t vmaddr, vmsize, fileoff, filesize;
++  uint32_t maxprot, initprot, nsects, flags;
++};
++
++struct section_64 {
++  char sectname[16];
++  char segname[16];
++  uint64_t addr, size;
++  uint32_t offset, align, reloff, nreloc, flags;
++  uint32_t reserved1, reserved2, reserved3;
++};
++
++struct symtab_command {
++  uint32_t cmd, cmdsize, symoff, nsyms, stroff, strsize;
++};
++
++struct dysymtab_command {
++  uint32_t cmd, cmdsize;
++  uint32_t ilocalsym, nlocalsym;
++  uint32_t iextdefsym, nextdefsym;
++  uint32_t iundefsym, nundefsym;
++  uint32_t tocoff, ntoc;
++  uint32_t modtaboff, nmodtab;
++  uint32_t extrefsymoff, nextrefsyms;
++  uint32_t indirectsymoff, nindirectsyms;
++  uint32_t extreloff, nextrel;
++  uint32_t locreloff, nlocrel;
++};
++
++struct nlist_64 {
++  uint32_t n_strx;
++  uint8_t n_type, n_sect;
++  uint16_t n_desc;
++  uint64_t n_value;
++};
++
++struct relocation_info {
++  int32_t r_address;
++  uint32_t r_info;
++};
++
++MAKESURE(mach_header_64_size, sizeof(struct mach_header_64) == 32);
++MAKESURE(segment_command_64_size, sizeof(struct segment_command_64) == 72);
++MAKESURE(section_64_size, sizeof(struct section_64) == 80);
++MAKESURE(symtab_command_size, sizeof(struct symtab_command) == 24);
++MAKESURE(dysymtab_command_size, sizeof(struct dysymtab_command) == 80);
++MAKESURE(nlist_64_size, sizeof(struct nlist_64) == 16);
++MAKESURE(relocation_info_size, sizeof(struct relocation_info) == 8);
++
++typedef struct {
++  int32_t addr;
++  uint32_t info;
++} MReloc;
++
++typedef struct {
++  uint32_t strx;
++  uint8_t type, sect;
++  uint16_t desc;
++  uint64_t value;
++} MSym;
++
++struct MachoCtx {
++  uint8_t* text;
++  uint32_t textsz, textcap;
++  uint8_t* data;
++  uint32_t datasz, datacap;
++  uint32_t bsssz;
++  MReloc* dreloc;
++  uint32_t ndreloc, drelocap;
++  MReloc* treloc;
++  uint32_t ntreloc, trelocap;
++  MSym* syms;
++  uint32_t nsyms, symcap;
++  char* strtab;
++  uint32_t strtabsz, strtabcap;
++  // forward BL fixups: resolved in macho_write
++  struct {
++    uint32_t off;
++    uint32_t symidx;
++  }* blfixup;
++  uint32_t nblfixup, blfixupap;
++  // current data item state
++  char datname[NString];
++  Lnk* datlnk;
++  int64_t dleadzero;  // >=0: accumulating leading zeros; -1: data started
++  uint32_t datstart;  // ctx->datasz at DStart
++};
++
++static void buf_append(uint8_t** buf, uint32_t* sz, uint32_t* cap, const void* src, uint32_t n) {
++  if (*sz + n > *cap) {
++    uint32_t newcap = *cap ? *cap * 2 : 64;
++    while (newcap < *sz + n) {
++      newcap *= 2;
++    }
++    *buf = realloc(*buf, newcap);
++    if (!*buf) {
++      die("obj: out of memory");
++    }
++    *cap = newcap;
++  }
++  memcpy(*buf + *sz, src, n);
++  *sz += n;
++}
++
++static uint32_t strintern(MachoCtx* ctx, const char* s) {
++  uint32_t off = ctx->strtabsz;
++  uint32_t n = (uint32_t)strlen(s) + 1;
++  buf_append((uint8_t**)&ctx->strtab, &ctx->strtabsz, &ctx->strtabcap, s, n);
++  return off;
++}
++
++static void symname(char out[NString], const char* n) {
++  if (n[0] == '"') {
++    size_t len = strlen(n);
++    int inner = len >= 2 ? (int)(len - 2) : 0;
++    snprintf(out, NString, "%.*s", inner, n + 1);
++  } else {
++    snprintf(out, NString, "_%s", n);
++  }
++}
++
++static uint32_t symadd(MachoCtx* ctx,
++                       const char* name,
++                       uint8_t type,
++                       uint8_t sect,
++                       uint64_t value) {
++  MSym sym;
++  sym.strx = strintern(ctx, name);
++  sym.type = type;
++  sym.sect = sect;
++  sym.desc = 0;
++  sym.value = value;
++  if (ctx->nsyms == ctx->symcap) {
++    ctx->symcap = ctx->symcap ? ctx->symcap * 2 : 8;
++    ctx->syms = realloc(ctx->syms, ctx->symcap * sizeof(MSym));
++    if (!ctx->syms) {
++      die("obj: out of memory");
++    }
++  }
++  ctx->syms[ctx->nsyms] = sym;
++  return ctx->nsyms++;
++}
++
++static void relocadd(MachoCtx* ctx, int32_t addr, uint32_t symidx, int type, int ext, int length) {
++  MReloc r;
++  r.addr = addr;
++  r.info = (symidx & 0xFFFFFFu) | ((uint32_t)length << 25) | ((uint32_t)ext << 27) |
++           ((uint32_t)type << 28);
++  if (ctx->ndreloc == ctx->drelocap) {
++    ctx->drelocap = ctx->drelocap ? ctx->drelocap * 2 : 8;
++    ctx->dreloc = realloc(ctx->dreloc, ctx->drelocap * sizeof(MReloc));
++    if (!ctx->dreloc) {
++      die("obj: out of memory");
++    }
++  }
++  ctx->dreloc[ctx->ndreloc++] = r;
++}
++
++static void trelocadd(MachoCtx* ctx,
++                      int32_t addr,
++                      uint32_t symidx,
++                      int type,
++                      int length,
++                      int pcrel) {
++  MReloc r;
++  r.addr = addr;
++  r.info = (symidx & 0xFFFFFFu) | ((uint32_t)pcrel << 24)  // r_pcrel
++           | ((uint32_t)length << 25) | (1u << 27)         // r_extern = 1
++           | ((uint32_t)type << 28);
++  if (ctx->ntreloc == ctx->trelocap) {
++    ctx->trelocap = ctx->trelocap ? ctx->trelocap * 2 : 8;
++    ctx->treloc = realloc(ctx->treloc, ctx->trelocap * sizeof(MReloc));
++    if (!ctx->treloc) {
++      die("obj: out of memory");
++    }
++  }
++  ctx->treloc[ctx->ntreloc++] = r;
++}
++
++static uint32_t callee_symidx(MachoCtx* ctx, const char* name) {
++  uint32_t i;
++  for (i = 0; i < ctx->nsyms; i++) {
++    if (strcmp(ctx->strtab + ctx->syms[i].strx, name) == 0) {
++      return i;
++    }
++  }
++  // not present: add as undefined external
++  return symadd(ctx, name, N_UNDF | N_EXT, 0, 0);
++}
++
++static uint32_t align_up(uint32_t v, uint32_t a) {
++  return (v + a - 1) & ~(a - 1);
++}
++
++static void emit_u32(MachoCtx* ctx, uint32_t insn) {
++  buf_append(&ctx->text, &ctx->textsz, &ctx->textcap, &insn, 4);
++}
++
++// ARM64 condition codes indexed by CmpI
++static const uint8_t arm64cond[NCmp] = {
++    // integer comparisons
++    [Cieq] = 0x0,
++    [Cine] = 0x1,
++    [Cisge] = 0xA,
++    [Cisgt] = 0xC,
++    [Cisle] = 0xD,
++    [Cislt] = 0xB,
++    [Ciuge] = 0x2,
++    [Ciugt] = 0x8,
++    [Ciule] = 0x9,
++    [Ciult] = 0x3,
++    // float comparisons (after FCMPE, ARM64 FP flags = integer flags)
++    [NCmpI + Cfeq] = 0x0,
++    [NCmpI + Cfge] = 0xA,
++    [NCmpI + Cfgt] = 0xC,
++    [NCmpI + Cfle] = 0x9,
++    [NCmpI + Cflt] = 0x4,
++    [NCmpI + Cfne] = 0x1,
++    [NCmpI + Cfo] = 0x7,
++    [NCmpI + Cfuo] = 0x6,
++};
++
++// Branch fixup: records a branch instruction to patch after all blocks emitted
++typedef struct {
++  uint32_t off;
++  Blk* tgt;
++  int cond;
++} BrFix;
++
++static void grow_fixes(BrFix** fixes, uint32_t* fixcap) {
++  *fixcap *= 2;
++  *fixes = realloc(*fixes, *fixcap * sizeof(**fixes));
++  if (!*fixes) {
++    die("emitobj: realloc");
++  }
++}
++
++MachoCtx* macho_new(void) {
++  MachoCtx* ctx = emalloc(sizeof *ctx);
++  memset(ctx, 0, sizeof *ctx);
++  // string table always starts with a null byte
++  ctx->strtab = emalloc(64);
++  ctx->strtab[0] = '\0';
++  ctx->strtabsz = 1;
++  ctx->strtabcap = 64;
++  return ctx;
++}
++
++void macho_free(MachoCtx* ctx) {
++  free(ctx->text);
++  free(ctx->data);
++  free(ctx->dreloc);
++  free(ctx->treloc);
++  free(ctx->syms);
++  free(ctx->strtab);
++  free(ctx->blfixup);
++  free(ctx);
++}
++
++// Encode a constant into rd, matching loadcon() in arm64/emit.c.
++static void emit_movcon(MachoCtx* ctx, int rd, int cls, Con* c) {
++  int64_t n;
++  int wide, sh;
++  uint32_t movz, movn, movk;
++
++  if (c->type == CAddr) {
++    char sname[NString];
++    uint32_t symidx;
++    symname(sname, str(c->sym.id));
++    symidx = callee_symidx(ctx, sname);
++    if (c->bits.i != 0) {
++      die("obj: CAddr with non-zero offset in Ocopy");
++    }
++    if (c->sym.type == SThr) {
++      // Thread-local: ADRP Xd, sym@tlvppage
++      //             + LDR  Xd, [Xd, sym@tlvppageoff]
++      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_TLVP_LOAD_PAGE21, 2, 1);
++      emit_u32(ctx, 0x90000000u | (uint32_t)rd);
++      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_TLVP_LOAD_PAGEOFF12, 2, 0);
++      // LDR Xd, [Xd, #0] - loads descriptor ptr
++      emit_u32(ctx, 0xF9400000u | ((uint32_t)rd << 5) | (uint32_t)rd);
++    } else {
++      // Global: ADRP Xd, sym@page
++      //       + ADD  Xd, Xd, sym@pageoff
++      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_PAGE21, 2, 1);
++      emit_u32(ctx, 0x90000000u | (uint32_t)rd);
++      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_PAGEOFF12, 2, 0);
++      emit_u32(ctx, 0x91000000u | ((uint32_t)rd << 5) | (uint32_t)rd);
++    }
++    return;
++  }
++  assert(c->type == CBits);
++
++  wide = (cls == Kl);
++  n = c->bits.i;
++  if (!wide) {
++    n = (int64_t)(int32_t)n;  // sign-extend to 64 bits
++  }
++
++  movz = wide ? 0xD2800000u : 0x52800000u;  // MOVZ
++  movn = wide ? 0x92800000u : 0x12800000u;  // MOVN
++  movk = wide ? 0xF2800000u : 0x72800000u;  // MOVK
++
++  {
++    // For Kw work with the 32-bit unsigned value; Kl uses all 64.
++    uint64_t un = wide ? (uint64_t)n : (uint64_t)(uint32_t)n;
++    uint64_t cn = wide ? ~un : (~un & 0xFFFFFFFFu);
++    int nhw = wide ? 4 : 2;
++    int hw;
++    uint64_t mask;
++    uint32_t imm16;
++
++    // Case 1: single MOVZ - un has exactly one nonzero 16-bit chunk.
++    for (hw = 0; hw < nhw; hw++) {
++      mask = (uint64_t)0xFFFF << (hw * 16);
++      if ((un & ~mask) == 0) {
++        imm16 = (uint32_t)((un >> (hw * 16)) & 0xFFFF);
++        emit_u32(ctx, movz | ((uint32_t)hw << 21) | (imm16 << 5) | (uint32_t)rd);
++        return;
++      }
++    }
++
++    // Case 2: single MOVN - ~un has exactly one nonzero 16-bit chunk.
++    // Matches loadcon's "(n | 0xffff) == -1" and similar patterns.
++    for (hw = 0; hw < nhw; hw++) {
++      mask = (uint64_t)0xFFFF << (hw * 16);
++      if ((cn & ~mask) == 0) {
++        imm16 = (uint32_t)((cn >> (hw * 16)) & 0xFFFF);
++        emit_u32(ctx, movn | ((uint32_t)hw << 21) | (imm16 << 5) | (uint32_t)rd);
++        return;
++      }
++    }
++  }
++
++  // Case 3: MOVZ + optional MOVKs, matching loadcon()'s else branch.
++  emit_u32(ctx, movz | (((uint32_t)(n & 0xffff)) << 5) | (uint32_t)rd);
++  for (sh = 16; (n >>= 16) != 0; sh += 16) {
++    if ((!wide && sh == 32) || sh == 64) {
++      break;
++    }
++    emit_u32(ctx,
++             movk | ((uint32_t)(sh / 16) << 21) | (((uint32_t)(n & 0xffff)) << 5) | (uint32_t)rd);
++  }
++}
++
++// Mirror arm64/emit.c slot() for RSlot -> x29-relative byte offset.
++// s == -1: frame-start marker used by apple_selvastart (Oaddr SLOT(-1)).
++// s < 0:   above-frame caller argument at byte offset -(s+2) above frame.
++// s >= 0:  local / callee-save slot.
++static uint32_t slot_off(int s, int padding, int framesz) {
++  if (s == -1) {
++    return (uint32_t)(16 + framesz);
++  }
++  if (s < 0) {
++    return (uint32_t)(16 + framesz - (s + 2));
++  }
++  return (uint32_t)(16 + padding + 4 * s);
++}
++
++void macho_emitfn(Fn* fn, MachoCtx* ctx) {
++  char name[NString];
++  Blk* b;
++  Ins* i;
++  int rd, rn, rm, wide;
++  int ncallee, framesz, total, padding;
++  uint32_t enc;
++  uint32_t* blkoff;
++  uint32_t nfix, fixcap;
++  BrFix* fixes;
++
++  symname(name, fn->name);
++  symadd(ctx, name, N_SECT | (fn->lnk.export ? N_EXT : 0),
++         1,  // __text
++         (uint64_t)ctx->textsz);
++
++  {
++    int* r;
++    // count all callee-saves (GPR R19-R28 then FP V8-V15)
++    ncallee = 0;
++    for (r = arm64_rclob; *r >= 0; r++) {
++      if (fn->reg & BIT(*r)) {
++        ncallee++;
++      }
++    }
++    if (ncallee & 1) {
++      ncallee++;  // round up to even for alignment
++    }
++    // Apple vararg: no register save area; frame is identical
++    // to non-vararg.  dynalloc is handled via mov sp, x29.
++    if (fn->dynalloc) {
++      die("obj: %s: unimplemented (dynalloc=1)", fn->name);
++    }
++  }
++  {
++    int slotbytes = ((fn->slot + 3) & -4) * 4;
++    padding = slotbytes - fn->slot * 4;
++    framesz = ncallee * 8 + slotbytes;
++  }
++  total = framesz + 16;  // + x29/x30 pair
++
++  blkoff = emalloc(fn->nblk * sizeof blkoff[0]);
++  nfix = 0;
++  fixcap = 8;
++  fixes = emalloc(fixcap * sizeof fixes[0]);
++
++  // prologue
++  {
++    int* r;
++    int k;
++    emit_u32(ctx, 0xD503245Fu);  // hint #34 (BTI jc)
++    if (total <= 512) {
++      // small frame: single pre-indexed STP
++      int imm7 = -(total / 8);
++      emit_u32(ctx, 0xA9800000u | ((uint32_t)(imm7 & 0x7F) << 15) | (30u << 10) | (31u << 5) | 29u);
++    } else {
++      // large frame: separate sub + fixed-16 STP.
++      // framesz must fit in a 12-bit immediate.
++      assert(framesz <= 4095);
++      // sub sp, sp, #framesz
++      emit_u32(ctx, 0xD1000000u | ((uint32_t)framesz << 10) | (31u << 5) | 31u);
++      emit_u32(ctx, 0xA9BF7BFDu);  // stp x29,x30,[sp,-16]!
++    }
++    emit_u32(ctx, 0x910003FDu);  // mov x29, sp
++    // save callee-saves (GPRs then FP): str rN, [x29, #off]
++    k = 0;
++    for (r = arm64_rclob; *r >= 0; r++) {
++      if (fn->reg & BIT(*r)) {
++        k++;
++        uint32_t off = (uint32_t)(16 + framesz - 8 * k);
++        uint32_t imm12 = off / 8;
++        if (*r >= V0) {
++          // STR Dn, [X29, #off]
++          emit_u32(ctx, 0xFD000000u | (imm12 << 10) | (29u << 5) | (uint32_t)(*r - V0));
++        } else {
++          // STR Xn, [X29, #off]
++          emit_u32(ctx, 0xF9000000u | (imm12 << 10) | (29u << 5) | (uint32_t)(*r - R0));
++        }
++      }
++    }
++  }
++
++  for (b = fn->start; b; b = b->link) {
++    blkoff[b->id] = ctx->textsz;
++    for (i = b->ins; i < &b->ins[b->nins]; i++) {
++      // CSET: integer and float flag ops
++      if ((i->op >= Oflag && i->op < Oflag + NCmpI) ||
++          (i->op >= Oflag + NCmpI && i->op <= Oflag1)) {
++        int c = i->op - Oflag;  // 0..NCmp-1
++        assert(isreg(i->to));
++        rd = i->to.val - R0;
++        // CSET Wd,cond = CSINC Wd,WZR,WZR,invert(cond)
++        emit_u32(ctx, 0x1A9F07E0u | ((uint32_t)(arm64cond[c] ^ 1) << 12) | (uint32_t)rd);
++        continue;
++      }
++      switch (i->op) {
++        case Onop:
++          break;
++        case Oadd:
++        case Osub:
++          assert(isreg(i->to) && isreg(i->arg[0]));
++          if (rtype(i->arg[1]) == RCon) {
++            // ADD/SUB Xd/Wd, Xn/Wn, #imm12
++            // (emitted by isel TLS offset lowering)
++            Con* cc = &fn->con[i->arg[1].val];
++            int64_t imm;
++            assert(cc->type == CBits);
++            imm = cc->bits.i;
++            rd = i->to.val - R0;
++            rn = i->arg[0].val - R0;
++            wide = (i->cls == Kl);
++            assert(imm >= 0 && imm < 4096);
++            if (i->op == Oadd) {
++              enc = wide ? 0x91000000u : 0x11000000u;
++            } else {
++              enc = wide ? 0xD1000000u : 0x51000000u;
++            }
++            emit_u32(ctx, enc | ((uint32_t)imm << 10) | ((uint32_t)rn << 5) | (uint32_t)rd);
++            break;
++          }
++          assert(isreg(i->arg[1]));
++          if (i->cls == Ks || i->cls == Kd) {
++            // FADD/FSUB Sd/Dd, Sn/Dn, Sm/Dm
++            rd = i->to.val - V0;
++            rn = i->arg[0].val - V0;
++            rm = i->arg[1].val - V0;
++            if (i->op == Oadd) {
++              enc = (i->cls == Kd) ? 0x1E602800u : 0x1E202800u;
++            } else {
++              enc = (i->cls == Kd) ? 0x1E603800u : 0x1E203800u;
++            }
++            emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++            break;
++          }
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - R0;
++          rm = i->arg[1].val - R0;
++          wide = (i->cls == Kl);
++          if (i->op == Oadd) {
++            enc = wide ? 0x8B000000u : 0x0B000000u;
++          } else {
++            enc = wide ? 0xCB000000u : 0x4B000000u;
++          }
++          if (wide && (rd == 31 || rn == 31)) {
++            // SP involved: use extended-register form (bit21=1,
++            // option=UXTX=011) so that register 31 encodes as SP, not XZR
++            enc |= 0x00200000u | (3u << 13);
++          }
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        case Omul:
++          assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++          if (i->cls == Ks || i->cls == Kd) {
++            // FMUL Sd/Dd, Sn/Dn, Sm/Dm
++            rd = i->to.val - V0;
++            rn = i->arg[0].val - V0;
++            rm = i->arg[1].val - V0;
++            enc = (i->cls == Kd) ? 0x1E600800u : 0x1E200800u;
++            emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++            break;
++          }
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - R0;
++          rm = i->arg[1].val - R0;
++          wide = (i->cls == Kl);
++          // MUL = MADD with Ra=XZR (31)
++          enc = wide ? 0x9B007C00u : 0x1B007C00u;
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        case Oswap: {
++          // Three-move swap via IP1 (X17) scratch. Integer only; float swap
++          // (fmov) not yet implemented.
++          int sc = IP1 - R0;  // = 17 = X17
++          assert(i->cls == Kw || i->cls == Kl);
++          assert(isreg(i->arg[0]) && isreg(i->arg[1]));
++          rn = i->arg[0].val - R0;
++          rm = i->arg[1].val - R0;
++          wide = (i->cls == Kl);
++          enc = wide ? 0xAA0003E0u : 0x2A0003E0u;
++          emit_u32(ctx, enc | ((uint32_t)rn << 16) | (uint32_t)sc);  // mov IP1, rn
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | (uint32_t)rn);  // mov rn, rm
++          emit_u32(ctx, enc | ((uint32_t)sc << 16) | (uint32_t)rm);  // mov rm, IP1
++          break;
++        }
++        case Ocopy:
++          if (req(i->to, i->arg[0])) {
++            break;  // no-op
++          }
++          assert(isreg(i->to));
++          if (i->cls == Ks || i->cls == Kd) {
++            // FMOV Sd/Dd, Sn/Dn
++            assert(isreg(i->arg[0]));
++            rd = i->to.val - V0;
++            rm = i->arg[0].val - V0;
++            enc = (i->cls == Kd) ? 0x1E604000u : 0x1E204000u;
++            emit_u32(ctx, enc | ((uint32_t)rm << 5) | (uint32_t)rd);
++            break;
++          }
++          rd = i->to.val - R0;
++          wide = (i->cls == Kl);
++          if (rtype(i->arg[0]) == RCon) {
++            emit_movcon(ctx, rd, i->cls, &fn->con[i->arg[0].val]);
++            break;
++          }
++          assert(isreg(i->arg[0]));
++          rm = i->arg[0].val - R0;
++          // MOV Wd,Wm = ORR Wd,WZR,Wm
++          enc = wide ? 0xAA0003E0u : 0x2A0003E0u;
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | (uint32_t)rd);
++          break;
++        case Oacmp:
++        case Oacmn:
++          assert(isreg(i->arg[0]));
++          rn = i->arg[0].val - R0;
++          wide = (i->cls == Kl);
++          if (rtype(i->arg[1]) == RCon) {
++            // CMP/CMN immediate
++            Con* c = &fn->con[i->arg[1].val];
++            int64_t imm = c->bits.i;
++            assert(imm >= 0 && imm < 4096);
++            if (i->op == Oacmp) {
++              enc = wide ? 0xF100001Fu : 0x7100001Fu;
++            } else {
++              enc = wide ? 0xB100001Fu : 0x3100001Fu;
++            }
++            emit_u32(ctx, enc | ((uint32_t)imm << 10) | ((uint32_t)rn << 5));
++          } else {
++            // CMP/CMN register
++            assert(isreg(i->arg[1]));
++            rm = i->arg[1].val - R0;
++            if (i->op == Oacmp) {
++              enc = wide ? 0xEB00001Fu : 0x6B00001Fu;
++            } else {
++              enc = wide ? 0xAB00001Fu : 0x2B00001Fu;
++            }
++            emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5));
++          }
++          break;
++        case Ostoreb:
++        case Ostoreh:
++        case Ostorew:
++        case Ostorel: {
++          int scale;
++          Ref addr;
++          assert(isreg(i->arg[0]));
++          addr = i->arg[1];
++          // float store: Ostorew Ks / Ostorel Kd
++          if (i->arg[0].val >= V0) {
++            rd = i->arg[0].val - V0;
++            enc = (i->op == Ostorel) ? 0xFD000000u : 0xBD000000u;
++            scale = (i->op == Ostorel) ? 8 : 4;
++            if (isreg(addr)) {
++              rn = addr.val - R0;
++              emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++            } else {
++              uint32_t off;
++              assert(rtype(addr) == RSlot);
++              off = slot_off(rsval(addr), padding, framesz);
++              emit_u32(ctx, enc | ((off / (uint32_t)scale) << 10) | (29u << 5) | (uint32_t)rd);
++            }
++            break;
++          }
++          rd = i->arg[0].val - R0;  // value (rt)
++          switch (i->op) {
++            case Ostoreb:
++              enc = 0x39000000u;
++              scale = 1;
++              break;
++            case Ostoreh:
++              enc = 0x79000000u;
++              scale = 2;
++              break;
++            case Ostorew:
++              enc = 0xB9000000u;
++              scale = 4;
++              break;
++            default:
++              enc = 0xF9000000u;
++              scale = 8;
++              break;
++          }
++          if (isreg(addr)) {
++            rn = addr.val - R0;
++            emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++          } else {
++            uint32_t off;
++            assert(rtype(addr) == RSlot);
++            off = slot_off(rsval(addr), padding, framesz);
++            emit_u32(ctx, enc | ((off / (uint32_t)scale) << 10) | (29u << 5) | (uint32_t)rd);
++          }
++          break;
++        }
++        case Oloaduw:
++        case Oloadsw: {
++          // loaduw -> LDR Wt,[Xn]; loadsw/Kl -> LDRSW Xt,[Xn]
++          Ref addr;
++          assert(isreg(i->to));
++          rd = i->to.val - R0;
++          addr = i->arg[0];
++          enc = (i->op == Oloadsw && i->cls == Kl) ? 0xB9800000u   // LDRSW Xt
++                                                   : 0xB9400000u;  // LDR   Wt
++          if (isreg(addr)) {
++            rn = addr.val - R0;
++            emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++          } else {
++            uint32_t off;
++            assert(rtype(addr) == RSlot);
++            off = slot_off(rsval(addr), padding, framesz);
++            emit_u32(ctx, enc | ((off / 4u) << 10) | (29u << 5) | (uint32_t)rd);
++          }
++          break;
++        }
++        case Oloadsb:
++        case Oloadub:
++        case Oloadsh:
++        case Oloaduh:
++        case Oload: {
++          int scale;
++          Ref addr;
++          assert(isreg(i->to));
++          rd = i->to.val - R0;
++          addr = i->arg[0];
++          wide = (i->cls == Kl);
++          switch (i->op) {
++            case Oloadsb:
++              enc = wide ? 0x39800000u : 0x39C00000u;
++              scale = 1;
++              break;
++            case Oloadub:
++              enc = 0x39400000u;
++              scale = 1;
++              break;
++            case Oloadsh:
++              enc = wide ? 0x79800000u : 0x79C00000u;
++              scale = 2;
++              break;
++            case Oloaduh:
++              enc = 0x79400000u;
++              scale = 2;
++              break;
++            default:  // Oload
++              if (i->cls == Ks) {
++                rd = i->to.val - V0;
++                enc = 0xBD400000u;
++                scale = 4;
++              } else if (i->cls == Kd) {
++                rd = i->to.val - V0;
++                enc = 0xFD400000u;
++                scale = 8;
++              } else {
++                enc = wide ? 0xF9400000u : 0xB9400000u;
++                scale = wide ? 8 : 4;
++              }
++              break;
++          }
++          if (isreg(addr)) {
++            rn = addr.val - R0;
++            emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++          } else {
++            uint32_t off;
++            assert(rtype(addr) == RSlot);
++            off = slot_off(rsval(addr), padding, framesz);
++            emit_u32(ctx, enc | ((off / (uint32_t)scale) << 10) | (29u << 5) | (uint32_t)rd);
++          }
++          break;
++        }
++        case Oextsb:
++        case Oextub:
++        case Oextsh:
++        case Oextuh:
++        case Oextsw:
++        case Oextuw:
++          assert(isreg(i->to) && isreg(i->arg[0]));
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - R0;
++          wide = (i->cls == Kl);
++          switch (i->op) {
++            case Oextsb:
++              // SXTB: Kl->Xt, Kw->Wt
++              enc = wide ? 0x93401C00u : 0x13001C00u;
++              emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            case Oextub:
++              // UXTB Wt,Wn - always 32-bit
++              emit_u32(ctx, 0x53001C00u | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            case Oextsh:
++              // SXTH: Kl->Xt, Kw->Wt
++              enc = wide ? 0x93403C00u : 0x13003C00u;
++              emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            case Oextuh:
++              // UXTH Wt,Wn - always 32-bit
++              emit_u32(ctx, 0x53003C00u | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            case Oextsw:
++              // SXTW Xt,Wn - always Kl
++              emit_u32(ctx, 0x93407C00u | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            default:  // Oextuw
++              // MOV Wd,Wm = ORR Wd,WZR,Wm (zero-extend)
++              emit_u32(ctx, 0x2A0003E0u | ((uint32_t)rn << 16) | (uint32_t)rd);
++              break;
++          }
++          break;
++        case Odiv:
++        case Oudiv:
++          assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++          if (i->cls == Ks || i->cls == Kd) {
++            // FDIV Sd/Dd, Sn/Dn, Sm/Dm
++            rd = i->to.val - V0;
++            rn = i->arg[0].val - V0;
++            rm = i->arg[1].val - V0;
++            enc = (i->cls == Kd) ? 0x1E601800u : 0x1E201800u;
++            emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++            break;
++          }
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - R0;
++          rm = i->arg[1].val - R0;
++          wide = (i->cls == Kl);
++          enc = (i->op == Odiv) ? (wide ? 0x9AC00C00u : 0x1AC00C00u)   // SDIV
++                                : (wide ? 0x9AC00800u : 0x1AC00800u);  // UDIV
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        case Orem:
++        case Ourem: {
++          int scratch = IP1 - R0;  // x17 - intra-procedure scratch
++          assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - R0;  // dividend
++          rm = i->arg[1].val - R0;  // divisor
++          wide = (i->cls == Kl);
++          // step 1: scratch = dividend / divisor
++          enc = (i->op == Orem) ? (wide ? 0x9AC00C00u : 0x1AC00C00u)   // SDIV
++                                : (wide ? 0x9AC00800u : 0x1AC00800u);  // UDIV
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)scratch);
++          // step 2: rd = rn - scratch*rm (MSUB rd, scratch, rm, rn)
++          enc = wide ? 0x9B008000u : 0x1B008000u;
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 10) |
++                            ((uint32_t)scratch << 5) | (uint32_t)rd);
++          break;
++        }
++        case Oand:
++        case Oor:
++        case Oxor:
++          assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - R0;
++          rm = i->arg[1].val - R0;
++          wide = (i->cls == Kl);
++          if (i->op == Oand) {
++            enc = wide ? 0x8A000000u : 0x0A000000u;
++          } else if (i->op == Oor) {
++            enc = wide ? 0xAA000000u : 0x2A000000u;
++          } else {
++            enc = wide ? 0xCA000000u : 0x4A000000u;
++          }
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        case Oneg:
++          assert(isreg(i->to) && isreg(i->arg[0]));
++          if (i->cls == Ks || i->cls == Kd) {
++            // FNEG Sd/Dd, Sn/Dn
++            rd = i->to.val - V0;
++            rm = i->arg[0].val - V0;
++            enc = (i->cls == Kd) ? 0x1E614000u : 0x1E214000u;
++            emit_u32(ctx, enc | ((uint32_t)rm << 5) | (uint32_t)rd);
++            break;
++          }
++          rd = i->to.val - R0;
++          rm = i->arg[0].val - R0;
++          wide = (i->cls == Kl);
++          enc = wide ? 0xCB0003E0u : 0x4B0003E0u;
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | (uint32_t)rd);
++          break;
++        case Osar:
++        case Oshr:
++        case Oshl:
++          assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - R0;
++          rm = i->arg[1].val - R0;
++          wide = (i->cls == Kl);
++          if (i->op == Osar) {
++            enc = wide ? 0x9AC02800u : 0x1AC02800u;
++          } else if (i->op == Oshr) {
++            enc = wide ? 0x9AC02400u : 0x1AC02400u;
++          } else {
++            enc = wide ? 0x9AC02000u : 0x1AC02000u;
++          }
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        case Ocall: {
++          if (rtype(i->arg[0]) == RTmp) {
++            // BLR Xn - indirect call
++            assert(isreg(i->arg[0]));
++            rn = i->arg[0].val - R0;
++            emit_u32(ctx, 0xD63F0000u | ((uint32_t)rn << 5));
++          } else {
++            // BL sym - direct call
++            Con* c;
++            char cname[NString];
++            uint32_t symidx;
++            assert(rtype(i->arg[0]) == RCon);
++            c = &fn->con[i->arg[0].val];
++            assert(c->type == CAddr && !c->bits.i);
++            symname(cname, str(c->sym.id));
++            symidx = callee_symidx(ctx, cname);
++            if ((ctx->syms[symidx].type & 0x0Eu) == N_SECT) {
++              // backward ref: direct offset
++              int32_t off = ((int32_t)ctx->syms[symidx].value - (int32_t)ctx->textsz) / 4;
++              emit_u32(ctx, 0x94000000u | ((uint32_t)off & 0x3FFFFFFu));
++            } else {
++              // forward/external: placeholder; resolved in macho_write
++              if (ctx->nblfixup == ctx->blfixupap) {
++                ctx->blfixupap = ctx->blfixupap ? ctx->blfixupap * 2 : 8;
++                ctx->blfixup = realloc(ctx->blfixup, ctx->blfixupap * sizeof *ctx->blfixup);
++                if (!ctx->blfixup) {
++                  die("obj: realloc");
++                }
++              }
++              ctx->blfixup[ctx->nblfixup].off = ctx->textsz;
++              ctx->blfixup[ctx->nblfixup].symidx = symidx;
++              ctx->nblfixup++;
++              emit_u32(ctx, 0x94000000u);
++            }
++          }
++          break;
++        }
++        case Oaddr: {
++          uint32_t off;
++          assert(isreg(i->to));
++          assert(rtype(i->arg[0]) == RSlot);
++          rd = i->to.val - R0;
++          off = slot_off(rsval(i->arg[0]), padding, framesz);
++          assert(off <= 4095);
++          // ADD Xd, X29, #off
++          emit_u32(ctx, 0x91000000u | (off << 10) | (29u << 5) | (uint32_t)rd);
++          break;
++        }
++        case Oafcmp:
++          // FCMPE Sn, Sm / FCMPE Dn, Dm
++          assert(isreg(i->arg[0]) && isreg(i->arg[1]));
++          rn = i->arg[0].val - V0;
++          rm = i->arg[1].val - V0;
++          enc = (i->cls == Kd) ? 0x1E602010u : 0x1E202010u;
++          emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5));
++          break;
++        case Ocast:
++          // FMOV between FP and GPR (bit-cast)
++          assert(isreg(i->to) && isreg(i->arg[0]));
++          switch (i->cls) {
++            case Kw:  // fmov Wd, Sn: GPR=to, FP=arg[0]
++              rd = i->to.val - R0;
++              rn = i->arg[0].val - V0;
++              emit_u32(ctx, 0x1E260000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            case Kl:  // fmov Xd, Dn
++              rd = i->to.val - R0;
++              rn = i->arg[0].val - V0;
++              emit_u32(ctx, 0x9E660000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            case Ks:  // fmov Sd, Wn: FP=to, GPR=arg[0]
++              rd = i->to.val - V0;
++              rn = i->arg[0].val - R0;
++              emit_u32(ctx, 0x1E270000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++            default:  // Kd: fmov Dd, Xn
++              rd = i->to.val - V0;
++              rn = i->arg[0].val - R0;
++              emit_u32(ctx, 0x9E670000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++              break;
++          }
++          break;
++        case Ostosi:
++        case Ostoui:
++        case Odtosi:
++        case Odtoui: {
++          // FCVTZS/FCVTZU: FP->GPR integer conversion
++          int sfp = (i->op == Odtosi || i->op == Odtoui);
++          int uns = (i->op == Ostoui || i->op == Odtoui);
++          int wx = (i->cls == Kl);
++          rd = i->to.val - R0;
++          rn = i->arg[0].val - V0;
++          if (sfp) {
++            enc = uns ? (wx ? 0x9E790000u : 0x1E790000u) : (wx ? 0x9E780000u : 0x1E780000u);
++          } else {
++            enc = uns ? (wx ? 0x9E390000u : 0x1E390000u) : (wx ? 0x9E380000u : 0x1E380000u);
++          }
++          emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        }
++        case Oswtof:
++        case Ouwtof:
++        case Osltof:
++        case Oultof: {
++          // SCVTF/UCVTF: GPR->FP conversion
++          int xl = (i->op == Osltof || i->op == Oultof);
++          int uns = (i->op == Ouwtof || i->op == Oultof);
++          int dbl = (i->cls == Kd);
++          rd = i->to.val - V0;
++          rn = i->arg[0].val - R0;
++          if (xl) {
++            enc = uns ? (dbl ? 0x9E630000u : 0x9E230000u) : (dbl ? 0x9E620000u : 0x9E220000u);
++          } else {
++            enc = uns ? (dbl ? 0x1E630000u : 0x1E230000u) : (dbl ? 0x1E620000u : 0x1E220000u);
++          }
++          emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        }
++        case Oexts:
++          // FCVT Dd, Sn - widen single to double
++          assert(isreg(i->to) && isreg(i->arg[0]));
++          rd = i->to.val - V0;
++          rn = i->arg[0].val - V0;
++          emit_u32(ctx, 0x1E22C000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        case Otruncd:
++          // FCVT Sd, Dn - narrow double to single
++          assert(isreg(i->to) && isreg(i->arg[0]));
++          rd = i->to.val - V0;
++          rn = i->arg[0].val - V0;
++          emit_u32(ctx, 0x1E624000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++          break;
++        case Ostores:
++        case Ostored: {
++          // STR Sn/Dn, [Xm] or [X29, #slot]
++          // arg[0]=float value, arg[1]=address
++          int fscale = (i->op == Ostored) ? 8 : 4;
++          Ref faddr = i->arg[1];
++          assert(isreg(i->arg[0]));
++          rd = i->arg[0].val - V0;
++          enc = (i->op == Ostored) ? 0xFD000000u : 0xBD000000u;
++          if (isreg(faddr)) {
++            rn = faddr.val - R0;
++            emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++          } else {
++            uint32_t off;
++            assert(rtype(faddr) == RSlot);
++            off = slot_off(rsval(faddr), padding, framesz);
++            emit_u32(ctx, enc | ((off / (uint32_t)fscale) << 10) | (29u << 5) | (uint32_t)rd);
++          }
++          break;
++        }
++        default:
++          die("obj: %s: unhandled op %s", fn->name, optab[i->op].name);
++      }
++    }
++    // jump
++    switch (b->jmp.type) {
++      case Jret0: {
++        int* r;
++        int k;
++        // restore callee-saves (same order as prologue)
++        k = 0;
++        for (r = arm64_rclob; *r >= 0; r++) {
++          if (fn->reg & BIT(*r)) {
++            k++;
++            uint32_t off = (uint32_t)(16 + framesz - 8 * k);
++            uint32_t imm12 = off / 8;
++            if (*r >= V0) {
++              // LDR Dn, [X29, #off]
++              emit_u32(ctx, 0xFD400000u | (imm12 << 10) | (29u << 5) | (uint32_t)(*r - V0));
++            } else {
++              // LDR Xn, [X29, #off]
++              emit_u32(ctx, 0xF9400000u | (imm12 << 10) | (29u << 5) | (uint32_t)(*r - R0));
++            }
++          }
++        }
++        if (total <= 512) {
++          // small frame: single post-indexed LDP
++          emit_u32(ctx,
++                   0xA8C00000u | ((uint32_t)(total / 8) << 15) | (30u << 10) | (31u << 5) | 29u);
++        } else {
++          // large frame: fixed-16 LDP + add sp
++          emit_u32(ctx, 0xA8C17BFDu);  // ldp x29,x30,[sp],16
++          // add sp, sp, #framesz
++          emit_u32(ctx, 0x91000000u | ((uint32_t)framesz << 10) | (31u << 5) | 31u);
++        }
++        emit_u32(ctx, 0xD65F03C0u);  // ret
++        break;
++      }
++      case Jhlt:
++        emit_u32(ctx, 0xD4207D00u);  // brk #1000
++        break;
++      case Jjmp:
++        if (b->s1 != b->link) {
++          uint32_t boff = ctx->textsz;
++          emit_u32(ctx, 0x14000000u);  // B (placeholder)
++          if (nfix == fixcap) {
++            grow_fixes(&fixes, &fixcap);
++          }
++          fixes[nfix++] = (BrFix){boff, b->s1, -1};
++        }
++        break;
++      default: {
++        int c = b->jmp.type - Jjf;
++        Blk* brtgt;
++        if (c < 0 || c >= NCmp) {
++          die("obj: %s: unhandled jump %d", fn->name, b->jmp.type);
++        }
++        if (b->link == b->s2) {
++          brtgt = b->s1;  // s2 falls through; branch to s1 if c
++        } else {
++          c = cmpneg(c);  // s1 falls through; branch to s2 if !c
++          brtgt = b->s2;
++          // cmpneg of some ordered float conditions gives the NaN-excluding
++          // form; remap to NaN-inclusive conditions so NaN causes the branch
++          // (matching the text assembler's behaviour after fcmpe)
++          // clang-format off
++          switch (c) {
++            case NCmpI + Cfge: c = Ciuge; break;  // ge->cs
++            case NCmpI + Cfgt: c = Ciugt; break;  // gt->hi
++            case NCmpI + Cfle: c = Cisle; break;  // le->ls
++            case NCmpI + Cflt: c = Cislt; break;  // lt->mi
++            default: break;
++          }
++          // clang-format on
++        }
++        {
++          uint32_t boff = ctx->textsz;
++          emit_u32(ctx, 0x54000000u | (uint32_t)arm64cond[c]);
++          if (nfix == fixcap) {
++            grow_fixes(&fixes, &fixcap);
++          }
++          fixes[nfix++] = (BrFix){boff, brtgt, arm64cond[c]};
++        }
++        // if neither successor falls through, also branch to s1
++        if (b->link != b->s1 && b->link != b->s2) {
++          uint32_t boff = ctx->textsz;
++          emit_u32(ctx, 0x14000000u);
++          if (nfix == fixcap) {
++            grow_fixes(&fixes, &fixcap);
++          }
++          fixes[nfix++] = (BrFix){boff, b->s1, -1};
++        }
++        break;
++      }
++    }
++  }
++
++  // apply branch fixups
++  for (uint32_t f = 0; f < nfix; f++) {
++    uint32_t toff = blkoff[fixes[f].tgt->id];
++    int32_t delta = ((int32_t)toff - (int32_t)fixes[f].off) / 4;
++    uint32_t* p = (uint32_t*)&ctx->text[fixes[f].off];
++    if (fixes[f].cond >= 0) {
++      *p |= (uint32_t)(delta & 0x7FFFFu) << 5;  // B.cond imm19
++    } else {
++      *p |= (uint32_t)(delta & 0x3FFFFFFu);  // B imm26
++    }
++  }
++  free(blkoff);
++  free(fixes);
++}
++
++void macho_emitdat(Dat* d, MachoCtx* ctx) {
++  static const int64_t masks[] = {
++      [DB] = 0xFFL,
++      [DH] = 0xFFFFL,
++      [DW] = 0xFFFFFFFFL,
++      [DL] = -1L,
++  };
++  static const uint8_t zeros[8] = {0};
++  uint64_t v;
++  uint32_t refidx;
++  char mname[NString];
++  const char* p;
++  int n;
++
++  switch (d->type) {
++    case DStart:
++      strncpy(ctx->datname, d->name, NString - 1);
++      ctx->datname[NString - 1] = '\0';
++      ctx->datlnk = d->lnk;
++      ctx->dleadzero = 0;
++      // apply alignment padding before this data object
++      if (d->lnk->align) {
++        uint32_t aln = (uint32_t)(unsigned char)d->lnk->align;
++        while (ctx->datasz % aln != 0) {
++          buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, zeros, 1);
++        }
++      }
++      ctx->datstart = ctx->datasz;
++      break;
++
++    case DZ:
++      if (ctx->dleadzero >= 0) {
++        ctx->dleadzero += d->u.num;
++      } else {
++        uint64_t rem = (uint64_t)d->u.num;
++        while (rem > 0) {
++          uint32_t chunk = (rem > 8) ? 8 : (uint32_t)rem;
++          buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, zeros, chunk);
++          rem -= chunk;
++        }
++      }
++      break;
++
++    case DEnd:
++      if (ctx->datlnk->common) {
++        die("obj: common data not supported");
++      }
++      if (ctx->dleadzero >= 0) {
++        // all-zero data -> BSS
++        char name[NString];
++        symname(name, ctx->datname);
++        symadd(ctx, name, N_SECT | (ctx->datlnk->export ? N_EXT : 0), SECT_BSS,
++               (uint64_t)ctx->bsssz);
++        ctx->bsssz += (uint32_t)ctx->dleadzero;
++      } else {
++        // real data
++        char name[NString];
++        symname(name, ctx->datname);
++        symadd(ctx, name, N_SECT | (ctx->datlnk->export ? N_EXT : 0), SECT_DATA,
++               (uint64_t)ctx->datstart);
++      }
++      break;
++
++    default:  // DB, DH, DW, DL
++      // flush any accumulated leading zeros
++      if (ctx->dleadzero >= 0) {
++        uint64_t rem = (uint64_t)ctx->dleadzero;
++        while (rem > 0) {
++          uint32_t chunk = (rem > 8) ? 8 : (uint32_t)rem;
++          buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, zeros, chunk);
++          rem -= chunk;
++        }
++        ctx->dleadzero = -1;
++      }
++      if (d->isstr) {
++        if (d->type != DB) {
++          die("obj: strings only supported for 'b'");
++        }
++        // unescape and emit raw bytes
++        p = d->u.str;
++        assert(p[0] == '"');
++        p++;
++        while (*p && *p != '"') {
++          uint8_t c;
++          if (*p == '\\') {
++            p++;
++            // clang-format off
++            switch (*p) {
++              case 'n': c = '\n'; break;
++              case 't': c = '\t'; break;
++              case 'r': c = '\r'; break;
++              case '\\': c = '\\'; break;
++              case '"': c = '"'; break;
++              case '0': c = '\0'; break;
++              default: c = (uint8_t)*p; break;
++            }
++            // clang-format on
++          } else {
++            c = (uint8_t)*p;
++          }
++          buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, &c, 1);
++          p++;
++        }
++      } else if (d->isref) {
++        if (d->type != DL) {
++          die("obj: pointer ref only supported in .quad");
++        }
++        // find or create undef symbol for the reference
++        symname(mname, d->u.ref.name);
++        refidx = ctx->nsyms;  // sentinel: not found
++        for (uint32_t i = 0; i < ctx->nsyms; i++) {
++          if (strcmp(ctx->strtab + ctx->syms[i].strx, mname) == 0) {
++            refidx = i;
++            break;
++          }
++        }
++        if (refidx == ctx->nsyms) {
++          refidx = symadd(ctx, mname, N_UNDF | N_EXT, 0, 0);
++        }
++        // ADDEND reloc if offset is nonzero
++        if (d->u.ref.off != 0) {
++          uint32_t addend = (uint32_t)(d->u.ref.off & 0xFFFFFFu);
++          relocadd(ctx, (int32_t)ctx->datasz, addend, ARM64_RELOC_ADDEND, 0, 2);
++        }
++        // UNSIGNED reloc for the 8-byte pointer slot
++        relocadd(ctx, (int32_t)ctx->datasz, refidx, ARM64_RELOC_UNSIGNED, 1, 3);
++        // 8 zero bytes; linker patches at link time
++        buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, zeros, 8);
++      } else {
++        // plain numeric value, little-endian
++        n = (d->type == DB) ? 1 : (d->type == DH) ? 2 : (d->type == DW) ? 4 : 8;
++        v = (uint64_t)(d->u.num & masks[d->type]);
++        buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, &v, (uint32_t)n);
++      }
++      break;
++  }
++}
++
++// Returns 0=local, 1=extdef, 2=undef
++static int symcat(uint8_t type) {
++  int isext = (type & N_EXT) != 0;
++  int issect = (type & 0x0Eu) == N_SECT;
++  if (issect && !isext) {
++    return 0;
++  }
++  if (issect && isext) {
++    return 1;
++  }
++  return 2;
++}
++
++static int reloc_cmp(const void* a, const void* b) {
++  const MReloc *ra = a, *rb = b;
++  // primary: descending by address
++  if (ra->addr != rb->addr) {
++    return (rb->addr > ra->addr) ? 1 : -1;
++  }
++  // tie-break: ADDEND (type=10) before UNSIGNED (type=0)
++  int ta = ((ra->info >> 28) == ARM64_RELOC_ADDEND) ? 0 : 1;
++  int tb = ((rb->info >> 28) == ARM64_RELOC_ADDEND) ? 0 : 1;
++  return ta - tb;
++}
++
++void macho_write(MachoCtx* ctx, FILE* f) {
++  uint32_t i;
++  uint32_t nsects, datasect, bsssect;
++  uint32_t textsz, datasz, bsssz, nsyms, ndreloc, ntreloc;
++  uint32_t seg_size, cmds_size;
++  uint32_t dataoff, text_foff, data_foff, dreloc_foff, treloc_foff;
++  uint32_t symtab_foff, strtab_foff;
++  uint32_t cnt[3], ci[3];
++  uint32_t ilocal, iextdef, iundef;
++  uint32_t nlocal, nextdef, nundef;
++  uint32_t* remap = 0;
++  MSym* sorted = 0;
++  uint32_t cur;
++  struct mach_header_64 hdr;
++  struct segment_command_64 seg;
++  struct section_64 sec;
++  struct symtab_command symc;
++  struct dysymtab_command dysym;
++  struct nlist_64 nl;
++  struct relocation_info ri;
++  static const uint8_t zeros[8] = {0};
++
++  // Step 0: resolve forward BL fixups
++  for (i = 0; i < ctx->nblfixup; i++) {
++    uint32_t bsymidx = ctx->blfixup[i].symidx;
++    uint32_t boff = ctx->blfixup[i].off;
++    const char* bname = ctx->strtab + ctx->syms[bsymidx].strx;
++    uint32_t j, found = 0;
++    for (j = 0; j < ctx->nsyms; j++) {
++      if ((ctx->syms[j].type & 0x0Eu) == N_SECT &&
++          strcmp(ctx->strtab + ctx->syms[j].strx, bname) == 0) {
++        // Same-unit: patch instruction
++        int32_t disp = ((int32_t)ctx->syms[j].value - (int32_t)boff) / 4;
++        uint32_t* pinstr = (uint32_t*)(ctx->text + boff);
++        *pinstr = 0x94000000u | ((uint32_t)disp & 0x3FFFFFFu);
++        found = 1;
++        break;
++      }
++    }
++    if (!found) {
++      // External: add BRANCH26 reloc
++      trelocadd(ctx, (int32_t)boff, bsymidx, ARM64_RELOC_BRANCH26, 2, 1);
++    }
++  }
++
++  textsz = ctx->textsz;
++  datasz = ctx->datasz;
++  bsssz = ctx->bsssz;
++  nsyms = ctx->nsyms;
++  ndreloc = ctx->ndreloc;
++  ntreloc = ctx->ntreloc;
++
++  // Step 1: determine section numbering
++  nsects = 1;  // __text is always section 1
++  datasect = 0;
++  bsssect = 0;
++  if (datasz > 0) {
++    datasect = ++nsects;
++  }
++  if (bsssz > 0) {
++    bsssect = ++nsects;
++  }
++
++  // Step 2: fix up symbol values and sect sentinel fields
++  for (i = 0; i < nsyms; i++) {
++    if (ctx->syms[i].sect == SECT_DATA) {
++      ctx->syms[i].value += textsz;
++      ctx->syms[i].sect = (uint8_t)datasect;
++    } else if (ctx->syms[i].sect == SECT_BSS) {
++      ctx->syms[i].value += textsz + datasz;
++      ctx->syms[i].sect = (uint8_t)bsssect;
++    }
++  }
++
++  // Step 3: sort symbols -> locals, extdefs, undefs
++  if (nsyms > 0) {
++    cnt[0] = cnt[1] = cnt[2] = 0;
++    for (i = 0; i < nsyms; i++) {
++      cnt[symcat(ctx->syms[i].type)]++;
++    }
++
++    ci[0] = 0;
++    ci[1] = cnt[0];
++    ci[2] = cnt[0] + cnt[1];
++
++    sorted = emalloc(nsyms * sizeof(MSym));
++    remap = emalloc(nsyms * sizeof(uint32_t));
++    {
++      uint32_t pos[3];
++      pos[0] = ci[0];
++      pos[1] = ci[1];
++      pos[2] = ci[2];
++      for (i = 0; i < nsyms; i++) {
++        int cat = symcat(ctx->syms[i].type);
++        uint32_t ni = pos[cat]++;
++        sorted[ni] = ctx->syms[i];
++        remap[i] = ni;
++      }
++    }
++    memcpy(ctx->syms, sorted, nsyms * sizeof(MSym));
++    free(sorted);
++
++    ilocal = ci[0];
++    nlocal = cnt[0];
++    iextdef = ci[1];
++    nextdef = cnt[1];
++    iundef = ci[2];
++    nundef = cnt[2];
++
++    // Step 4: patch reloc symnum fields using remap
++    for (i = 0; i < ndreloc; i++) {
++      uint32_t type = ctx->dreloc[i].info >> 28;
++      if (type != ARM64_RELOC_ADDEND) {
++        uint32_t oldidx = ctx->dreloc[i].info & 0xFFFFFFu;
++        ctx->dreloc[i].info = (ctx->dreloc[i].info & 0xFF000000u) | remap[oldidx];
++      }
++    }
++    for (i = 0; i < ntreloc; i++) {
++      uint32_t oldidx = ctx->treloc[i].info & 0xFFFFFFu;
++      ctx->treloc[i].info = (ctx->treloc[i].info & 0xFF000000u) | remap[oldidx];
++    }
++    free(remap);
++  } else {
++    ilocal = iextdef = iundef = 0;
++    nlocal = nextdef = nundef = 0;
++  }
++
++  // Step 5: sort relocs descending by address
++  if (ndreloc > 1) {
++    qsort(ctx->dreloc, ndreloc, sizeof(MReloc), reloc_cmp);
++  }
++  if (ntreloc > 1) {
++    qsort(ctx->treloc, ntreloc, sizeof(MReloc), reloc_cmp);
++  }
++
++  // Step 6: compute file layout
++  seg_size = 72 + nsects * 80;
++  cmds_size = seg_size + 24 + 80;
++  dataoff = 32 + cmds_size;
++  text_foff = dataoff;
++  data_foff = align_up(text_foff + textsz, 8);
++  dreloc_foff = align_up(data_foff + datasz, 4);
++  treloc_foff = align_up(dreloc_foff + ndreloc * 8, 4);
++  symtab_foff = align_up(treloc_foff + ntreloc * 8, 8);
++  strtab_foff = symtab_foff + nsyms * 16;
++
++  // Step 7: write mach_header_64
++  memset(&hdr, 0, sizeof hdr);
++  hdr.magic = MH_MAGIC_64;
++  hdr.cputype = CPU_TYPE_ARM64;
++  hdr.cpusubtype = 0;
++  hdr.filetype = MH_OBJECT;
++  hdr.ncmds = 3;
++  hdr.sizeofcmds = cmds_size;
++  hdr.flags = MH_SUBSECTIONS_VIA_SYMBOLS;
++  hdr.reserved = 0;
++  fwrite(&hdr, sizeof hdr, 1, f);
++  cur = 32;
++
++  // Step 8: write LC_SEGMENT_64
++  memset(&seg, 0, sizeof seg);
++  seg.cmd = LC_SEGMENT_64;
++  seg.cmdsize = seg_size;
++  // segname = "" (all zeros)
++  seg.vmaddr = 0;
++  seg.vmsize = (uint64_t)(textsz + datasz + bsssz);
++  seg.fileoff = (uint64_t)dataoff;
++  seg.filesize = (datasz > 0) ? (uint64_t)(data_foff - text_foff + datasz) : (uint64_t)textsz;
++  seg.maxprot = 7;
++  seg.initprot = 7;
++  seg.nsects = nsects;
++  seg.flags = 0;
++  fwrite(&seg, sizeof seg, 1, f);
++  cur += 72;
++
++  // Step 9: write section_64 headers
++  // __TEXT,__text
++  memset(&sec, 0, sizeof sec);
++  memcpy(sec.sectname, "__text", 6);
++  memcpy(sec.segname, "__TEXT", 6);
++  sec.addr = 0;
++  sec.size = (uint64_t)textsz;
++  sec.offset = text_foff;
++  sec.align = 2;  // 2^2 = 4 bytes
++  sec.reloff = (ntreloc > 0) ? treloc_foff : 0;
++  sec.nreloc = ntreloc;
++  sec.flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS | S_REGULAR;
++  fwrite(&sec, sizeof sec, 1, f);
++  cur += 80;
++
++  if (datasect) {
++    memset(&sec, 0, sizeof sec);
++    memcpy(sec.sectname, "__data", 6);
++    memcpy(sec.segname, "__DATA", 6);
++    sec.addr = (uint64_t)textsz;
++    sec.size = (uint64_t)datasz;
++    sec.offset = data_foff;
++    sec.align = 3;  // 2^3 = 8 bytes
++    sec.reloff = (ndreloc > 0) ? dreloc_foff : 0;
++    sec.nreloc = ndreloc;
++    sec.flags = S_REGULAR;
++    fwrite(&sec, sizeof sec, 1, f);
++    cur += 80;
++  }
++
++  if (bsssect) {
++    memset(&sec, 0, sizeof sec);
++    memcpy(sec.sectname, "__bss", 5);
++    memcpy(sec.segname, "__DATA", 6);
++    sec.addr = (uint64_t)(textsz + datasz);
++    sec.size = (uint64_t)bsssz;
++    sec.offset = 0;  // S_ZEROFILL: no file data
++    sec.align = 3;
++    sec.reloff = 0;
++    sec.nreloc = 0;
++    sec.flags = S_ZEROFILL;
++    fwrite(&sec, sizeof sec, 1, f);
++    cur += 80;
++  }
++
++  // Step 10: write LC_SYMTAB
++  memset(&symc, 0, sizeof symc);
++  symc.cmd = LC_SYMTAB;
++  symc.cmdsize = 24;
++  symc.symoff = symtab_foff;
++  symc.nsyms = nsyms;
++  symc.stroff = strtab_foff;
++  symc.strsize = ctx->strtabsz;
++  fwrite(&symc, sizeof symc, 1, f);
++  cur += 24;
++
++  // Step 11: write LC_DYSYMTAB
++  memset(&dysym, 0, sizeof dysym);
++  dysym.cmd = LC_DYSYMTAB;
++  dysym.cmdsize = 80;
++  dysym.ilocalsym = ilocal;
++  dysym.nlocalsym = nlocal;
++  dysym.iextdefsym = iextdef;
++  dysym.nextdefsym = nextdef;
++  dysym.iundefsym = iundef;
++  dysym.nundefsym = nundef;
++  fwrite(&dysym, sizeof dysym, 1, f);
++  cur += 80;
++
++  assert(cur == dataoff);
++
++  // Step 12: write section data
++  if (textsz > 0) {
++    fwrite(ctx->text, 1, textsz, f);
++    cur += textsz;
++  }
++  // padding between text and data
++  while (cur < data_foff) {
++    fwrite(zeros, 1, 1, f);
++    cur++;
++  }
++  if (datasz > 0) {
++    fwrite(ctx->data, 1, datasz, f);
++    cur += datasz;
++  }
++
++  // Step 13: write data relocation records
++  while (cur < dreloc_foff) {
++    fwrite(zeros, 1, 1, f);
++    cur++;
++  }
++  for (i = 0; i < ndreloc; i++) {
++    ri.r_address = ctx->dreloc[i].addr;
++    ri.r_info = ctx->dreloc[i].info;
++    fwrite(&ri, sizeof ri, 1, f);
++    cur += 8;
++  }
++
++  // Step 13b: write text relocation records
++  while (cur < treloc_foff) {
++    fwrite(zeros, 1, 1, f);
++    cur++;
++  }
++  for (i = 0; i < ntreloc; i++) {
++    ri.r_address = ctx->treloc[i].addr;
++    ri.r_info = ctx->treloc[i].info;
++    fwrite(&ri, sizeof ri, 1, f);
++    cur += 8;
++  }
++
++  // padding before symtab
++  while (cur < symtab_foff) {
++    fwrite(zeros, 1, 1, f);
++    cur++;
++  }
++
++  // Step 14: write symbol table
++  for (i = 0; i < nsyms; i++) {
++    nl.n_strx = ctx->syms[i].strx;
++    nl.n_type = ctx->syms[i].type;
++    nl.n_sect = ctx->syms[i].sect;
++    nl.n_desc = ctx->syms[i].desc;
++    nl.n_value = ctx->syms[i].value;
++    fwrite(&nl, sizeof nl, 1, f);
++  }
++
++  // Step 15: write string table
++  fwrite(ctx->strtab, 1, ctx->strtabsz, f);
++}
+diff --git a/arm64/emitmacho.h b/arm64/emitmacho.h
+new file mode 100644
+index 0000000..3e457fd
+--- /dev/null
++++ b/arm64/emitmacho.h
+@@ -0,0 +1,5 @@
++MachoCtx* macho_new(void);
++void macho_free(MachoCtx*);
++void macho_emitdat(Dat*, MachoCtx*);
++void macho_emitfn(Fn*, MachoCtx*);
++void macho_write(MachoCtx*, FILE*);
+diff --git a/main.c b/main.c
+index 9024030..c89963b 100644
+--- a/main.c
++++ b/main.c
+@@ -1,4 +1,5 @@
+ #include "all.h"
++#include "arm64/emitmacho.h"
+ #include "config.h"
+ #include <ctype.h>
+ #include <getopt.h>
+@@ -38,10 +39,17 @@ data(Dat *d)
+ {
+ 	if (G(dbg))
+ 		return;
+-	emitdat(d, G(outf));
+-  ret_on_err();
++	if (G(objmode)) {
++		macho_emitdat(d, G(macho_ctx));
++		ret_on_err();
++	} else {
++		emitdat(d, G(outf));
++		ret_on_err();
++		if (d->type == DEnd) {
++			fputs("/* end data */\n\n", G(outf));
++		}
++	}
+ 	if (d->type == DEnd) {
+-		fputs("/* end data */\n\n", G(outf));
+ 		freeall();
+ 	}
+ }
+@@ -75,7 +83,7 @@ func(Fn *fn)
+ 	filluse(fn);
+ 	filldom(fn);
+ 	ssacheck(fn);
+-  ret_on_err();
++	ret_on_err();
+ 	gvn(fn);
+ 	fillcfg(fn);
+ 	simplcfg(fn);
+@@ -107,24 +115,29 @@ func(Fn *fn)
+ 	simpljmp(fn);
+ 	fillcfg(fn);
+ 	assert(fn->rpo[0] == fn->start);
+-	for (n=0;; n++)
++	for (n=0;; n++) {
+ 		if (n == fn->nblk-1) {
+ 			fn->rpo[n]->link = 0;
+ 			break;
+ 		} else
+ 			fn->rpo[n]->link = fn->rpo[n+1];
+-	if (!G(dbg)) {
++	}
++	if (G(objmode)) {
++		macho_emitfn(fn, G(macho_ctx));
++	} else if (!G(dbg)) {
+ 		GC(T).emitfn(fn, G(outf));
+ 		fprintf(G(outf), "/* end function %s */\n\n", fn->name);
+-	} else
++	} else {
+ 		fprintf(stderr, "\n");
++	}
+ 	freeall();
+ }
+ 
+ static void
+ dbgfile(char *fn)
+ {
+-	emitdbgfile(fn, G(outf));
++	if (!G(objmode))
++		emitdbgfile(fn, G(outf));
+ }
+ 
+ int
+@@ -139,7 +152,7 @@ main(int ac, char *av[])
+ 
+ 	GC(T) = Deftgt;
+ 	G(outf) = stdout;
+-	while ((c = getopt(ac, av, "hd:o:t:")) != -1)
++	while ((c = getopt(ac, av, "hd:f:o:t:")) != -1)
+ 		switch (c) {
+ 		case 'd':
+ 			for (; *optarg; optarg++)
+@@ -148,6 +161,14 @@ main(int ac, char *av[])
+ 					G(dbg) = 1;
+ 				}
+ 			break;
++		case 'f':
++			if (strcmp(optarg, "macho") == 0)
++				G(objmode) = 1;
++			else {
++				fprintf(stderr, "unknown format '%s'\n", optarg);
++				exit(1);
++			}
++			break;
+ 		case 'o':
+ 			if (strcmp(optarg, "-") != 0) {
+ 				G(outf) = fopen(optarg, "w");
+@@ -179,6 +200,7 @@ main(int ac, char *av[])
+ 			fprintf(hf, "%s [OPTIONS] {file.ssa, -}\n", av[0]);
+ 			fprintf(hf, "\t%-11s prints this help\n", "-h");
+ 			fprintf(hf, "\t%-11s output to file\n", "-o file");
++			fprintf(hf, "\t%-11s generate .o directly instead of .s\n", "-f obj");
+ 			fprintf(hf, "\t%-11s generate for a target among:\n", "-t <target>");
+ 			fprintf(hf, "\t%-11s ", "");
+ 			for (t=tlist, sep=""; *t; t++, sep=", ") {
+@@ -191,6 +213,12 @@ main(int ac, char *av[])
+ 			exit(c != 'h');
+ 		}
+ 
++	if (G(objmode)) {
++		if (!GC(T).apple)
++			die("obj: -f obj is only supported for apple targets");
++		G(macho_ctx) = macho_new();
++	}
++
+ 	do {
+ 		f = av[optind];
+ 		if (!f || strcmp(f, "-") == 0) {
+@@ -207,7 +235,9 @@ main(int ac, char *av[])
+ 		fclose(inf);
+ 	} while (++optind < ac);
+ 
+-	if (!G(dbg))
++	if (G(objmode))
++		macho_write(G(macho_ctx), G(outf));
++	else if (!G(dbg))
+ 		GC(T).emitfin(G(outf));
+ 
+ 	exit(0);
+diff --git a/tools/objtest.sh b/tools/objtest.sh
+new file mode 100755
+index 0000000..16876e1
+--- /dev/null
++++ b/tools/objtest.sh
+@@ -0,0 +1,70 @@
++#!/bin/sh
++# Compare text-assembly output vs -f macho Mach-O for arm64_apple.
++# Usage: tools/objtest.sh [file.ssa ...]
++# Requires: clang (arm64 capable), otool
++#
++QBE=${QBE:-./qbe}
++PASS=0; FAIL=0; SKIP=0
++
++# Disassemble a Mach-O, strip file/section headers and address prefixes.
++normalize() {
++	otool -tv "$1" | awk '
++		/^\// { next }
++		/^\(/ { next }
++		/^[0-9a-f]/ { print substr($0, index($0, "\t") + 1); next }
++		{ print }
++	'
++}
++
++run() {
++	ssa="$1"
++	name=$(basename "$ssa" .ssa)
++	tmp="/tmp/qbe_objtest_$$_${name}"
++
++	# --- text path ---
++	if ! "$QBE" -t arm64_apple -o "${tmp}.s" "$ssa" 2>/dev/null; then
++		echo "SKIP $name (qbe -t arm64_apple failed)"
++		SKIP=$((SKIP+1)); return
++	fi
++	if ! clang -arch arm64 -c "${tmp}.s" -o "${tmp}_text.o" 2>/dev/null; then
++		echo "SKIP $name (clang assembly failed)"
++		rm -f "${tmp}.s"
++		SKIP=$((SKIP+1)); return
++	fi
++
++	# --- obj path ---
++	if ! "$QBE" -f macho -t arm64_apple -o "${tmp}_obj.o" "$ssa" 2>/dev/null; then
++		echo "SKIP $name (-f macho failed/unsupported)"
++		rm -f "${tmp}.s" "${tmp}_text.o"
++		SKIP=$((SKIP+1)); return
++	fi
++
++	# --- compare ---
++	normalize "${tmp}_text.o" > "${tmp}_text.norm"
++	normalize "${tmp}_obj.o"  > "${tmp}_obj.norm"
++
++	if diff "${tmp}_text.norm" "${tmp}_obj.norm" >/dev/null 2>&1; then
++		echo "PASS $name"
++		PASS=$((PASS+1))
++	else
++		echo "FAIL $name"
++		diff "${tmp}_text.norm" "${tmp}_obj.norm"
++		FAIL=$((FAIL+1))
++	fi
++
++	rm -f "${tmp}.s" "${tmp}_text.o" "${tmp}_obj.o" \
++	      "${tmp}_text.norm" "${tmp}_obj.norm"
++}
++
++if [ $# -eq 0 ]; then
++	for f in test/*.ssa; do
++		case $(basename "$f") in _*) continue ;; esac
++		run "$f"
++	done
++else
++	for f in "$@"; do run "$f"; done
++fi
++
++echo ""
++echo "passed=$PASS failed=$FAIL skipped=$SKIP"
++[ "$FAIL" -eq 0 ]
+-- 
+2.50.1 (Apple Git-155)
+

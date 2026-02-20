@@ -1,0 +1,49 @@
+From f5a46f03e93852ea44c29a9059273dc52c0f396f Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Fri, 20 Feb 2026 10:37:38 -0800
+Subject: [PATCH 15/16] arm64: fix test/ifc.ssa
+
+Fixes branch conditions for negated ordered float comparisons, this test was
+failing on aarch64 Linux and Apple.
+
+After fcmpe, unordered (NaN) inputs set N=0, Z=0, C=1, V=1. When negating an
+ordered float compare to flip the branch direction, cmpneg() produces
+ge/gt/ls/mi which treat NaN as ordered which makes the results for comparing
+with NaN incorrect.
+
+Remap negated ordered float conditions to unordered-inclusive equivalents:
+  NOT Cflt: bge -> bcs  (C=1, covers ordered GE and unordered)
+  NOT Cfle: bgt -> bhi  (C=1 && Z=0, covers ordered GT and unordered)
+  NOT Cfgt: bls -> ble  (Z=1 || N!=V, covers ordered LE and unordered)
+  NOT Cfge: bmi -> blt  (N!=V, covers ordered LT and unordered)
+---
+ arm64/emit.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/arm64/emit.c b/arm64/emit.c
+index 89f701c..07a515e 100644
+--- a/arm64/emit.c
++++ b/arm64/emit.c
+@@ -686,8 +686,18 @@ arm64_emitfn(Fn *fn, FILE *out)
+ 				t = b->s1;
+ 				b->s1 = b->s2;
+ 				b->s2 = t;
+-			} else
++			} else {
+ 				c = cmpneg(c);
++				/* cmpneg of ordered float comparisons gives
++				 * conditions that don't fire for unordered (NaN)
++				 * after fcmpe; remap to include the unordered case */
++				switch (c) {
++				case NCmpI+Cfge: c = Ciuge; break; /* bge -> bcs */
++				case NCmpI+Cfgt: c = Ciugt; break; /* bgt -> bhi */
++				case NCmpI+Cfle: c = Cisle; break; /* bls -> ble */
++				case NCmpI+Cflt: c = Cislt; break; /* bmi -> blt */
++				}
++			}
+ 			fprintf(e->f,
+ 				"\tb%s\t%s%d\n",
+ 				ctoa[c], GC(T).asloc, G(arm64_emitfn_id0)+b->s2->id
+-- 
+2.50.1 (Apple Git-155)
+
