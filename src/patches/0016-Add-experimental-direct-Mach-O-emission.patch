@@ -1,4 +1,4 @@
-From 29c5d741b04309c80b5ad110baf1672d853e2870 Mon Sep 17 00:00:00 2001
+From 58463f73e96a47507753d44f796551d81691a7db Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 20 Feb 2026 10:50:21 -0800
 Subject: [PATCH 16/16] Add experimental direct Mach-O emission
@@ -8,15 +8,19 @@ With `-f macho`, directly emits a macOS .o rather than .s.
 Output .o should always be the same as if .s is assembled by clang as
 verified by tools/objtest.sh, but probably isn't always yet!
 ---
- Makefile          |    7 +-
- all.h             |    3 +
- arm64/emitmacho.c | 1653 +++++++++++++++++++++++++++++++++++++++++++++
- arm64/emitmacho.h |    5 +
- main.c            |   52 +-
- tools/objtest.sh  |   70 ++
- 6 files changed, 1778 insertions(+), 12 deletions(-)
+ Makefile           |    7 +-
+ all.h              |    3 +
+ arm64/emitmacho.c  | 1690 ++++++++++++++++++++++++++++++++++++++++++++
+ arm64/emitmacho.h  |    5 +
+ main.c             |   52 +-
+ test/dynalloc2.ssa |   40 ++
+ test/objptr.ssa    |   19 +
+ tools/objtest.sh   |   95 +++
+ 8 files changed, 1899 insertions(+), 12 deletions(-)
  create mode 100644 arm64/emitmacho.c
  create mode 100644 arm64/emitmacho.h
+ create mode 100644 test/dynalloc2.ssa
+ create mode 100644 test/objptr.ssa
  create mode 100755 tools/objtest.sh
 
 diff --git a/Makefile b/Makefile
@@ -74,10 +78,10 @@ index 950fafd..57ef528 100644
  	int parse__lexinit_done;
 diff --git a/arm64/emitmacho.c b/arm64/emitmacho.c
 new file mode 100644
-index 0000000..2f89606
+index 0000000..9ba5d18
 --- /dev/null
 +++ b/arm64/emitmacho.c
-@@ -0,0 +1,1653 @@
+@@ -0,0 +1,1690 @@
 +#include "all.h"
 +
 +#include "emitmacho.h"
@@ -217,13 +221,23 @@ index 0000000..2f89606
 +  uint32_t datstart;  // ctx->datasz at DStart
 +};
 +
++static void* qbe_realloc(void* oldp, uint32_t old_size, size_t new_size) {
++  void* newp = emalloc(new_size);
++  if (oldp) {
++    memcpy(newp, oldp, old_size);
++    qbe_free(oldp);
++  }
++  return newp;
++}
++
 +static void buf_append(uint8_t** buf, uint32_t* sz, uint32_t* cap, const void* src, uint32_t n) {
 +  if (*sz + n > *cap) {
 +    uint32_t newcap = *cap ? *cap * 2 : 64;
++    uint32_t oldcap = *cap;
 +    while (newcap < *sz + n) {
 +      newcap *= 2;
 +    }
-+    *buf = realloc(*buf, newcap);
++    *buf = qbe_realloc(*buf, oldcap, newcap);
 +    if (!*buf) {
 +      die("obj: out of memory");
 +    }
@@ -262,8 +276,9 @@ index 0000000..2f89606
 +  sym.desc = 0;
 +  sym.value = value;
 +  if (ctx->nsyms == ctx->symcap) {
++    uint32_t oldcap = ctx->symcap;
 +    ctx->symcap = ctx->symcap ? ctx->symcap * 2 : 8;
-+    ctx->syms = realloc(ctx->syms, ctx->symcap * sizeof(MSym));
++    ctx->syms = qbe_realloc(ctx->syms, oldcap * sizeof(MSym), ctx->symcap * sizeof(MSym));
 +    if (!ctx->syms) {
 +      die("obj: out of memory");
 +    }
@@ -278,8 +293,9 @@ index 0000000..2f89606
 +  r.info = (symidx & 0xFFFFFFu) | ((uint32_t)length << 25) | ((uint32_t)ext << 27) |
 +           ((uint32_t)type << 28);
 +  if (ctx->ndreloc == ctx->drelocap) {
++    uint32_t oldcap = ctx->drelocap;
 +    ctx->drelocap = ctx->drelocap ? ctx->drelocap * 2 : 8;
-+    ctx->dreloc = realloc(ctx->dreloc, ctx->drelocap * sizeof(MReloc));
++    ctx->dreloc = qbe_realloc(ctx->dreloc, oldcap * sizeof(MReloc), ctx->drelocap * sizeof(MReloc));
 +    if (!ctx->dreloc) {
 +      die("obj: out of memory");
 +    }
@@ -299,8 +315,9 @@ index 0000000..2f89606
 +           | ((uint32_t)length << 25) | (1u << 27)         // r_extern = 1
 +           | ((uint32_t)type << 28);
 +  if (ctx->ntreloc == ctx->trelocap) {
++    uint32_t oldcap = ctx->trelocap;
 +    ctx->trelocap = ctx->trelocap ? ctx->trelocap * 2 : 8;
-+    ctx->treloc = realloc(ctx->treloc, ctx->trelocap * sizeof(MReloc));
++    ctx->treloc = qbe_realloc(ctx->treloc, oldcap * sizeof(MReloc), ctx->trelocap * sizeof(MReloc));
 +    if (!ctx->treloc) {
 +      die("obj: out of memory");
 +    }
@@ -359,10 +376,11 @@ index 0000000..2f89606
 +} BrFix;
 +
 +static void grow_fixes(BrFix** fixes, uint32_t* fixcap) {
++  uint32_t oldcap = *fixcap;
 +  *fixcap *= 2;
-+  *fixes = realloc(*fixes, *fixcap * sizeof(**fixes));
++  *fixes = qbe_realloc(*fixes, oldcap * sizeof(**fixes), *fixcap * sizeof(**fixes));
 +  if (!*fixes) {
-+    die("emitobj: realloc");
++    die("emitobj: qbe_realloc");
 +  }
 +}
 +
@@ -520,10 +538,7 @@ index 0000000..2f89606
 +      ncallee++;  // round up to even for alignment
 +    }
 +    // Apple vararg: no register save area; frame is identical
-+    // to non-vararg.  dynalloc is handled via mov sp, x29.
-+    if (fn->dynalloc) {
-+      die("obj: %s: unimplemented (dynalloc=1)", fn->name);
-+    }
++    // to non-vararg.  dynalloc is handled via mov sp, x29 in the epilogue.
 +  }
 +  {
 +    int slotbytes = ((fn->slot + 3) & -4) * 4;
@@ -1007,10 +1022,12 @@ index 0000000..2f89606
 +            } else {
 +              // forward/external: placeholder; resolved in macho_write
 +              if (ctx->nblfixup == ctx->blfixupap) {
++                uint32_t oldcap = ctx->blfixupap;
 +                ctx->blfixupap = ctx->blfixupap ? ctx->blfixupap * 2 : 8;
-+                ctx->blfixup = realloc(ctx->blfixup, ctx->blfixupap * sizeof *ctx->blfixup);
++                ctx->blfixup = qbe_realloc(ctx->blfixup, oldcap * sizeof *ctx->blfixup,
++                                           ctx->blfixupap * sizeof *ctx->blfixup);
 +                if (!ctx->blfixup) {
-+                  die("obj: realloc");
++                  die("obj: qbe_realloc");
 +                }
 +              }
 +              ctx->blfixup[ctx->nblfixup].off = ctx->textsz;
@@ -1136,6 +1153,18 @@ index 0000000..2f89606
 +          }
 +          break;
 +        }
++        case Osalloc:
++          // sub sp, sp, Xn (extended-register form: SP involved)
++          assert(isreg(i->arg[0]));
++          rm = i->arg[0].val - R0;
++          emit_u32(ctx, 0xCB206000u | ((uint32_t)rm << 16) | (31u << 5) | 31u);
++          if (!req(i->to, NULL_R)) {
++            // mov Xd, sp = ADD Xd, SP, #0
++            assert(isreg(i->to));
++            rd = i->to.val - R0;
++            emit_u32(ctx, 0x91000000u | (31u << 5) | (uint32_t)rd);
++          }
++          break;
 +        default:
 +          die("obj: %s: unhandled op %s", fn->name, optab[i->op].name);
 +      }
@@ -1160,6 +1189,10 @@ index 0000000..2f89606
 +              emit_u32(ctx, 0xF9400000u | (imm12 << 10) | (29u << 5) | (uint32_t)(*r - R0));
 +            }
 +          }
++        }
++        if (fn->dynalloc) {
++          // reset sp to frame pointer before restoring frame
++          emit_u32(ctx, 0x910003BFu);  // mov sp, x29 = ADD SP, X29, #0
 +        }
 +        if (total <= 512) {
 +          // small frame: single post-indexed LDP
@@ -1417,6 +1450,7 @@ index 0000000..2f89606
 +  uint32_t i;
 +  uint32_t nsects, datasect, bsssect;
 +  uint32_t textsz, datasz, bsssz, nsyms, ndreloc, ntreloc;
++  uint32_t data_addr, bss_addr;  // section VM addresses (aligned)
 +  uint32_t seg_size, cmds_size;
 +  uint32_t dataoff, text_foff, data_foff, dreloc_foff, treloc_foff;
 +  uint32_t symtab_foff, strtab_foff;
@@ -1476,13 +1510,20 @@ index 0000000..2f89606
 +    bsssect = ++nsects;
 +  }
 +
++  // Section VM addresses must be aligned to their section alignment (2^3 = 8).
++  // If textsz is not a multiple of 8, pointers inside the data section would
++  // have an unaligned VM address and ld would reject the object file with
++  // "pointer not aligned".
++  data_addr = align_up(textsz, 8);
++  bss_addr  = align_up(data_addr + datasz, 8);
++
 +  // Step 2: fix up symbol values and sect sentinel fields
 +  for (i = 0; i < nsyms; i++) {
 +    if (ctx->syms[i].sect == SECT_DATA) {
-+      ctx->syms[i].value += textsz;
++      ctx->syms[i].value += data_addr;
 +      ctx->syms[i].sect = (uint8_t)datasect;
 +    } else if (ctx->syms[i].sect == SECT_BSS) {
-+      ctx->syms[i].value += textsz + datasz;
++      ctx->syms[i].value += bss_addr;
 +      ctx->syms[i].sect = (uint8_t)bsssect;
 +    }
 +  }
@@ -1578,7 +1619,7 @@ index 0000000..2f89606
 +  seg.cmdsize = seg_size;
 +  // segname = "" (all zeros)
 +  seg.vmaddr = 0;
-+  seg.vmsize = (uint64_t)(textsz + datasz + bsssz);
++  seg.vmsize = (uint64_t)(bss_addr + bsssz);
 +  seg.fileoff = (uint64_t)dataoff;
 +  seg.filesize = (datasz > 0) ? (uint64_t)(data_foff - text_foff + datasz) : (uint64_t)textsz;
 +  seg.maxprot = 7;
@@ -1607,7 +1648,7 @@ index 0000000..2f89606
 +    memset(&sec, 0, sizeof sec);
 +    memcpy(sec.sectname, "__data", 6);
 +    memcpy(sec.segname, "__DATA", 6);
-+    sec.addr = (uint64_t)textsz;
++    sec.addr = (uint64_t)data_addr;
 +    sec.size = (uint64_t)datasz;
 +    sec.offset = data_foff;
 +    sec.align = 3;  // 2^3 = 8 bytes
@@ -1622,7 +1663,7 @@ index 0000000..2f89606
 +    memset(&sec, 0, sizeof sec);
 +    memcpy(sec.sectname, "__bss", 5);
 +    memcpy(sec.segname, "__DATA", 6);
-+    sec.addr = (uint64_t)(textsz + datasz);
++    sec.addr = (uint64_t)bss_addr;
 +    sec.size = (uint64_t)bsssz;
 +    sec.offset = 0;  // S_ZEROFILL: no file data
 +    sec.align = 3;
@@ -1874,12 +1915,83 @@ index 9024030..218008c 100644
  		GC(T).emitfin(G(outf));
  
  	exit(0);
+diff --git a/test/dynalloc2.ssa b/test/dynalloc2.ssa
+new file mode 100644
+index 0000000..6fa8807
+--- /dev/null
++++ b/test/dynalloc2.ssa
+@@ -0,0 +1,40 @@
++function $M0$tmp_1(l %ret_5) {
++@_3
++        %_6 =l alloc8 48
++        blit $strobj_2, %_6, 16
++        %_7 =l add %_6, 16
++        blit $strobj_3, %_7, 16
++        %_8 =l add %_6, 32
++        blit $strobj_4, %_8, 16
++        %_9 =l alloc8 16
++        storel 0, %_9
++        %_10 =l add %_9, 8
++        storel 0, %_10
++        %_11 =l alloc8 8
++        %_12 =l alloc8 8
++        storel %_6, %_11
++        %_13 =l add %_6, 48
++        storel %_13, %_12
++@_14
++        %_18 =l load %_11
++        %_19 =l load %_12
++        %_20 =l csltl %_18, %_19
++        jnz %_20, @_16, @_17
++@_16
++        %_21 =l alloc8 16
++        blit %_18, %_21, 16
++        blit %_21, %_9, 16
++        %_24 =l alloc8 16
++        storel 0, %_24
++        %_25 =l add %_24, 8
++        storel 0, %_25
++        blit %_9, %_24, 16
++@_23
++@_15
++        %_27 =l load %_11
++        %_28 =l add %_27, 16
++        storel %_28, %_11
++        jmp @_14
++@_17
++        ret
++}
+diff --git a/test/objptr.ssa b/test/objptr.ssa
+new file mode 100644
+index 0000000..2cc4909
+--- /dev/null
++++ b/test/objptr.ssa
+@@ -0,0 +1,19 @@
++# Regression: pointer data after a text section whose byte-length is not a
++# multiple of 8 must still be 8-byte aligned in the Mach-O -f macho output.
++# (Previously, sec.addr = textsz without rounding caused ld to reject with
++#  "pointer not aligned".)
++data $msg = { b "hi", b 0 }
++data $ref = { l $msg }
++
++export function w $main() {
++@start
++	%p =l loadl $ref
++	call $puts(l %p)
++	call $puts(l %p)
++	ret 0
++}
++
++# >>> output
++# hi
++# hi
++# <<<
 diff --git a/tools/objtest.sh b/tools/objtest.sh
 new file mode 100755
-index 0000000..16876e1
+index 0000000..9c6b3a1
 --- /dev/null
 +++ b/tools/objtest.sh
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,95 @@
 +#!/bin/sh
 +# Compare text-assembly output vs -f macho Mach-O for arm64_apple.
 +# Usage: tools/objtest.sh [file.ssa ...]
@@ -1896,6 +2008,10 @@ index 0000000..16876e1
 +		/^[0-9a-f]/ { print substr($0, index($0, "\t") + 1); next }
 +		{ print }
 +	'
++}
++
++extract_output() {
++	awk '/^# >>> output/{p=1;next}/^# <</{p=0}p{sub(/^# ?/,"");print}' "$1"
 +}
 +
 +run() {
@@ -1921,7 +2037,28 @@ index 0000000..16876e1
 +		SKIP=$((SKIP+1)); return
 +	fi
 +
-+	# --- compare ---
++	# --- link check: catch "pointer not aligned" and similar ld errors ---
++	lnk_err=$(clang -arch arm64 "${tmp}_obj.o" -o "${tmp}_obj_exe" 2>&1); lnk_ec=$?
++	if echo "$lnk_err" | grep -q "not aligned"; then
++		echo "FAIL $name (link: pointer not aligned)"
++		rm -f "${tmp}.s" "${tmp}_text.o" "${tmp}_obj.o" "${tmp}_obj_exe"
++		FAIL=$((FAIL+1)); return
++	fi
++
++	# --- run check (when expected output is present and link succeeded) ---
++	expected=$(extract_output "$ssa")
++	if [ -n "$expected" ] && [ $lnk_ec -eq 0 ]; then
++		actual=$("${tmp}_obj_exe" a b c 2>/dev/null)
++		if [ "$actual" != "$expected" ]; then
++			echo "FAIL $name (output mismatch)"
++			printf "  expected: %s\n  got:      %s\n" "$expected" "$actual"
++			rm -f "${tmp}.s" "${tmp}_text.o" "${tmp}_obj.o" "${tmp}_obj_exe"
++			FAIL=$((FAIL+1)); return
++		fi
++	fi
++	rm -f "${tmp}_obj_exe"
++
++	# --- compare disassembly ---
 +	normalize "${tmp}_text.o" > "${tmp}_text.norm"
 +	normalize "${tmp}_obj.o"  > "${tmp}_obj.norm"
 +
