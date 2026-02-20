@@ -1,4 +1,4 @@
-From 19a97a939ac6d4c5830a8eec37518f3780f41f61 Mon Sep 17 00:00:00 2001
+From 29c5d741b04309c80b5ad110baf1672d853e2870 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 20 Feb 2026 10:50:21 -0800
 Subject: [PATCH 16/16] Add experimental direct Mach-O emission
@@ -10,11 +10,11 @@ verified by tools/objtest.sh, but probably isn't always yet!
 ---
  Makefile          |    7 +-
  all.h             |    3 +
- arm64/emitmacho.c | 1627 +++++++++++++++++++++++++++++++++++++++++++++
+ arm64/emitmacho.c | 1653 +++++++++++++++++++++++++++++++++++++++++++++
  arm64/emitmacho.h |    5 +
- main.c            |   50 +-
+ main.c            |   52 +-
  tools/objtest.sh  |   70 ++
- 6 files changed, 1750 insertions(+), 12 deletions(-)
+ 6 files changed, 1778 insertions(+), 12 deletions(-)
  create mode 100644 arm64/emitmacho.c
  create mode 100644 arm64/emitmacho.h
  create mode 100755 tools/objtest.sh
@@ -74,10 +74,10 @@ index 950fafd..57ef528 100644
  	int parse__lexinit_done;
 diff --git a/arm64/emitmacho.c b/arm64/emitmacho.c
 new file mode 100644
-index 0000000..1d82f8f
+index 0000000..2f89606
 --- /dev/null
 +++ b/arm64/emitmacho.c
-@@ -0,0 +1,1627 @@
+@@ -0,0 +1,1653 @@
 +#include "all.h"
 +
 +#include "emitmacho.h"
@@ -93,6 +93,8 @@ index 0000000..1d82f8f
 +#define LC_SEGMENT_64 0x19u
 +#define LC_SYMTAB 0x2u
 +#define LC_DYSYMTAB 0xBu
++#define LC_BUILD_VERSION 0x32u
++#define PLATFORM_MACOS 1u
 +#define N_UNDF 0x0u
 +#define N_SECT 0xEu
 +#define N_EXT 0x1u
@@ -163,6 +165,10 @@ index 0000000..1d82f8f
 +  uint32_t r_info;
 +};
 +
++struct build_version_command {
++  uint32_t cmd, cmdsize, platform, minos, sdk, ntools;
++};
++
 +MAKESURE(mach_header_64_size, sizeof(struct mach_header_64) == 32);
 +MAKESURE(segment_command_64_size, sizeof(struct segment_command_64) == 72);
 +MAKESURE(section_64_size, sizeof(struct section_64) == 80);
@@ -170,6 +176,7 @@ index 0000000..1d82f8f
 +MAKESURE(dysymtab_command_size, sizeof(struct dysymtab_command) == 80);
 +MAKESURE(nlist_64_size, sizeof(struct nlist_64) == 16);
 +MAKESURE(relocation_info_size, sizeof(struct relocation_info) == 8);
++MAKESURE(build_version_command, sizeof(struct build_version_command) == 24);
 +
 +typedef struct {
 +  int32_t addr;
@@ -359,7 +366,8 @@ index 0000000..1d82f8f
 +  }
 +}
 +
-+MachoCtx* macho_new(void) {
++MachoCtx*
++macho_new(void) {
 +  MachoCtx* ctx = emalloc(sizeof *ctx);
 +  memset(ctx, 0, sizeof *ctx);
 +  // string table always starts with a null byte
@@ -370,15 +378,16 @@ index 0000000..1d82f8f
 +  return ctx;
 +}
 +
-+void macho_free(MachoCtx* ctx) {
-+  free(ctx->text);
-+  free(ctx->data);
-+  free(ctx->dreloc);
-+  free(ctx->treloc);
-+  free(ctx->syms);
-+  free(ctx->strtab);
-+  free(ctx->blfixup);
-+  free(ctx);
++void
++macho_free(MachoCtx* ctx) {
++  qbe_free(ctx->text);
++  qbe_free(ctx->data);
++  qbe_free(ctx->dreloc);
++  qbe_free(ctx->treloc);
++  qbe_free(ctx->syms);
++  qbe_free(ctx->strtab);
++  qbe_free(ctx->blfixup);
++  qbe_free(ctx);
 +}
 +
 +// Encode a constant into rd, matching loadcon() in arm64/emit.c.
@@ -481,7 +490,8 @@ index 0000000..1d82f8f
 +  return (uint32_t)(16 + padding + 4 * s);
 +}
 +
-+void macho_emitfn(Fn* fn, MachoCtx* ctx) {
++void
++macho_emitfn(Fn* fn, MachoCtx* ctx) {
 +  char name[NString];
 +  Blk* b;
 +  Ins* i;
@@ -1234,11 +1244,12 @@ index 0000000..1d82f8f
 +      *p |= (uint32_t)(delta & 0x3FFFFFFu);  // B imm26
 +    }
 +  }
-+  free(blkoff);
-+  free(fixes);
++  qbe_free(blkoff);
++  qbe_free(fixes);
 +}
 +
-+void macho_emitdat(Dat* d, MachoCtx* ctx) {
++void
++macho_emitdat(Dat* d, MachoCtx* ctx) {
 +  static const int64_t masks[] = {
 +      [DB] = 0xFFL,
 +      [DH] = 0xFFFFL,
@@ -1401,7 +1412,8 @@ index 0000000..1d82f8f
 +  return ta - tb;
 +}
 +
-+void macho_write(MachoCtx* ctx, FILE* f) {
++void
++macho_write(MachoCtx* ctx, FILE* f) {
 +  uint32_t i;
 +  uint32_t nsects, datasect, bsssect;
 +  uint32_t textsz, datasz, bsssz, nsyms, ndreloc, ntreloc;
@@ -1501,7 +1513,7 @@ index 0000000..1d82f8f
 +      }
 +    }
 +    memcpy(ctx->syms, sorted, nsyms * sizeof(MSym));
-+    free(sorted);
++    qbe_free(sorted);
 +
 +    ilocal = ci[0];
 +    nlocal = cnt[0];
@@ -1522,7 +1534,7 @@ index 0000000..1d82f8f
 +      uint32_t oldidx = ctx->treloc[i].info & 0xFFFFFFu;
 +      ctx->treloc[i].info = (ctx->treloc[i].info & 0xFF000000u) | remap[oldidx];
 +    }
-+    free(remap);
++    qbe_free(remap);
 +  } else {
 +    ilocal = iextdef = iundef = 0;
 +    nlocal = nextdef = nundef = 0;
@@ -1538,7 +1550,7 @@ index 0000000..1d82f8f
 +
 +  // Step 6: compute file layout
 +  seg_size = 72 + nsects * 80;
-+  cmds_size = seg_size + 24 + 80;
++  cmds_size = seg_size + 24 + 80 + 24;
 +  dataoff = 32 + cmds_size;
 +  text_foff = dataoff;
 +  data_foff = align_up(text_foff + textsz, 8);
@@ -1553,7 +1565,7 @@ index 0000000..1d82f8f
 +  hdr.cputype = CPU_TYPE_ARM64;
 +  hdr.cpusubtype = 0;
 +  hdr.filetype = MH_OBJECT;
-+  hdr.ncmds = 3;
++  hdr.ncmds = 4;
 +  hdr.sizeofcmds = cmds_size;
 +  hdr.flags = MH_SUBSECTIONS_VIA_SYMBOLS;
 +  hdr.reserved = 0;
@@ -1645,6 +1657,20 @@ index 0000000..1d82f8f
 +  fwrite(&dysym, sizeof dysym, 1, f);
 +  cur += 80;
 +
++  // Step 11b: write LC_BUILD_VERSION
++  {
++    struct build_version_command bvc;
++    memset(&bvc, 0, sizeof bvc);
++    bvc.cmd = LC_BUILD_VERSION;
++    bvc.cmdsize = 24;
++    bvc.platform = PLATFORM_MACOS;
++    bvc.minos = (11u << 16);  // macOS 11.0
++    bvc.sdk = 0;
++    bvc.ntools = 0;
++    fwrite(&bvc, sizeof bvc, 1, f);
++    cur += 24;
++  }
++
 +  assert(cur == dataoff);
 +
 +  // Step 12: write section data
@@ -1717,7 +1743,7 @@ index 0000000..3e457fd
 +void macho_emitfn(Fn*, MachoCtx*);
 +void macho_write(MachoCtx*, FILE*);
 diff --git a/main.c b/main.c
-index 9024030..c89963b 100644
+index 9024030..218008c 100644
 --- a/main.c
 +++ b/main.c
 @@ -1,4 +1,5 @@
@@ -1835,13 +1861,15 @@ index 9024030..c89963b 100644
  	do {
  		f = av[optind];
  		if (!f || strcmp(f, "-") == 0) {
-@@ -207,7 +235,9 @@ main(int ac, char *av[])
+@@ -207,7 +235,11 @@ main(int ac, char *av[])
  		fclose(inf);
  	} while (++optind < ac);
  
 -	if (!G(dbg))
-+	if (G(objmode))
++	if (G(objmode)) {
 +		macho_write(G(macho_ctx), G(outf));
++		macho_free(G(macho_ctx));
++	}
 +	else if (!G(dbg))
  		GC(T).emitfin(G(outf));
  

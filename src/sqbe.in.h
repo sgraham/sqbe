@@ -40,6 +40,10 @@ typedef enum SqTarget {
   SQ_TARGET_RV64,         //
 } SqTarget;
 
+typedef enum SqFormat {
+  SQ_FORMAT_TEXT_S,     // Default textual .s to be assembled by system as
+  SQ_FORMAT_OBJ_MACHO,  // macOS Mach-O .o
+} SqFormat;
 
 typedef int (*SqOutputFn)(const char* fmt, va_list ap);
 
@@ -47,6 +51,8 @@ typedef struct SqConfiguration {
   // SQ_TARGET_DEFAULT for compiling for the current (host) platform, otherwise
   // specify the target to cross-compile to.
   SqTarget target;
+
+  SqFormat format;
 
   // Where the final assembler is written to.
   FILE* output;
@@ -83,6 +89,7 @@ typedef struct SqConfiguration {
 
 #define SQ_CONFIGURATION_DEFAULT                                \
   ((SqConfiguration){.target = SQ_TARGET_DEFAULT,               \
+                     .format = SQ_FORMAT_TEXT_S,                \
                      .output = stdout,                          \
                      .debug_flags = "",                         \
                      .max_blocks_per_function = 2048,           \

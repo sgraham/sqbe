@@ -408,6 +408,7 @@ def staticize_prototypes(contents):
         if (line.startswith("void ") or line.startswith("uint32_t ") or line.startswith("char *")
                 or line.startswith("int ") or line.startswith("uint ") or line.startswith("bits ")
                 or line.startswith("Ins *") or line.startswith("Ref ")
+                or line.startswith("MachoCtx*")
                 or line.startswith("Blk *")) and line.endswith(");"):
             line = "static " + line
         elif (line.startswith("extern Target T")
@@ -529,6 +530,9 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
                 contents = contents.replace("Rv64Op rv64_op", "static Rv64Op rv64_op")
                 contents = contents.replace("int rv64_rsave", "static int rv64_rsave")
                 contents = contents.replace("int rv64_rclob", "static int rv64_rclob")
+
+            if file.endswith("emitmacho.h"):
+                contents = staticize_prototypes(contents)
 
             if file.endswith("all.h"):
                 contents = staticize_prototypes(contents)

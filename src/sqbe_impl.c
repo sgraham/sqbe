@@ -466,6 +466,11 @@ void sq_init(SqConfiguration* config) {
     }
   }
 
+  if (config->format == SQ_FORMAT_OBJ_MACHO && GC(T).apple) {
+    global_context.main__objmode = 1;
+    global_context.main__macho_ctx = macho_new();
+  }
+
   global_context.main__outf = config->output;
 
   memset(GC(debug), 0, sizeof(GC(debug)));
@@ -488,7 +493,12 @@ bool sq_shutdown(void) {
 
   SQ_ASSERT(SQC(initialized) != SQIS_UNINITIALIZED);
   if (SQC(initialized) == SQIS_INITIALIZED_EMIT_FIN) {
-    GC(T).emitfin(global_context.main__outf);
+    if (global_context.main__objmode) {
+      macho_write(global_context.main__macho_ctx, global_context.main__outf);
+      macho_free(global_context.main__macho_ctx);
+    } else {
+      GC(T).emitfin(global_context.main__outf);
+    }
   }
 
   _clear_initialized_state();
@@ -1201,6 +1211,7 @@ SqSymbol sq_data_end(void) {
   SQC(pfs.curd).isstr = 0;
   SQC(pfs.curd).type = DEnd;
   qbe_main_data(&SQC(pfs.curd));
+  if (GC(in_error)) { return (SqSymbol){0}; }
 
   SqSymbol ret = {intern(SQC(pfs.curd).name)};
   SQC(pfs.curd) = (Dat){0};

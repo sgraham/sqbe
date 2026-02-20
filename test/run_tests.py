@@ -48,6 +48,26 @@ def gen_cc(in_file, out_bin):
         subprocess.run(["clang", in_file, "test_helper.c", "-o", out_bin], check=True)
 
 
+def gen_ld(in_file, out_bin):
+    if sys.platform == "win32":
+        subprocess.run(
+            ["C:\\Program Files\\LLVM\\bin\\clang.exe", in_file, "test_helper.c", "-o", out_bin],
+            check=True,
+        )
+    else:
+        subprocess.run(["clang", in_file, "test_helper.c", "-o", out_bin], check=True)
+
+
+def get_skips(filename):
+    skips = []
+    with open(filename, "r") as f:
+        for line in f.readlines():
+            skip_prefix = "// SKIP: "
+            if line.startswith(skip_prefix):
+                skips.append(line[len(skip_prefix) :].rstrip())
+    return skips
+
+
 def get_expected_output(filename):
     output = []
     with open(filename, "r") as f:
@@ -111,6 +131,12 @@ class hexdump:
 def do_test(f):
     print("%s... " % f, end="")
     sys.stdout.flush()
+    skips = get_skips(f)
+    if ((sys.platform == "darwin" and "mac" in skips) or
+        (sys.platform == "win32" and "win" in skips) or
+        (sys.platform == "linux2" and "linux" in skips)):
+        print("skip")
+        return
     expected = get_expected_output(f)
     error = get_expected_error(f)
     rc = get_expected_rc(f)
@@ -119,9 +145,16 @@ def do_test(f):
     if sys.platform == "darwin":
         env = {"MallocNanoZone": "0"}
 
-    compileproc = subprocess.run(
-        ["./tmp.exe", "tmp.s"], capture_output=True, universal_newlines=True, env=env
-    )
+    # TODO, maybe do more than just the one with a re-run
+    direct = f == "macho.c"
+    if direct:
+        compileproc = subprocess.run(
+            ["./tmp.exe", "tmp.o"], capture_output=True, universal_newlines=True, env=env
+        )
+    else:
+        compileproc = subprocess.run(
+            ["./tmp.exe", "tmp.s"], capture_output=True, universal_newlines=True, env=env
+        )
     if compileproc.returncode != rc:
         print("FAILED")
         print("EXPECTED rc %d, got %d" % (rc, compileproc.returncode))
@@ -141,10 +174,16 @@ def do_test(f):
             # Compile failure test, so nothing to assemble/run.
             return
 
-    gen_cc("tmp.s", "gen.exe")
-    proc = subprocess.run(
-        ["./gen.exe"], capture_output=True, check=True, universal_newlines=True
-    )
+    if direct:
+        gen_ld("tmp.o", "gen.exe")
+        proc = subprocess.run(
+            ["./gen.exe"], capture_output=True, check=True, universal_newlines=True
+        )
+    else:
+        gen_cc("tmp.s", "gen.exe")
+        proc = subprocess.run(
+            ["./gen.exe"], capture_output=True, check=True, universal_newlines=True
+        )
     got = proc.stdout
     if got != expected:
         print("FAILED")
