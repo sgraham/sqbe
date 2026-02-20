@@ -134,7 +134,7 @@ def do_test(f):
     skips = get_skips(f)
     if ((sys.platform == "darwin" and "mac" in skips) or
         (sys.platform == "win32" and "win" in skips) or
-        (sys.platform == "linux2" and "linux" in skips)):
+        (sys.platform == "linux" and "linux" in skips)):
         print("skip")
         return
     expected = get_expected_output(f)
