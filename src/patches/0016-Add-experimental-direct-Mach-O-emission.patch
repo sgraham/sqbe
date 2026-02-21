@@ -1,4 +1,4 @@
-From 58463f73e96a47507753d44f796551d81691a7db Mon Sep 17 00:00:00 2001
+From 74cd6154fc52a5b2b8258150cf015f3870036189 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 20 Feb 2026 10:50:21 -0800
 Subject: [PATCH 16/16] Add experimental direct Mach-O emission
@@ -9,17 +9,22 @@ Output .o should always be the same as if .s is assembled by clang as
 verified by tools/objtest.sh, but probably isn't always yet!
 ---
  Makefile           |    7 +-
- all.h              |    3 +
- arm64/emitmacho.c  | 1690 ++++++++++++++++++++++++++++++++++++++++++++
- arm64/emitmacho.h  |    5 +
- main.c             |   52 +-
- test/dynalloc2.ssa |   40 ++
+ all.h              |    9 +
+ arm64/emitmacho.c  | 1842 ++++++++++++++++++++++++++++++++++++++++++++
+ arm64/emitmacho.h  |    6 +
+ emit.c             |    6 -
+ main.c             |   53 +-
+ test/dynalloc2.ssa |   37 +
+ test/float.ssa     |   18 +
+ test/movcon.ssa    |   46 ++
  test/objptr.ssa    |   19 +
  tools/objtest.sh   |   95 +++
- 8 files changed, 1899 insertions(+), 12 deletions(-)
+ 11 files changed, 2120 insertions(+), 18 deletions(-)
  create mode 100644 arm64/emitmacho.c
  create mode 100644 arm64/emitmacho.h
  create mode 100644 test/dynalloc2.ssa
+ create mode 100644 test/float.ssa
+ create mode 100644 test/movcon.ssa
  create mode 100644 test/objptr.ssa
  create mode 100755 tools/objtest.sh
 
@@ -56,7 +61,7 @@ index c3bbefc..54d7853 100644
  	@echo $(SRCALL)
  
 diff --git a/all.h b/all.h
-index 950fafd..57ef528 100644
+index 950fafd..339a158 100644
 --- a/all.h
 +++ b/all.h
 @@ -38,6 +38,7 @@ typedef struct Field Field;
@@ -67,7 +72,20 @@ index 950fafd..57ef528 100644
  
  typedef struct Asmbits Asmbits;
  typedef struct Edge Edge;
-@@ -526,6 +527,8 @@ typedef struct GlobalContext {
+@@ -53,6 +54,12 @@ enum {
+ 	NBit    = CHAR_BIT * sizeof(bits),
+ };
+ 
++struct Asmbits {
++	bits n;
++	int size;
++	Asmbits *link;
++};
++
+ struct Target {
+ 	char name[16];
+ 	char apple;
+@@ -526,6 +533,8 @@ typedef struct GlobalContext {
  	/* main.c */
  	FILE* main__outf;
  	int main__dbg;
@@ -78,10 +96,10 @@ index 950fafd..57ef528 100644
  	int parse__lexinit_done;
 diff --git a/arm64/emitmacho.c b/arm64/emitmacho.c
 new file mode 100644
-index 0000000..9ba5d18
+index 0000000..1c166e9
 --- /dev/null
 +++ b/arm64/emitmacho.c
-@@ -0,0 +1,1690 @@
+@@ -0,0 +1,1842 @@
 +#include "all.h"
 +
 +#include "emitmacho.h"
@@ -117,6 +135,11 @@ index 0000000..9ba5d18
 +// Sentinel sect values: resolved to real section numbers in macho_write
 +#define SECT_DATA 0xFEu
 +#define SECT_BSS 0xFDu
++#define SECT_LIT4 0xFCu
++#define SECT_LIT8 0xFBu
++// S_4BYTE_LITERALS / S_8BYTE_LITERALS section type flags
++#define S_4BYTE_LITERALS 0x3u
++#define S_8BYTE_LITERALS 0x4u
 +
 +// Mach-O structs (no system headers, exact field layout)
 +
@@ -197,6 +220,10 @@ index 0000000..9ba5d18
 +struct MachoCtx {
 +  uint8_t* text;
 +  uint32_t textsz, textcap;
++  uint8_t* lit4;  // __TEXT,__literal4 (4-byte FP constants)
++  uint32_t lit4sz, lit4cap;
++  uint8_t* lit8;  // __TEXT,__literal8 (8-byte FP constants)
++  uint32_t lit8sz, lit8cap;
 +  uint8_t* data;
 +  uint32_t datasz, datacap;
 +  uint32_t bsssz;
@@ -325,6 +352,23 @@ index 0000000..9ba5d18
 +  ctx->treloc[ctx->ntreloc++] = r;
 +}
 +
++// ARM64_RELOC_ADDEND for text section: r_extern=0, r_symbolnum=addend value.
++static void trelocadd_addend(MachoCtx* ctx, int32_t addr, uint32_t addend) {
++  MReloc r;
++  r.addr = addr;
++  r.info = (addend & 0xFFFFFFu) | (0u << 24) | (2u << 25) | (0u << 27)
++           | ((uint32_t)ARM64_RELOC_ADDEND << 28);
++  if (ctx->ntreloc == ctx->trelocap) {
++    uint32_t oldcap = ctx->trelocap;
++    ctx->trelocap = ctx->trelocap ? ctx->trelocap * 2 : 8;
++    ctx->treloc = qbe_realloc(ctx->treloc, oldcap * sizeof(MReloc), ctx->trelocap * sizeof(MReloc));
++    if (!ctx->treloc) {
++      die("obj: out of memory");
++    }
++  }
++  ctx->treloc[ctx->ntreloc++] = r;
++}
++
 +static uint32_t callee_symidx(MachoCtx* ctx, const char* name) {
 +  uint32_t i;
 +  for (i = 0; i < ctx->nsyms; i++) {
@@ -399,6 +443,8 @@ index 0000000..9ba5d18
 +void
 +macho_free(MachoCtx* ctx) {
 +  qbe_free(ctx->text);
++  qbe_free(ctx->lit4);
++  qbe_free(ctx->lit8);
 +  qbe_free(ctx->data);
 +  qbe_free(ctx->dreloc);
 +  qbe_free(ctx->treloc);
@@ -419,24 +465,35 @@ index 0000000..9ba5d18
 +    uint32_t symidx;
 +    symname(sname, str(c->sym.id));
 +    symidx = callee_symidx(ctx, sname);
-+    if (c->bits.i != 0) {
-+      die("obj: CAddr with non-zero offset in Ocopy");
-+    }
-+    if (c->sym.type == SThr) {
-+      // Thread-local: ADRP Xd, sym@tlvppage
-+      //             + LDR  Xd, [Xd, sym@tlvppageoff]
-+      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_TLVP_LOAD_PAGE21, 2, 1);
-+      emit_u32(ctx, 0x90000000u | (uint32_t)rd);
-+      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_TLVP_LOAD_PAGEOFF12, 2, 0);
-+      // LDR Xd, [Xd, #0] - loads descriptor ptr
-+      emit_u32(ctx, 0xF9400000u | ((uint32_t)rd << 5) | (uint32_t)rd);
-+    } else {
-+      // Global: ADRP Xd, sym@page
-+      //       + ADD  Xd, Xd, sym@pageoff
-+      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_PAGE21, 2, 1);
-+      emit_u32(ctx, 0x90000000u | (uint32_t)rd);
-+      trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_PAGEOFF12, 2, 0);
-+      emit_u32(ctx, 0x91000000u | ((uint32_t)rd << 5) | (uint32_t)rd);
++    {
++      // An addend (e.g. sym+8) is expressed as an ARM64_RELOC_ADDEND
++      // reloc at the same address as the PAGE21/PAGEOFF12 reloc.
++      // The sort in macho_write ensures ADDEND appears first.
++      uint32_t addend = (uint32_t)(c->bits.i & 0xFFFFFFu);
++      if (c->sym.type == SThr) {
++        // Thread-local: ADRP Xd, sym@tlvppage
++        //             + LDR  Xd, [Xd, sym@tlvppageoff]
++        if (addend)
++          trelocadd_addend(ctx, (int32_t)ctx->textsz, addend);
++        trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_TLVP_LOAD_PAGE21, 2, 1);
++        emit_u32(ctx, 0x90000000u | (uint32_t)rd);
++        if (addend)
++          trelocadd_addend(ctx, (int32_t)ctx->textsz, addend);
++        trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_TLVP_LOAD_PAGEOFF12, 2, 0);
++        // LDR Xd, [Xd, #0] - loads descriptor ptr
++        emit_u32(ctx, 0xF9400000u | ((uint32_t)rd << 5) | (uint32_t)rd);
++      } else {
++        // Global: ADRP Xd, sym@page
++        //       + ADD  Xd, Xd, sym@pageoff
++        if (addend)
++          trelocadd_addend(ctx, (int32_t)ctx->textsz, addend);
++        trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_PAGE21, 2, 1);
++        emit_u32(ctx, 0x90000000u | (uint32_t)rd);
++        if (addend)
++          trelocadd_addend(ctx, (int32_t)ctx->textsz, addend);
++        trelocadd(ctx, (int32_t)ctx->textsz, symidx, ARM64_RELOC_PAGEOFF12, 2, 0);
++        emit_u32(ctx, 0x91000000u | ((uint32_t)rd << 5) | (uint32_t)rd);
++      }
 +    }
 +    return;
 +  }
@@ -1445,14 +1502,73 @@ index 0000000..9ba5d18
 +  return ta - tb;
 +}
 +
++static void
++fp_const_cb(int idx, bits n, int size, void* ud) {
++  MachoCtx* ctx = ud;
++  static const uint8_t zeros[8] = {0};
++  char sname[NString];
++  uint32_t j, sym_off;
++  uint8_t sect_sentinel;
++  uint8_t** buf;
++  uint32_t* sz;
++  uint32_t* cap;
++  uint64_t v;
++
++  // route 4-byte constants to __literal4, 8-byte to __literal8
++  if (size == 4) {
++    buf = &ctx->lit4; sz = &ctx->lit4sz; cap = &ctx->lit4cap;
++    sect_sentinel = SECT_LIT4;
++  } else {
++    buf = &ctx->lit8; sz = &ctx->lit8sz; cap = &ctx->lit8cap;
++    sect_sentinel = SECT_LIT8;
++  }
++
++  // align within the literal section to 'size' bytes
++  while (*sz % (uint32_t)size != 0)
++    buf_append(buf, sz, cap, zeros, 1);
++  sym_off = *sz;
++
++  // emit the constant bytes (little-endian, native)
++  v = (uint64_t)n;
++  buf_append(buf, sz, cap, &v, (uint32_t)size);
++
++  // symbol name matches isel.c: "{asloc}fp{idx}"
++  snprintf(sname, NString, "%sfp%d", GC(T).asloc, idx);
++
++  // if already referenced (added as N_UNDF by callee_symidx), update to defined
++  for (j = 0; j < ctx->nsyms; j++) {
++    if (strcmp(ctx->strtab + ctx->syms[j].strx, sname) == 0) {
++      ctx->syms[j].type = N_SECT;
++      ctx->syms[j].sect = sect_sentinel;
++      ctx->syms[j].value = (uint64_t)sym_off;
++      return;
++    }
++  }
++  // not yet referenced - add as local defined symbol
++  symadd(ctx, sname, N_SECT, sect_sentinel, (uint64_t)sym_off);
++}
++
++void
++macho_emitfin_obj(MachoCtx* ctx) {
++  Asmbits* b;
++  int idx;
++  for (b = GC(emit__stash), idx = 0; b; b = b->link, idx++)
++    fp_const_cb(idx, b->n, b->size, ctx);
++  while ((b = GC(emit__stash))) {
++    GC(emit__stash) = b->link;
++    qbe_free(b);
++  }
++}
++
 +void
 +macho_write(MachoCtx* ctx, FILE* f) {
 +  uint32_t i;
-+  uint32_t nsects, datasect, bsssect;
-+  uint32_t textsz, datasz, bsssz, nsyms, ndreloc, ntreloc;
-+  uint32_t data_addr, bss_addr;  // section VM addresses (aligned)
++  uint32_t nsects, lit4sect, lit8sect, datasect, bsssect;
++  uint32_t textsz, lit4sz, lit8sz, datasz, bsssz, nsyms, ndreloc, ntreloc;
++  uint32_t lit4_addr, lit8_addr, data_addr, bss_addr;  // section VM addresses
 +  uint32_t seg_size, cmds_size;
-+  uint32_t dataoff, text_foff, data_foff, dreloc_foff, treloc_foff;
++  uint32_t dataoff, text_foff, lit4_foff, lit8_foff, data_foff;
++  uint32_t dreloc_foff, treloc_foff;
 +  uint32_t symtab_foff, strtab_foff;
 +  uint32_t cnt[3], ci[3];
 +  uint32_t ilocal, iextdef, iundef;
@@ -1493,6 +1609,8 @@ index 0000000..9ba5d18
 +  }
 +
 +  textsz = ctx->textsz;
++  lit4sz = ctx->lit4sz;
++  lit8sz = ctx->lit8sz;
 +  datasz = ctx->datasz;
 +  bsssz = ctx->bsssz;
 +  nsyms = ctx->nsyms;
@@ -1500,26 +1618,30 @@ index 0000000..9ba5d18
 +  ntreloc = ctx->ntreloc;
 +
 +  // Step 1: determine section numbering
++  // Order: __text, __literal4 (opt), __literal8 (opt), __data (opt), __bss (opt)
 +  nsects = 1;  // __text is always section 1
-+  datasect = 0;
-+  bsssect = 0;
-+  if (datasz > 0) {
-+    datasect = ++nsects;
-+  }
-+  if (bsssz > 0) {
-+    bsssect = ++nsects;
-+  }
++  lit4sect = lit8sect = datasect = bsssect = 0;
++  if (lit4sz > 0) lit4sect = ++nsects;
++  if (lit8sz > 0) lit8sect = ++nsects;
++  if (datasz > 0) datasect = ++nsects;
++  if (bsssz  > 0) bsssect  = ++nsects;
 +
-+  // Section VM addresses must be aligned to their section alignment (2^3 = 8).
-+  // If textsz is not a multiple of 8, pointers inside the data section would
-+  // have an unaligned VM address and ld would reject the object file with
-+  // "pointer not aligned".
-+  data_addr = align_up(textsz, 8);
++  // VM addresses: __literal4/8 are in __TEXT and follow __text directly.
++  // __data must be aligned to 8 (linker rejects "pointer not aligned" otherwise).
++  lit4_addr = align_up(textsz, 4);
++  lit8_addr = align_up(lit4_addr + lit4sz, 8);
++  data_addr = align_up(lit8_addr + lit8sz, 8);
 +  bss_addr  = align_up(data_addr + datasz, 8);
 +
 +  // Step 2: fix up symbol values and sect sentinel fields
 +  for (i = 0; i < nsyms; i++) {
-+    if (ctx->syms[i].sect == SECT_DATA) {
++    if (ctx->syms[i].sect == SECT_LIT4) {
++      ctx->syms[i].value += lit4_addr;
++      ctx->syms[i].sect = (uint8_t)lit4sect;
++    } else if (ctx->syms[i].sect == SECT_LIT8) {
++      ctx->syms[i].value += lit8_addr;
++      ctx->syms[i].sect = (uint8_t)lit8sect;
++    } else if (ctx->syms[i].sect == SECT_DATA) {
 +      ctx->syms[i].value += data_addr;
 +      ctx->syms[i].sect = (uint8_t)datasect;
 +    } else if (ctx->syms[i].sect == SECT_BSS) {
@@ -1572,8 +1694,11 @@ index 0000000..9ba5d18
 +      }
 +    }
 +    for (i = 0; i < ntreloc; i++) {
-+      uint32_t oldidx = ctx->treloc[i].info & 0xFFFFFFu;
-+      ctx->treloc[i].info = (ctx->treloc[i].info & 0xFF000000u) | remap[oldidx];
++      uint32_t type = ctx->treloc[i].info >> 28;
++      if (type != ARM64_RELOC_ADDEND) {
++        uint32_t oldidx = ctx->treloc[i].info & 0xFFFFFFu;
++        ctx->treloc[i].info = (ctx->treloc[i].info & 0xFF000000u) | remap[oldidx];
++      }
 +    }
 +    qbe_free(remap);
 +  } else {
@@ -1594,7 +1719,9 @@ index 0000000..9ba5d18
 +  cmds_size = seg_size + 24 + 80 + 24;
 +  dataoff = 32 + cmds_size;
 +  text_foff = dataoff;
-+  data_foff = align_up(text_foff + textsz, 8);
++  lit4_foff = align_up(text_foff + textsz, 4);
++  lit8_foff = align_up(lit4_foff + lit4sz, 8);
++  data_foff = align_up(lit8_foff + lit8sz, 8);
 +  dreloc_foff = align_up(data_foff + datasz, 4);
 +  treloc_foff = align_up(dreloc_foff + ndreloc * 8, 4);
 +  symtab_foff = align_up(treloc_foff + ntreloc * 8, 8);
@@ -1621,7 +1748,14 @@ index 0000000..9ba5d18
 +  seg.vmaddr = 0;
 +  seg.vmsize = (uint64_t)(bss_addr + bsssz);
 +  seg.fileoff = (uint64_t)dataoff;
-+  seg.filesize = (datasz > 0) ? (uint64_t)(data_foff - text_foff + datasz) : (uint64_t)textsz;
++  {
++    // filesize covers all file-backed sections (no zerofill)
++    uint32_t fend = text_foff + textsz;
++    if (lit4sz > 0) fend = lit4_foff + lit4sz;
++    if (lit8sz > 0) fend = lit8_foff + lit8sz;
++    if (datasz > 0) fend = data_foff + datasz;
++    seg.filesize = (uint64_t)(fend - text_foff);
++  }
 +  seg.maxprot = 7;
 +  seg.initprot = 7;
 +  seg.nsects = nsects;
@@ -1643,6 +1777,36 @@ index 0000000..9ba5d18
 +  sec.flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS | S_REGULAR;
 +  fwrite(&sec, sizeof sec, 1, f);
 +  cur += 80;
++
++  if (lit4sect) {
++    memset(&sec, 0, sizeof sec);
++    memcpy(sec.sectname, "__literal4", 10);
++    memcpy(sec.segname, "__TEXT", 6);
++    sec.addr = (uint64_t)lit4_addr;
++    sec.size = (uint64_t)lit4sz;
++    sec.offset = lit4_foff;
++    sec.align = 2;  // 2^2 = 4 bytes
++    sec.reloff = 0;
++    sec.nreloc = 0;
++    sec.flags = S_4BYTE_LITERALS;
++    fwrite(&sec, sizeof sec, 1, f);
++    cur += 80;
++  }
++
++  if (lit8sect) {
++    memset(&sec, 0, sizeof sec);
++    memcpy(sec.sectname, "__literal8", 10);
++    memcpy(sec.segname, "__TEXT", 6);
++    sec.addr = (uint64_t)lit8_addr;
++    sec.size = (uint64_t)lit8sz;
++    sec.offset = lit8_foff;
++    sec.align = 3;  // 2^3 = 8 bytes
++    sec.reloff = 0;
++    sec.nreloc = 0;
++    sec.flags = S_8BYTE_LITERALS;
++    fwrite(&sec, sizeof sec, 1, f);
++    cur += 80;
++  }
 +
 +  if (datasect) {
 +    memset(&sec, 0, sizeof sec);
@@ -1719,11 +1883,17 @@ index 0000000..9ba5d18
 +    fwrite(ctx->text, 1, textsz, f);
 +    cur += textsz;
 +  }
-+  // padding between text and data
-+  while (cur < data_foff) {
-+    fwrite(zeros, 1, 1, f);
-+    cur++;
++  while (cur < lit4_foff) { fwrite(zeros, 1, 1, f); cur++; }
++  if (lit4sz > 0) {
++    fwrite(ctx->lit4, 1, lit4sz, f);
++    cur += lit4sz;
 +  }
++  while (cur < lit8_foff) { fwrite(zeros, 1, 1, f); cur++; }
++  if (lit8sz > 0) {
++    fwrite(ctx->lit8, 1, lit8sz, f);
++    cur += lit8sz;
++  }
++  while (cur < data_foff) { fwrite(zeros, 1, 1, f); cur++; }
 +  if (datasz > 0) {
 +    fwrite(ctx->data, 1, datasz, f);
 +    cur += datasz;
@@ -1774,17 +1944,35 @@ index 0000000..9ba5d18
 +}
 diff --git a/arm64/emitmacho.h b/arm64/emitmacho.h
 new file mode 100644
-index 0000000..3e457fd
+index 0000000..875e0b9
 --- /dev/null
 +++ b/arm64/emitmacho.h
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,6 @@
 +MachoCtx* macho_new(void);
 +void macho_free(MachoCtx*);
 +void macho_emitdat(Dat*, MachoCtx*);
 +void macho_emitfn(Fn*, MachoCtx*);
++void macho_emitfin_obj(MachoCtx*);
 +void macho_write(MachoCtx*, FILE*);
+diff --git a/emit.c b/emit.c
+index f077429..752a85f 100644
+--- a/emit.c
++++ b/emit.c
+@@ -127,12 +127,6 @@ emitdat(Dat *d, FILE *f)
+ 	}
+ }
+ 
+-struct Asmbits {
+-	bits n;
+-	int size;
+-	Asmbits *link;
+-};
+-
+ int
+ stashbits(bits n, int size)
+ {
 diff --git a/main.c b/main.c
-index 9024030..218008c 100644
+index 9024030..cd09287 100644
 --- a/main.c
 +++ b/main.c
 @@ -1,4 +1,5 @@
@@ -1902,12 +2090,13 @@ index 9024030..218008c 100644
  	do {
  		f = av[optind];
  		if (!f || strcmp(f, "-") == 0) {
-@@ -207,7 +235,11 @@ main(int ac, char *av[])
+@@ -207,7 +235,12 @@ main(int ac, char *av[])
  		fclose(inf);
  	} while (++optind < ac);
  
 -	if (!G(dbg))
 +	if (G(objmode)) {
++		macho_emitfin_obj(G(macho_ctx));
 +		macho_write(G(macho_ctx), G(outf));
 +		macho_free(G(macho_ctx));
 +	}
@@ -1917,18 +2106,15 @@ index 9024030..218008c 100644
  	exit(0);
 diff --git a/test/dynalloc2.ssa b/test/dynalloc2.ssa
 new file mode 100644
-index 0000000..6fa8807
+index 0000000..59c75ab
 --- /dev/null
 +++ b/test/dynalloc2.ssa
-@@ -0,0 +1,40 @@
-+function $M0$tmp_1(l %ret_5) {
+@@ -0,0 +1,37 @@
++export function w $main() {
 +@_3
 +        %_6 =l alloc8 48
-+        blit $strobj_2, %_6, 16
 +        %_7 =l add %_6, 16
-+        blit $strobj_3, %_7, 16
 +        %_8 =l add %_6, 32
-+        blit $strobj_4, %_8, 16
 +        %_9 =l alloc8 16
 +        storel 0, %_9
 +        %_10 =l add %_9, 8
@@ -1959,6 +2145,82 @@ index 0000000..6fa8807
 +        storel %_28, %_11
 +        jmp @_14
 +@_17
++        ret 0
++}
+diff --git a/test/float.ssa b/test/float.ssa
+new file mode 100644
+index 0000000..5a11658
+--- /dev/null
++++ b/test/float.ssa
+@@ -0,0 +1,18 @@
++function $wee(l %x) {
++@_0
++        ret
++}
++
++function l $strit(l %x) {
++@_0
++        ret %x
++}
++
++export function w $main() {
++@_0
++        %_2 =l alloc8 4
++        stores s_1.000000, %_2
++        %_3 =l call $strit(l %_2)
++        %_5 =w call $wee(l %_3)
++        ret 0
++}
+diff --git a/test/movcon.ssa b/test/movcon.ssa
+new file mode 100644
+index 0000000..c1b7c1e
+--- /dev/null
++++ b/test/movcon.ssa
+@@ -0,0 +1,46 @@
++type :str = { l, l }
++data $strdat_1 = { b 0 }
++data $strobj_1 = { l $strdat_1, l 0 }
++
++function w $f1(l %a) {
++@_0
++        ret 0
++}
++
++function l $f2(l %a) {
++@_0
++        ret 0
++}
++
++export function $main() {
++@_0
++        %_2 =l alloc8 4
++        storew 0, %_2
++        %_3 =l alloc8 8
++        %_4 =l alloc8 8
++        %_5 =l load $strobj_1
++        storel %_5, %_3
++        %_6 =l add $strobj_1, 8
++        %_7 =l load %_6
++        %_8 =l add %_5, %_7
++        storel %_8, %_4
++@_9
++        %_13 =l load %_3
++        %_14 =l load %_4
++        %_15 =l csltl %_13, %_14
++        jnz %_15, @_11, @_12
++@_11
++        %_16 =w loadub %_13
++        storew %_16, %_2
++        %_17 =l call $f2(l %_2)
++        %_18 =l alloc8 16
++        blit %_17, %_18, 16
++        %_19 =w call $f1(l %_18)
++@_10
++        %_20 =l load %_3
++        %_21 =l add %_20, 1
++        storel %_21, %_3
++        jmp @_9
++@_12
 +        ret
 +}
 diff --git a/test/objptr.ssa b/test/objptr.ssa
@@ -1988,7 +2250,7 @@ index 0000000..2cc4909
 +# <<<
 diff --git a/tools/objtest.sh b/tools/objtest.sh
 new file mode 100755
-index 0000000..9c6b3a1
+index 0000000..208e92f
 --- /dev/null
 +++ b/tools/objtest.sh
 @@ -0,0 +1,95 @@
@@ -2011,7 +2273,7 @@ index 0000000..9c6b3a1
 +}
 +
 +extract_output() {
-+	awk '/^# >>> output/{p=1;next}/^# <</{p=0}p{sub(/^# ?/,"");print}' "$1"
++	awk '/^# >>> output/{p=1;next}/^# <</{p=0}p{sub(/^# ?/,"");sub(/#$/,"");print}' "$1"
 +}
 +
 +run() {

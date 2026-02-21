@@ -494,6 +494,7 @@ bool sq_shutdown(void) {
   SQ_ASSERT(SQC(initialized) != SQIS_UNINITIALIZED);
   if (SQC(initialized) == SQIS_INITIALIZED_EMIT_FIN) {
     if (global_context.main__objmode) {
+      macho_emitfin_obj(global_context.main__macho_ctx);
       macho_write(global_context.main__macho_ctx, global_context.main__outf);
       macho_free(global_context.main__macho_ctx);
     } else {
