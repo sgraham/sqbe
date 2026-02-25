@@ -1,4 +1,4 @@
-From 06632c173797e16c9ed1d2f55cfee494bfab7861 Mon Sep 17 00:00:00 2001
+From d73358f038f405a006f9972b624f75c7fd6cd22b Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Wed, 25 Feb 2026 15:23:43 -0800
 Subject: [PATCH 17/17] Add experimental jit on Apple arm64
@@ -160,7 +160,7 @@ index 0000000..baddf98
 +const uint8_t arm64cond[NCmp];
 diff --git a/arm64/emitjit.c b/arm64/emitjit.c
 new file mode 100644
-index 0000000..9bf7a93
+index 0000000..c544ccf
 --- /dev/null
 +++ b/arm64/emitjit.c
 @@ -0,0 +1,1565 @@
@@ -1700,32 +1700,32 @@ index 0000000..9bf7a93
 +}
 +
 +void
-+jit_free(JitCtx*) {
++jit_free(JitCtx* ctx) {
 +}
 +
 +void
-+jit_emitfn(Fn*, JitCtx*) {
++jit_emitfn(Fn* fn, JitCtx* ctx) {
 +}
 +
 +void
-+jit_emitdat(Dat*, JitCtx*) {
++jit_emitdat(Dat* dat, JitCtx*, ctx) {
 +}
 +
 +void
-+jit_emitfin_fp(JitCtx*) {
++jit_emitfin_fp(JitCtx* ctx) {
 +}
 +
 +void
-+jit_finalize(JitCtx*) {
++jit_finalize(JitCtx* ctx) {
 +}
 +
 +void*
-+jit_lookup(JitCtx*, const char*) {
++jit_lookup(JitCtx* ctx, const char* name) {
 +  return NULL;
 +}
 +
 +void
-+jit_populate_ptrs(JitCtx*) {
++jit_populate_ptrs(JitCtx* ctx) {
 +}
 +
 +#endif
