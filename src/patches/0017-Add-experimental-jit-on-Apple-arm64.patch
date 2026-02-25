@@ -1,4 +1,4 @@
-From d73358f038f405a006f9972b624f75c7fd6cd22b Mon Sep 17 00:00:00 2001
+From f2242e2fa660e3e07679af3f573701bbc57fe745 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Wed, 25 Feb 2026 15:23:43 -0800
 Subject: [PATCH 17/17] Add experimental jit on Apple arm64
@@ -11,14 +11,14 @@ and runs rather than emitting a .s or .o.
  all.h                |    3 +
  arm64/apple_shared.c |   39 ++
  arm64/apple_shared.h |   10 +
- arm64/emitjit.c      | 1565 ++++++++++++++++++++++++++++++++++++++++++
+ arm64/emitjit.c      | 1575 ++++++++++++++++++++++++++++++++++++++++++
  arm64/emitjit.h      |    8 +
  arm64/emitmacho.c    |   59 +-
  main.c               |   41 +-
  test/_jit_add.ssa    |    8 +
  test/_jit_stub.ssa   |    5 +
  tools/objtest.sh     |  106 ++-
- 12 files changed, 1797 insertions(+), 57 deletions(-)
+ 12 files changed, 1807 insertions(+), 57 deletions(-)
  create mode 100644 arm64/apple_shared.c
  create mode 100644 arm64/apple_shared.h
  create mode 100644 arm64/emitjit.c
@@ -160,10 +160,10 @@ index 0000000..baddf98
 +const uint8_t arm64cond[NCmp];
 diff --git a/arm64/emitjit.c b/arm64/emitjit.c
 new file mode 100644
-index 0000000..c544ccf
+index 0000000..a8e6613
 --- /dev/null
 +++ b/arm64/emitjit.c
-@@ -0,0 +1,1565 @@
+@@ -0,0 +1,1575 @@
 +#include "all.h"
 +#include "emitjit.h"
 +#include "apple_shared.h"
@@ -1701,31 +1701,41 @@ index 0000000..c544ccf
 +
 +void
 +jit_free(JitCtx* ctx) {
++  (void)ctx;
 +}
 +
 +void
 +jit_emitfn(Fn* fn, JitCtx* ctx) {
++  (void)fn;
++  (void)ctx;
 +}
 +
 +void
-+jit_emitdat(Dat* dat, JitCtx*, ctx) {
++jit_emitdat(Dat* dat, JitCtx* ctx) {
++  (void)dat;
++  (void)ctx;
 +}
 +
 +void
 +jit_emitfin_fp(JitCtx* ctx) {
++  (void)ctx;
 +}
 +
 +void
 +jit_finalize(JitCtx* ctx) {
++  (void)ctx;
 +}
 +
 +void*
 +jit_lookup(JitCtx* ctx, const char* name) {
++  (void)ctx;
++  (void)name;
 +  return NULL;
 +}
 +
 +void
 +jit_populate_ptrs(JitCtx* ctx) {
++  (void)ctx;
 +}
 +
 +#endif
