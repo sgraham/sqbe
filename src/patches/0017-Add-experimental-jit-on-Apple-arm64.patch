@@ -1,4 +1,4 @@
-From 197fde029487111c235ec538d41897b8e7296ff0 Mon Sep 17 00:00:00 2001
+From 06632c173797e16c9ed1d2f55cfee494bfab7861 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Wed, 25 Feb 2026 15:23:43 -0800
 Subject: [PATCH 17/17] Add experimental jit on Apple arm64
@@ -11,14 +11,14 @@ and runs rather than emitting a .s or .o.
  all.h                |    3 +
  arm64/apple_shared.c |   39 ++
  arm64/apple_shared.h |   10 +
- arm64/emitjit.c      | 1524 ++++++++++++++++++++++++++++++++++++++++++
+ arm64/emitjit.c      | 1565 ++++++++++++++++++++++++++++++++++++++++++
  arm64/emitjit.h      |    8 +
  arm64/emitmacho.c    |   59 +-
  main.c               |   41 +-
  test/_jit_add.ssa    |    8 +
  test/_jit_stub.ssa   |    5 +
  tools/objtest.sh     |  106 ++-
- 12 files changed, 1756 insertions(+), 57 deletions(-)
+ 12 files changed, 1797 insertions(+), 57 deletions(-)
  create mode 100644 arm64/apple_shared.c
  create mode 100644 arm64/apple_shared.h
  create mode 100644 arm64/emitjit.c
@@ -160,16 +160,19 @@ index 0000000..baddf98
 +const uint8_t arm64cond[NCmp];
 diff --git a/arm64/emitjit.c b/arm64/emitjit.c
 new file mode 100644
-index 0000000..b8de950
+index 0000000..9bf7a93
 --- /dev/null
 +++ b/arm64/emitjit.c
-@@ -0,0 +1,1524 @@
+@@ -0,0 +1,1565 @@
 +#include "all.h"
 +#include "emitjit.h"
 +#include "apple_shared.h"
 +#include <stdint.h>
 +#include <stdlib.h>
 +#include <string.h>
++
++#if defined(__APPLE__) && defined(__arm64__)
++
 +#include <sys/mman.h>
 +#include <pthread.h>
 +#include <libkern/OSCacheControl.h>
@@ -1688,6 +1691,44 @@ index 0000000..b8de950
 +            *pp = (char*)ctx->exec + ctx->fns[i].off;
 +    }
 +}
++
++#else   // !(__APPLE__ && __arm64__)
++
++JitCtx*
++jit_new(void) {
++  return NULL;
++}
++
++void
++jit_free(JitCtx*) {
++}
++
++void
++jit_emitfn(Fn*, JitCtx*) {
++}
++
++void
++jit_emitdat(Dat*, JitCtx*) {
++}
++
++void
++jit_emitfin_fp(JitCtx*) {
++}
++
++void
++jit_finalize(JitCtx*) {
++}
++
++void*
++jit_lookup(JitCtx*, const char*) {
++  return NULL;
++}
++
++void
++jit_populate_ptrs(JitCtx*) {
++}
++
++#endif
 diff --git a/arm64/emitjit.h b/arm64/emitjit.h
 new file mode 100644
 index 0000000..1e70bef
