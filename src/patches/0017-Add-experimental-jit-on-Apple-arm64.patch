@@ -1,4 +1,4 @@
-From 2a9c2644bf3acb96cffa453cd7dcc945c9c2465a Mon Sep 17 00:00:00 2001
+From 231d691bdc91a2cb72debd100ab4661929964008 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Wed, 25 Feb 2026 15:23:43 -0800
 Subject: [PATCH 17/17] Add experimental jit on Apple arm64
@@ -99,7 +99,7 @@ index 339a158..0097ee2 100644
  	int parse__lexinit_done;
 diff --git a/arm64/apple_shared.c b/arm64/apple_shared.c
 new file mode 100644
-index 0000000..190ff57
+index 0000000..7da21e5
 --- /dev/null
 +++ b/arm64/apple_shared.c
 @@ -0,0 +1,39 @@
@@ -120,7 +120,7 @@ index 0000000..190ff57
 +}
 +
 +// ARM64 condition codes indexed by CmpI
-+const uint8_t arm64cond[NCmp] = {
++uint8_t arm64cond[NCmp] = {
 +    // integer comparisons
 +    [Cieq] = 0x0,
 +    [Cine] = 0x1,
@@ -144,7 +144,7 @@ index 0000000..190ff57
 +};
 diff --git a/arm64/apple_shared.h b/arm64/apple_shared.h
 new file mode 100644
-index 0000000..baddf98
+index 0000000..e022d9e
 --- /dev/null
 +++ b/arm64/apple_shared.h
 @@ -0,0 +1,10 @@
@@ -157,7 +157,7 @@ index 0000000..baddf98
 +
 +uint32_t arm64_slot_off(int s, int padding, int framesz);
 +
-+const uint8_t arm64cond[NCmp];
++uint8_t arm64cond[NCmp];
 diff --git a/arm64/emitjit.c b/arm64/emitjit.c
 new file mode 100644
 index 0000000..a8e6613
