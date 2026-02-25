@@ -1,7 +1,7 @@
 From b44fcd02a6c61e2e87dc28aa9992cba4394b383a Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 5 Feb 2026 14:23:20 -0800
-Subject: [PATCH 13/16] avoid warnings for variables that are only used for
+Subject: [PATCH 13/17] avoid warnings for variables that are only used for
  asserts
 
 ---

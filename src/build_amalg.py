@@ -13,6 +13,8 @@ SQBE_C_FILES = [
     "all.h",
     "amd64/all.h",
     "arm64/all.h",
+    "arm64/apple_shared.h",
+    "arm64/emitjit.h",
     "arm64/emitmacho.h",
     "rv64/all.h",
     "abi.c",
@@ -40,7 +42,9 @@ SQBE_C_FILES = [
     "amd64/targ.c",
     "amd64/winabi.c",
     "arm64/abi.c",
+    "arm64/apple_shared.c",
     "arm64/emit.c",
+    "arm64/emitjit.c",
     "arm64/emitmacho.c",
     "arm64/isel.c",
     "arm64/targ.c",
@@ -68,6 +72,7 @@ def namespace_static_funcs(ns, file, contents):
         contents = re.sub(r"qsort\((.*) " + fn + r"\);", r"qsort(\1 " + ns + fn + ");", contents)
         contents = re.sub(r"loopiter\((.*) " + fn + r"\);", r"loopiter(\1 " + ns + fn + ");",
                           contents)
+        contents = contents.replace("desc[0] = (void *)" + fn, "desc[0] = (void *)" + ns + fn)
 
     return contents
 
@@ -533,6 +538,12 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
             if file.endswith("emitmacho.h"):
                 contents = staticize_prototypes(contents)
 
+            if file.endswith("apple_shared.h"):
+                contents = staticize_prototypes(contents)
+
+            if file.endswith("emitjit.h"):
+                contents = staticize_prototypes(contents)
+
             if file.endswith("all.h"):
                 contents = staticize_prototypes(contents)
                 contents = contents.replace(
@@ -626,8 +637,17 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
                 if line.startswith('#include "emitmacho.h"'):
                     out.write("/* skipping emitmacho.h */\n")
                     continue
+                if line.startswith('#include "apple_shared.h"'):
+                    out.write("/* skipping apple_shared.h */\n")
+                    continue
+                if line.startswith('#include "emitjit.h"'):
+                    out.write("/* skipping emitjit.h */\n")
+                    continue
                 if line.startswith('#include "arm64/emitmacho.h"'):
                     out.write("/* skipping arm64/emitmacho.h */\n")
+                    continue
+                if line.startswith('#include "arm64/emitjit.h"'):
+                    out.write("/* skipping arm64/emitjit.h */\n")
                     continue
                 if line.startswith('#include "../all.h"'):
                     out.write("/* skipping ../all.h */\n")

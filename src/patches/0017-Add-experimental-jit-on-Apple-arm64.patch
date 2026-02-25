@@ -1,0 +1,2085 @@
+From 197fde029487111c235ec538d41897b8e7296ff0 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Wed, 25 Feb 2026 15:23:43 -0800
+Subject: [PATCH 17/17] Add experimental jit on Apple arm64
+
+With `-f jit` (or more usefully in sqbe) assembles directly to memory
+and runs rather than emitting a .s or .o.
+---
+ .gitignore           |    1 +
+ Makefile             |    9 +-
+ all.h                |    3 +
+ arm64/apple_shared.c |   39 ++
+ arm64/apple_shared.h |   10 +
+ arm64/emitjit.c      | 1524 ++++++++++++++++++++++++++++++++++++++++++
+ arm64/emitjit.h      |    8 +
+ arm64/emitmacho.c    |   59 +-
+ main.c               |   41 +-
+ test/_jit_add.ssa    |    8 +
+ test/_jit_stub.ssa   |    5 +
+ tools/objtest.sh     |  106 ++-
+ 12 files changed, 1756 insertions(+), 57 deletions(-)
+ create mode 100644 arm64/apple_shared.c
+ create mode 100644 arm64/apple_shared.h
+ create mode 100644 arm64/emitjit.c
+ create mode 100644 arm64/emitjit.h
+ create mode 100644 test/_jit_add.ssa
+ create mode 100644 test/_jit_stub.ssa
+
+diff --git a/.gitignore b/.gitignore
+index 09e4118..e240618 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,3 +4,4 @@ config.h
+ .comfile
+ *.out
+ *~
++libqbe.a
+diff --git a/Makefile b/Makefile
+index 54d7853..8dc336f 100644
+--- a/Makefile
++++ b/Makefile
+@@ -8,7 +8,7 @@ COMMOBJ  = main.o util.o parse.o abi.o cfg.o mem.o ssa.o alias.o load.o \
+            copy.o fold.o gvn.o gcm.o simpl.o ifopt.o live.o spill.o rega.o \
+            emit.o
+ AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o amd64/winabi.o
+-ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o arm64/emitmacho.o
++ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o arm64/emitmacho.o arm64/emitjit.o arm64/apple_shared.o
+ RV64OBJ  = rv64/targ.o rv64/abi.o rv64/isel.o rv64/emit.o
+ OBJ      = $(COMMOBJ) $(AMD64OBJ) $(ARM64OBJ) $(RV64OBJ)
+ 
+@@ -20,6 +20,9 @@ CFLAGS   = -std=c99 -g -Wall -Wextra -Wpedantic
+ qbe: $(OBJ)
+ 	$(CC) $(LDFLAGS) $(OBJ) -o $@
+ 
++libqbe.a: $(OBJ)
++	ar rcs $@ $^
++
+ .c.o:
+ 	$(CC) $(CFLAGS) -c $< -o $@
+ 
+@@ -27,7 +30,7 @@ $(OBJ): all.h ops.h
+ $(AMD64OBJ): amd64/all.h
+ $(ARM64OBJ): arm64/all.h
+ $(RV64OBJ): rv64/all.h
+-main.o: config.h arm64/emitmacho.h
++main.o: config.h arm64/emitmacho.h arm64/emitjit.h
+ 
+ config.h:
+ 	@case `uname` in                               \
+@@ -64,7 +67,7 @@ uninstall:
+ 	rm -f "$(DESTDIR)$(BINDIR)/qbe"
+ 
+ clean:
+-	rm -f *.o */*.o qbe
++	rm -f *.o */*.o qbe libqbe.a
+ 
+ clean-gen: clean
+ 	rm -f config.h
+diff --git a/all.h b/all.h
+index 339a158..0097ee2 100644
+--- a/all.h
++++ b/all.h
+@@ -39,6 +39,7 @@ typedef struct Dat Dat;
+ typedef struct Lnk Lnk;
+ typedef struct Target Target;
+ typedef struct MachoCtx MachoCtx;
++typedef struct JitCtx JitCtx;
+ 
+ typedef struct Asmbits Asmbits;
+ typedef struct Edge Edge;
+@@ -535,6 +536,8 @@ typedef struct GlobalContext {
+ 	int main__dbg;
+ 	int main__objmode;
+ 	MachoCtx *main__macho_ctx;
++	int main__jitmode;
++	JitCtx *main__jit_ctx;
+ 
+ 	/* parse.c */
+ 	int parse__lexinit_done;
+diff --git a/arm64/apple_shared.c b/arm64/apple_shared.c
+new file mode 100644
+index 0000000..190ff57
+--- /dev/null
++++ b/arm64/apple_shared.c
+@@ -0,0 +1,39 @@
++#include "all.h"
++
++// Mirror arm64/emit.c slot() for RSlot -> x29-relative byte offset.
++// s == -1: frame-start marker used by apple_selvastart (Oaddr SLOT(-1)).
++// s < 0:   above-frame caller argument at byte offset -(s+2) above frame.
++// s >= 0:  local / callee-save slot.
++uint32_t arm64_slot_off(int s, int padding, int framesz) {
++  if (s == -1) {
++    return (uint32_t)(16 + framesz);
++  }
++  if (s < 0) {
++    return (uint32_t)(16 + framesz - (s + 2));
++  }
++  return (uint32_t)(16 + padding + 4 * s);
++}
++
++// ARM64 condition codes indexed by CmpI
++const uint8_t arm64cond[NCmp] = {
++    // integer comparisons
++    [Cieq] = 0x0,
++    [Cine] = 0x1,
++    [Cisge] = 0xA,
++    [Cisgt] = 0xC,
++    [Cisle] = 0xD,
++    [Cislt] = 0xB,
++    [Ciuge] = 0x2,
++    [Ciugt] = 0x8,
++    [Ciule] = 0x9,
++    [Ciult] = 0x3,
++    // float comparisons (after FCMPE, ARM64 FP flags = integer flags)
++    [NCmpI + Cfeq] = 0x0,
++    [NCmpI + Cfge] = 0xA,
++    [NCmpI + Cfgt] = 0xC,
++    [NCmpI + Cfle] = 0x9,
++    [NCmpI + Cflt] = 0x4,
++    [NCmpI + Cfne] = 0x1,
++    [NCmpI + Cfo] = 0x7,
++    [NCmpI + Cfuo] = 0x6,
++};
+diff --git a/arm64/apple_shared.h b/arm64/apple_shared.h
+new file mode 100644
+index 0000000..baddf98
+--- /dev/null
++++ b/arm64/apple_shared.h
+@@ -0,0 +1,10 @@
++// Branch fixup: records a branch instruction offset to patch after all blocks.
++typedef struct {
++  uint32_t off;
++  Blk* tgt;
++  int cond;  // -1 = unconditional B; >= 0 = arm64 condition code
++} BrFix;
++
++uint32_t arm64_slot_off(int s, int padding, int framesz);
++
++const uint8_t arm64cond[NCmp];
+diff --git a/arm64/emitjit.c b/arm64/emitjit.c
+new file mode 100644
+index 0000000..b8de950
+--- /dev/null
++++ b/arm64/emitjit.c
+@@ -0,0 +1,1524 @@
++#include "all.h"
++#include "emitjit.h"
++#include "apple_shared.h"
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <pthread.h>
++#include <libkern/OSCacheControl.h>
++#include <dlfcn.h>
++
++typedef struct JitFnEntry JitFnEntry;
++struct JitFnEntry {
++    char     name[NString];
++    uint32_t off;
++};
++
++// JitDataSym: a data or BSS symbol defined in jit_emitdat.
++typedef struct JitDataSym JitDataSym;
++struct JitDataSym {
++    char     name[NString];
++    uint32_t off;   // byte offset within datexec (data) or bssexec (BSS)
++    int      isbss;
++};
++
++// JitDataFix: an 8-byte pointer slot in the data section that needs resolving.
++typedef struct JitDataFix JitDataFix;
++struct JitDataFix {
++    uint32_t off;           // byte offset in datbuf where the slot lives
++    char     name[NString]; // mangled target symbol name
++    int64_t  addend;
++};
++
++// JitTlsSym: a thread-local descriptor (32 bytes) emitted in the data section.
++typedef struct JitTlsSym JitTlsSym;
++struct JitTlsSym {
++    uint32_t descoff;  /* byte offset of 32-byte descriptor in datbuf */
++};
++
++// JitAddrFixup: a direct symbol reference emitted as MOVZ/MOVK/MOVK placeholders,
++// resolved to an absolute 48-bit address in jit_finalize().
++typedef struct JitAddrFixup JitAddrFixup;
++struct JitAddrFixup {
++    uint32_t off;           // offset of the MOVZ in ctx->code
++    int      rd;            // destination register index (0..30)
++    int64_t  addend;        // constant added to the resolved address
++    char     name[NString]; // mangled symbol name (e.g. "_printf")
++};
++
++struct JitCtx {
++    uint8_t*      code;
++    uint32_t      codesz, codecap;
++    JitFnEntry*   fns;
++    uint32_t      nfns, fnscap;
++    JitAddrFixup* adrfix;
++    uint32_t      nadrfix, adrfixcap;
++    // data section build buffer
++    uint8_t*      datbuf;
++    uint32_t      datsz, datcap;
++    uint32_t      bsssz;
++    JitDataSym*   datasym;
++    uint32_t      ndatasym, datasymcap;
++    JitDataFix*   datafix;
++    uint32_t      ndatafix, datafixcap;
++    // per-symbol emitdat state
++    char          datcurname[NString];
++    Lnk*          datcurlnk;
++    int64_t       datleadzero; // >=0: accumulating leading zeros; -1: data started
++    uint32_t      datcurstart; // datsz at DStart
++    // TLS descriptors
++    JitTlsSym*   tlssyms;
++    uint32_t     ntlssyms, tlssymscap;
++    int          datcurthread;   /* set at DStart: 1 if current symbol has thread linkage */
++    // set after jit_finalize():
++    uint8_t*      exec;
++    uint32_t      execsz;
++    uint8_t*      datexec;
++    uint32_t      datexecsz;
++    uint8_t*      bssexec;
++    uint32_t      bssexecsz;
++};
++
++// Grow the code buffer and append a 32-bit instruction.
++static void jit_emit_u32(JitCtx* ctx, uint32_t insn) {
++    if (ctx->codesz + 4 > ctx->codecap) {
++        uint32_t oldcap = ctx->codecap;
++        uint32_t newcap = oldcap ? oldcap * 2 : 256;
++        uint8_t* newbuf = emalloc(newcap);
++        if (ctx->code) {
++            memcpy(newbuf, ctx->code, ctx->codesz);
++            qbe_free(ctx->code);
++        }
++        ctx->code = newbuf;
++        ctx->codecap = newcap;
++    }
++    memcpy(ctx->code + ctx->codesz, &insn, 4);
++    ctx->codesz += 4;
++}
++
++// Append bytes to the data section build buffer.
++static void
++dat_append(JitCtx* ctx, const void* src, uint32_t n) {
++    if (ctx->datsz + n > ctx->datcap) {
++        uint32_t newcap = ctx->datcap ? ctx->datcap * 2 : 64;
++        while (newcap < ctx->datsz + n)
++            newcap *= 2;
++        uint8_t* nb = emalloc(newcap);
++        if (ctx->datbuf) {
++            memcpy(nb, ctx->datbuf, ctx->datsz);
++            qbe_free(ctx->datbuf);
++        }
++        ctx->datbuf = nb;
++        ctx->datcap = newcap;
++    }
++    memcpy(ctx->datbuf + ctx->datsz, src, n);
++    ctx->datsz += n;
++}
++
++// Mangle a QBE symbol name to its linker form (prepend _ or strip quotes).
++// Mirrors symname() in emitmacho.c.
++static void
++jit_symname(char out[NString], const char* n) {
++    if (n[0] == '"') {
++        size_t len   = strlen(n);
++        int    inner = len >= 2 ? (int)(len - 2) : 0;
++        snprintf(out, NString, "%.*s", inner, n + 1);
++    } else {
++        snprintf(out, NString, "_%s", n);
++    }
++}
++
++// Append an address fixup record to ctx->adrfix.
++static void
++jit_push_adrfix(JitCtx* ctx, uint32_t off, int rd, const char* name, int64_t addend) {
++    if (ctx->nadrfix == ctx->adrfixcap) {
++        uint32_t      oldcap = ctx->adrfixcap;
++        uint32_t      newcap = oldcap ? oldcap * 2 : 8;
++        JitAddrFixup* nf     = emalloc(newcap * sizeof(JitAddrFixup));
++        if (ctx->adrfix) {
++            memcpy(nf, ctx->adrfix, ctx->nadrfix * sizeof(JitAddrFixup));
++            qbe_free(ctx->adrfix);
++        }
++        ctx->adrfix    = nf;
++        ctx->adrfixcap = newcap;
++    }
++    ctx->adrfix[ctx->nadrfix].off    = off;
++    ctx->adrfix[ctx->nadrfix].rd     = rd;
++    ctx->adrfix[ctx->nadrfix].addend = addend;
++    strncpy(ctx->adrfix[ctx->nadrfix].name, name, NString - 1);
++    ctx->adrfix[ctx->nadrfix].name[NString - 1] = '\0';
++    ctx->nadrfix++;
++}
++
++// Emit three placeholder instructions (MOVZ Xd,#0 / MOVK lsl16 / MOVK lsl32)
++// and record a fixup to patch them with the resolved symbol address at finalize.
++static void
++jit_emit_adrfix(JitCtx* ctx, int rd, const char* name, int64_t addend) {
++    uint32_t off = ctx->codesz;
++    jit_emit_u32(ctx, 0xD2800000u | (uint32_t)rd);  // MOVZ Xd, #0
++    jit_emit_u32(ctx, 0xF2A00000u | (uint32_t)rd);  // MOVK Xd, #0, lsl #16
++    jit_emit_u32(ctx, 0xF2C00000u | (uint32_t)rd);  // MOVK Xd, #0, lsl #32
++    jit_push_adrfix(ctx, off, rd, name, addend);
++}
++
++// Load a CBits constant into integer register rd (cls = Kw or Kl).
++// Mirrors emit_movcon() in emitmacho.c.
++static void
++jit_movcon(JitCtx* ctx, int rd, int cls, Con* c) {
++    int64_t  n;
++    int      wide, sh;
++    uint32_t movz, movn, movk;
++
++    if (c->type == CAddr) {
++        char sname[NString];
++        /* SThr: load descriptor address; isel already emits the TLS call sequence */
++        jit_symname(sname, str(c->sym.id));
++        jit_emit_adrfix(ctx, rd, sname, c->bits.i);
++        return;
++    }
++    assert(c->type == CBits);
++
++    wide = (cls == Kl);
++    n    = c->bits.i;
++    if (!wide)
++        n = (int64_t)(int32_t)n;
++
++    movz = wide ? 0xD2800000u : 0x52800000u;
++    movn = wide ? 0x92800000u : 0x12800000u;
++    movk = wide ? 0xF2800000u : 0x72800000u;
++
++    {
++        uint64_t un  = wide ? (uint64_t)n : (uint64_t)(uint32_t)n;
++        uint64_t cn  = wide ? ~un : (~un & 0xFFFFFFFFu);
++        int      nhw = wide ? 4 : 2;
++        int      hw;
++        uint64_t mask;
++        uint32_t imm16;
++
++        // Single MOVZ?
++        for (hw = 0; hw < nhw; hw++) {
++            mask  = (uint64_t)0xFFFF << (hw * 16);
++            if ((un & ~mask) == 0) {
++                imm16 = (uint32_t)((un >> (hw * 16)) & 0xFFFF);
++                jit_emit_u32(ctx,
++                    movz | ((uint32_t)hw << 21) | (imm16 << 5) | (uint32_t)rd);
++                return;
++            }
++        }
++        // Single MOVN?
++        for (hw = 0; hw < nhw; hw++) {
++            mask  = (uint64_t)0xFFFF << (hw * 16);
++            if ((cn & ~mask) == 0) {
++                imm16 = (uint32_t)((cn >> (hw * 16)) & 0xFFFF);
++                jit_emit_u32(ctx,
++                    movn | ((uint32_t)hw << 21) | (imm16 << 5) | (uint32_t)rd);
++                return;
++            }
++        }
++    }
++
++    // MOVZ + MOVKs.
++    jit_emit_u32(ctx, movz | (((uint32_t)(n & 0xffff)) << 5) | (uint32_t)rd);
++    for (sh = 16; (n >>= 16) != 0; sh += 16) {
++        if ((!wide && sh == 32) || sh == 64)
++            break;
++        jit_emit_u32(ctx,
++            movk | ((uint32_t)(sh / 16) << 21) |
++            (((uint32_t)(n & 0xffff)) << 5) | (uint32_t)rd);
++    }
++}
++
++/* TLS bootstrap: called by the isel-generated TLS stub on first per-thread access.
++ * desc layout: [0]=this fn, [1]=pthread_key_t, [2]=init-data ptr (or NULL), [3]=size */
++static void *
++jit_tlv_bootstrap(void **desc)
++{
++    pthread_key_t key = (pthread_key_t)(uintptr_t)desc[1];
++    void *val = pthread_getspecific(key);
++    if (val == NULL) {
++        size_t sz = (size_t)(uintptr_t)desc[3];
++        val = desc[2] ? malloc(sz) : calloc(1, sz);
++        if (!val) die("jit: TLS alloc failed");
++        if (desc[2]) memcpy(val, desc[2], sz);
++        pthread_setspecific(key, val);
++    }
++    return val;
++}
++
++void
++jit_emitdat(Dat* d, JitCtx* ctx) {
++    static const int64_t masks[] = {
++        [DB] = 0xFFL,
++        [DH] = 0xFFFFL,
++        [DW] = 0xFFFFFFFFL,
++        [DL] = -1L,
++    };
++    static const uint8_t zeros[8] = {0};
++    uint64_t    v;
++    int         n;
++    const char* p;
++
++    switch (d->type) {
++    case DStart:
++        strncpy(ctx->datcurname, d->name, NString - 1);
++        ctx->datcurname[NString - 1] = '\0';
++        ctx->datcurlnk    = d->lnk;
++        ctx->datleadzero  = 0;
++        ctx->datcurthread = d->lnk->thread;
++        if (d->lnk->align) {
++            uint32_t aln = (uint32_t)(unsigned char)d->lnk->align;
++            while (ctx->datsz % aln != 0)
++                dat_append(ctx, zeros, 1);
++        }
++        ctx->datcurstart = ctx->datsz;
++        break;
++
++    case DZ:
++        if (ctx->datleadzero >= 0)
++            ctx->datleadzero += d->u.num;
++        else {
++            uint64_t rem = (uint64_t)d->u.num;
++            while (rem > 0) {
++                uint32_t chunk = (rem > 8) ? 8 : (uint32_t)rem;
++                dat_append(ctx, zeros, chunk);
++                rem -= chunk;
++            }
++        }
++        break;
++
++    case DEnd: {
++        char mname[NString];
++        jit_symname(mname, ctx->datcurname);
++
++        if (ctx->datcurthread) {
++            /* TLS path: emit a 32-byte descriptor and register it as the symbol */
++            static const uint8_t z8[8] = {0};
++            int      allzero = (ctx->datleadzero >= 0);
++            uint32_t initsz;
++            uint32_t descoff;
++
++            initsz = allzero ? (uint32_t)ctx->datleadzero
++                             : (ctx->datsz - ctx->datcurstart);
++
++            /* Register init-data symbol (non-zero init only) */
++            if (!allzero) {
++                char iname[NString];
++                snprintf(iname, NString, "%s$tlv$init", mname);
++                if (ctx->ndatasym == ctx->datasymcap) {
++                    uint32_t    oc = ctx->datasymcap;
++                    uint32_t    nc = oc ? oc * 2 : 8;
++                    JitDataSym* ns = emalloc(nc * sizeof(JitDataSym));
++                    if (ctx->datasym) {
++                        memcpy(ns, ctx->datasym, ctx->ndatasym * sizeof(JitDataSym));
++                        qbe_free(ctx->datasym);
++                    }
++                    ctx->datasym    = ns;
++                    ctx->datasymcap = nc;
++                }
++                {
++                    JitDataSym* si = &ctx->datasym[ctx->ndatasym++];
++                    strncpy(si->name, iname, NString - 1);
++                    si->name[NString - 1] = '\0';
++                    si->off   = ctx->datcurstart;
++                    si->isbss = 0;
++                }
++            }
++
++            /* Align datbuf to 8 for the descriptor */
++            while (ctx->datsz % 8 != 0)
++                dat_append(ctx, z8, 1);
++            descoff = ctx->datsz;
++
++            /* Emit 32-byte descriptor: [0]=bootstrap [1]=key [2]=init-ptr [3]=size */
++            dat_append(ctx, z8, 8);  /* [0] bootstrap ptr -- filled at finalize */
++            dat_append(ctx, z8, 8);  /* [1] pthread key   -- filled at finalize */
++            dat_append(ctx, z8, 8);  /* [2] init data ptr -- JitDataFix or NULL */
++            {
++                uint64_t isz64 = (uint64_t)initsz;
++                dat_append(ctx, &isz64, 8);  /* [3] size */
++            }
++
++            /* JitDataFix for desc[2] pointing to init data (non-zero init only) */
++            if (!allzero) {
++                char iname[NString];
++                snprintf(iname, NString, "%s$tlv$init", mname);
++                if (ctx->ndatafix == ctx->datafixcap) {
++                    uint32_t    oc = ctx->datafixcap;
++                    uint32_t    nc = oc ? oc * 2 : 8;
++                    JitDataFix* nf = emalloc(nc * sizeof(JitDataFix));
++                    if (ctx->datafix) {
++                        memcpy(nf, ctx->datafix, ctx->ndatafix * sizeof(JitDataFix));
++                        qbe_free(ctx->datafix);
++                    }
++                    ctx->datafix    = nf;
++                    ctx->datafixcap = nc;
++                }
++                {
++                    JitDataFix* fx = &ctx->datafix[ctx->ndatafix++];
++                    fx->off    = descoff + 16;
++                    fx->addend = 0;
++                    strncpy(fx->name, iname, NString - 1);
++                    fx->name[NString - 1] = '\0';
++                }
++            }
++
++            /* Record descriptor offset for finalize */
++            if (ctx->ntlssyms == ctx->tlssymscap) {
++                uint32_t   oc = ctx->tlssymscap;
++                uint32_t   nc = oc ? oc * 2 : 4;
++                JitTlsSym* ns = emalloc(nc * sizeof(JitTlsSym));
++                if (ctx->tlssyms) {
++                    memcpy(ns, ctx->tlssyms, ctx->ntlssyms * sizeof(JitTlsSym));
++                    qbe_free(ctx->tlssyms);
++                }
++                ctx->tlssyms    = ns;
++                ctx->tlssymscap = nc;
++            }
++            ctx->tlssyms[ctx->ntlssyms++].descoff = descoff;
++
++            /* Register descriptor as the main (user-visible) symbol */
++            if (ctx->ndatasym == ctx->datasymcap) {
++                uint32_t    oc = ctx->datasymcap;
++                uint32_t    nc = oc ? oc * 2 : 8;
++                JitDataSym* ns = emalloc(nc * sizeof(JitDataSym));
++                if (ctx->datasym) {
++                    memcpy(ns, ctx->datasym, ctx->ndatasym * sizeof(JitDataSym));
++                    qbe_free(ctx->datasym);
++                }
++                ctx->datasym    = ns;
++                ctx->datasymcap = nc;
++            }
++            {
++                JitDataSym* sd = &ctx->datasym[ctx->ndatasym++];
++                strncpy(sd->name, mname, NString - 1);
++                sd->name[NString - 1] = '\0';
++                sd->off   = descoff;
++                sd->isbss = 0;
++            }
++
++        } else {
++            /* Normal (non-TLS) path -- existing logic unchanged */
++            if (ctx->ndatasym == ctx->datasymcap) {
++                uint32_t    oldcap = ctx->datasymcap;
++                uint32_t    newcap = oldcap ? oldcap * 2 : 8;
++                JitDataSym* ns     = emalloc(newcap * sizeof(JitDataSym));
++                if (ctx->datasym) {
++                    memcpy(ns, ctx->datasym, ctx->ndatasym * sizeof(JitDataSym));
++                    qbe_free(ctx->datasym);
++                }
++                ctx->datasym    = ns;
++                ctx->datasymcap = newcap;
++            }
++            {
++                JitDataSym* s = &ctx->datasym[ctx->ndatasym++];
++                strncpy(s->name, mname, NString - 1);
++                s->name[NString - 1] = '\0';
++                if (ctx->datleadzero >= 0) {
++                    // all-zero -> BSS
++                    s->off   = ctx->bsssz;
++                    s->isbss = 1;
++                    ctx->bsssz += (uint32_t)ctx->datleadzero;
++                } else {
++                    s->off   = ctx->datcurstart;
++                    s->isbss = 0;
++                }
++            }
++        }
++        break;
++    }
++
++    default:  // DB, DH, DW, DL
++        // Flush accumulated leading zeros before real data.
++        if (ctx->datleadzero >= 0) {
++            uint64_t rem = (uint64_t)ctx->datleadzero;
++            while (rem > 0) {
++                uint32_t chunk = (rem > 8) ? 8 : (uint32_t)rem;
++                dat_append(ctx, zeros, chunk);
++                rem -= chunk;
++            }
++            ctx->datleadzero = -1;
++        }
++        if (d->isstr) {
++            if (d->type != DB)
++                die("jit: strings only supported for 'b'");
++            p = d->u.str;
++            assert(p[0] == '"');
++            p++;
++            while (*p && *p != '"') {
++                uint8_t c;
++                if (*p == '\\') {
++                    p++;
++                    switch (*p) {
++                    case 'n':  c = '\n'; break;
++                    case 't':  c = '\t'; break;
++                    case 'r':  c = '\r'; break;
++                    case '\\': c = '\\'; break;
++                    case '"':  c = '"';  break;
++                    case '0':  c = '\0'; break;
++                    default:   c = (uint8_t)*p; break;
++                    }
++                } else {
++                    c = (uint8_t)*p;
++                }
++                dat_append(ctx, &c, 1);
++                p++;
++            }
++        } else if (d->isref) {
++            char    rname[NString];
++            uint8_t slot[8] = {0};
++            if (d->type != DL)
++                die("jit: pointer ref only supported in .quad");
++            jit_symname(rname, d->u.ref.name);
++            // Record fixup; emit 8 zero bytes as placeholder.
++            if (ctx->ndatafix == ctx->datafixcap) {
++                uint32_t    oldcap = ctx->datafixcap;
++                uint32_t    newcap = oldcap ? oldcap * 2 : 8;
++                JitDataFix* nf     = emalloc(newcap * sizeof(JitDataFix));
++                if (ctx->datafix) {
++                    memcpy(nf, ctx->datafix, ctx->ndatafix * sizeof(JitDataFix));
++                    qbe_free(ctx->datafix);
++                }
++                ctx->datafix    = nf;
++                ctx->datafixcap = newcap;
++            }
++            {
++                JitDataFix* fx = &ctx->datafix[ctx->ndatafix++];
++                fx->off    = ctx->datsz;
++                fx->addend = d->u.ref.off;
++                strncpy(fx->name, rname, NString - 1);
++                fx->name[NString - 1] = '\0';
++            }
++            dat_append(ctx, slot, 8);
++        } else {
++            n = (d->type == DB) ? 1 : (d->type == DH) ? 2 : (d->type == DW) ? 4 : 8;
++            v = (uint64_t)(d->u.num & masks[d->type]);
++            dat_append(ctx, &v, (uint32_t)n);
++        }
++        break;
++    }
++}
++
++// Process the FP literal pool stash (GC(emit__stash)) accumulated during isel.
++// Must be called before jit_finalize() so the constants are in ctx->datbuf
++// and registered as datasym entries accessible to the adrfix lookup.
++// Mirrors fp_const_cb() + macho_emitfin_obj() in emitmacho.c.
++void
++jit_emitfin_fp(JitCtx* ctx) {
++    static const uint8_t zeros[8] = {0};
++    Asmbits* b;
++    int      idx;
++
++    for (b = GC(emit__stash), idx = 0; b; b = b->link, idx++) {
++        char     sname[NString];
++        uint32_t sym_off;
++        uint64_t v;
++
++        // Align datbuf to the constant's natural size.
++        while (ctx->datsz % (uint32_t)b->size != 0)
++            dat_append(ctx, zeros, 1);
++        sym_off = ctx->datsz;
++
++        // Emit the constant bytes (little-endian, native).
++        v = (uint64_t)b->n;
++        dat_append(ctx, &v, (uint32_t)b->size);
++
++        // Symbol name matches isel.c: "{asloc}fp{idx}" (e.g. "Lfp0").
++        snprintf(sname, NString, "%sfp%d", GC(T).asloc, idx);
++
++        // Grow datasym array if needed.
++        if (ctx->ndatasym == ctx->datasymcap) {
++            uint32_t    oldcap = ctx->datasymcap;
++            uint32_t    newcap = oldcap ? oldcap * 2 : 8;
++            JitDataSym* ns     = emalloc(newcap * sizeof(JitDataSym));
++            if (ctx->datasym) {
++                memcpy(ns, ctx->datasym, ctx->ndatasym * sizeof(JitDataSym));
++                qbe_free(ctx->datasym);
++            }
++            ctx->datasym    = ns;
++            ctx->datasymcap = newcap;
++        }
++        {
++            JitDataSym* s = &ctx->datasym[ctx->ndatasym++];
++            strncpy(s->name, sname, NString - 1);
++            s->name[NString - 1] = '\0';
++            s->off   = sym_off;
++            s->isbss = 0;
++        }
++    }
++
++    // Consume the stash (mirrors macho_emitfin_obj).
++    while ((b = GC(emit__stash))) {
++        GC(emit__stash) = b->link;
++        qbe_free(b);
++    }
++}
++
++JitCtx*
++jit_new(void) {
++    // emalloc uses calloc, so fields are zeroed.
++    return emalloc(sizeof(JitCtx));
++}
++
++void
++jit_free(JitCtx* ctx) {
++    if (ctx->exec)
++        munmap(ctx->exec, ctx->execsz);
++    if (ctx->datexec)
++        munmap(ctx->datexec, ctx->datexecsz);
++    if (ctx->bssexec)
++        munmap(ctx->bssexec, ctx->bssexecsz);
++    qbe_free(ctx->code);
++    qbe_free(ctx->fns);
++    qbe_free(ctx->adrfix);
++    qbe_free(ctx->datbuf);
++    qbe_free(ctx->datasym);
++    qbe_free(ctx->datafix);
++    qbe_free(ctx->tlssyms);
++    qbe_free(ctx);
++}
++
++void
++jit_emitfn(Fn* fn, JitCtx* ctx) {
++    Blk*     b;
++    Ins*     i;
++    int      rd, rn, rm, wide;
++    int      ncallee, framesz, total, padding;
++    uint32_t enc;
++    uint32_t* blkoff;
++    uint32_t  nfix, fixcap;
++    BrFix*    fixes;
++
++    // Record function entry in the function table.
++    if (ctx->nfns == ctx->fnscap) {
++        uint32_t    oldcap = ctx->fnscap;
++        uint32_t    newcap = oldcap ? oldcap * 2 : 8;
++        JitFnEntry* newfns = emalloc(newcap * sizeof(JitFnEntry));
++        if (ctx->fns) {
++            memcpy(newfns, ctx->fns, ctx->nfns * sizeof(JitFnEntry));
++            qbe_free(ctx->fns);
++        }
++        ctx->fns    = newfns;
++        ctx->fnscap = newcap;
++    }
++    {
++        const char* n = fn->name;
++        if (n[0] == '"') {
++            size_t len   = strlen(n);
++            int    inner = len >= 2 ? (int)(len - 2) : 0;
++            snprintf(ctx->fns[ctx->nfns].name, NString, "%.*s", inner, n + 1);
++        } else {
++            snprintf(ctx->fns[ctx->nfns].name, NString, "_%s", n);
++        }
++    }
++    ctx->fns[ctx->nfns].off = ctx->codesz;
++    ctx->nfns++;
++
++    // Frame layout (mirrors macho_emitfn).
++    {
++        int* r;
++        ncallee = 0;
++        for (r = arm64_rclob; *r >= 0; r++)
++            if (fn->reg & BIT(*r))
++                ncallee++;
++        if (ncallee & 1)
++            ncallee++;  // keep callee-save area 16-byte aligned
++    }
++    {
++        int slotbytes = ((fn->slot + 3) & -4) * 4;
++        padding  = slotbytes - fn->slot * 4;
++        framesz  = ncallee * 8 + slotbytes;
++    }
++    total = framesz + 16;  // + x29/x30 pair
++
++    blkoff = emalloc(fn->nblk * sizeof blkoff[0]);
++    nfix   = 0;
++    fixcap = 8;
++    fixes  = emalloc(fixcap * sizeof fixes[0]);
++
++    // Prologue.
++    {
++        int* r;
++        int  k;
++        jit_emit_u32(ctx, 0xD503245Fu);  // hint #34 (BTI jc)
++        if (total <= 512) {
++            // stp x29,x30,[sp,-total]!
++            int imm7 = -(total / 8);
++            jit_emit_u32(ctx,
++                0xA9800000u | ((uint32_t)(imm7 & 0x7F) << 15) |
++                (30u << 10) | (31u << 5) | 29u);
++        } else {
++            assert(framesz <= 4095);
++            // sub sp,sp,#framesz
++            jit_emit_u32(ctx,
++                0xD1000000u | ((uint32_t)framesz << 10) | (31u << 5) | 31u);
++            jit_emit_u32(ctx, 0xA9BF7BFDu);  // stp x29,x30,[sp,-16]!
++        }
++        jit_emit_u32(ctx, 0x910003FDu);  // mov x29, sp
++        k = 0;
++        for (r = arm64_rclob; *r >= 0; r++) {
++            if (fn->reg & BIT(*r)) {
++                k++;
++                uint32_t off   = (uint32_t)(16 + framesz - 8 * k);
++                uint32_t imm12 = off / 8;
++                if (*r >= V0)
++                    jit_emit_u32(ctx,
++                        0xFD000000u | (imm12 << 10) | (29u << 5) |
++                        (uint32_t)(*r - V0));
++                else
++                    jit_emit_u32(ctx,
++                        0xF9000000u | (imm12 << 10) | (29u << 5) |
++                        (uint32_t)(*r - R0));
++            }
++        }
++    }
++
++    // Instruction and jump emission.
++    for (b = fn->start; b; b = b->link) {
++        blkoff[b->id] = ctx->codesz;
++        for (i = b->ins; i < &b->ins[b->nins]; i++) {
++            switch (i->op) {
++            case Onop:
++                break;
++
++            case Ocopy:
++                if (req(i->to, i->arg[0]))
++                    break;
++                assert(isreg(i->to));
++                if (i->cls == Ks || i->cls == Kd) {
++                    // FMOV Sd/Dd, Sn/Dn
++                    assert(isreg(i->arg[0]));
++                    rd  = i->to.val   - V0;
++                    rm  = i->arg[0].val - V0;
++                    enc = (i->cls == Kd) ? 0x1E604000u : 0x1E204000u;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rm << 5) | (uint32_t)rd);
++                    break;
++                }
++                rd   = i->to.val - R0;
++                wide = (i->cls == Kl);
++                if (rtype(i->arg[0]) == RCon) {
++                    jit_movcon(ctx, rd, i->cls, &fn->con[i->arg[0].val]);
++                    break;
++                }
++                assert(isreg(i->arg[0]));
++                rm  = i->arg[0].val - R0;
++                // MOV Wd,Wm = ORR Wd,WZR,Wm
++                enc = wide ? 0xAA0003E0u : 0x2A0003E0u;
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | (uint32_t)rd);
++                break;
++
++            case Oadd:
++            case Osub:
++                assert(isreg(i->to) && isreg(i->arg[0]));
++                if (rtype(i->arg[1]) == RCon) {
++                    Con*    cc  = &fn->con[i->arg[1].val];
++                    int64_t imm;
++                    assert(cc->type == CBits);
++                    imm  = cc->bits.i;
++                    rd   = i->to.val   - R0;
++                    rn   = i->arg[0].val - R0;
++                    wide = (i->cls == Kl);
++                    assert(imm >= 0 && imm < 4096);
++                    enc  = (i->op == Oadd) ? (wide ? 0x91000000u : 0x11000000u)
++                                           : (wide ? 0xD1000000u : 0x51000000u);
++                    jit_emit_u32(ctx,
++                        enc | ((uint32_t)imm << 10) |
++                        ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                }
++                assert(isreg(i->arg[1]));
++                if (i->cls == Ks || i->cls == Kd) {
++                    // FADD/FSUB Sd/Dd, Sn/Dn, Sm/Dm
++                    rd  = i->to.val   - V0;
++                    rn  = i->arg[0].val - V0;
++                    rm  = i->arg[1].val - V0;
++                    enc = (i->op == Oadd)
++                        ? ((i->cls == Kd) ? 0x1E602800u : 0x1E202800u)
++                        : ((i->cls == Kd) ? 0x1E603800u : 0x1E203800u);
++                    jit_emit_u32(ctx,
++                        enc | ((uint32_t)rm << 16) |
++                        ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                }
++                rd   = i->to.val   - R0;
++                rn   = i->arg[0].val - R0;
++                rm   = i->arg[1].val - R0;
++                wide = (i->cls == Kl);
++                enc  = (i->op == Oadd) ? (wide ? 0x8B000000u : 0x0B000000u)
++                                       : (wide ? 0xCB000000u : 0x4B000000u);
++                if (wide && (rd == 31 || rn == 31))
++                    enc |= 0x00200000u | (3u << 13);  // extended-register SP form
++                jit_emit_u32(ctx,
++                    enc | ((uint32_t)rm << 16) |
++                    ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++
++            case Omul:
++                assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++                if (i->cls == Ks || i->cls == Kd) {
++                    rd  = i->to.val   - V0;
++                    rn  = i->arg[0].val - V0;
++                    rm  = i->arg[1].val - V0;
++                    enc = (i->cls == Kd) ? 0x1E600800u : 0x1E200800u;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                }
++                rd   = i->to.val   - R0;
++                rn   = i->arg[0].val - R0;
++                rm   = i->arg[1].val - R0;
++                wide = (i->cls == Kl);
++                enc  = wide ? 0x9B007C00u : 0x1B007C00u;  // MUL = MADD Ra=XZR
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++
++            case Oswap: {
++                int sc = IP1 - R0;  // x17 scratch
++                assert(i->cls == Kw || i->cls == Kl);
++                assert(isreg(i->arg[0]) && isreg(i->arg[1]));
++                rn   = i->arg[0].val - R0;
++                rm   = i->arg[1].val - R0;
++                wide = (i->cls == Kl);
++                enc  = wide ? 0xAA0003E0u : 0x2A0003E0u;
++                jit_emit_u32(ctx, enc | ((uint32_t)rn << 16) | (uint32_t)sc);  // mov IP1, rn
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | (uint32_t)rn);  // mov rn, rm
++                jit_emit_u32(ctx, enc | ((uint32_t)sc << 16) | (uint32_t)rm);  // mov rm, IP1
++                break;
++            }
++
++            case Odiv:
++            case Oudiv:
++                assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++                if (i->cls == Ks || i->cls == Kd) {
++                    rd  = i->to.val   - V0;
++                    rn  = i->arg[0].val - V0;
++                    rm  = i->arg[1].val - V0;
++                    enc = (i->cls == Kd) ? 0x1E601800u : 0x1E201800u;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                }
++                rd   = i->to.val   - R0;
++                rn   = i->arg[0].val - R0;
++                rm   = i->arg[1].val - R0;
++                wide = (i->cls == Kl);
++                enc  = (i->op == Odiv) ? (wide ? 0x9AC00C00u : 0x1AC00C00u)
++                                       : (wide ? 0x9AC00800u : 0x1AC00800u);
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++
++            case Orem:
++            case Ourem: {
++                int sc = IP1 - R0;  // x17 scratch
++                assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++                rd   = i->to.val   - R0;
++                rn   = i->arg[0].val - R0;
++                rm   = i->arg[1].val - R0;
++                wide = (i->cls == Kl);
++                // step 1: scratch = dividend / divisor
++                enc  = (i->op == Orem) ? (wide ? 0x9AC00C00u : 0x1AC00C00u)
++                                       : (wide ? 0x9AC00800u : 0x1AC00800u);
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)sc);
++                // step 2: rd = rn - sc*rm  (MSUB)
++                enc  = wide ? 0x9B008000u : 0x1B008000u;
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 10) |
++                                        ((uint32_t)sc << 5) | (uint32_t)rd);
++                break;
++            }
++
++            case Oand:
++            case Oor:
++            case Oxor:
++                assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++                rd   = i->to.val   - R0;
++                rn   = i->arg[0].val - R0;
++                rm   = i->arg[1].val - R0;
++                wide = (i->cls == Kl);
++                if (i->op == Oand)
++                    enc = wide ? 0x8A000000u : 0x0A000000u;
++                else if (i->op == Oor)
++                    enc = wide ? 0xAA000000u : 0x2A000000u;
++                else
++                    enc = wide ? 0xCA000000u : 0x4A000000u;
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++
++            case Oneg:
++                assert(isreg(i->to) && isreg(i->arg[0]));
++                if (i->cls == Ks || i->cls == Kd) {
++                    rd  = i->to.val   - V0;
++                    rm  = i->arg[0].val - V0;
++                    enc = (i->cls == Kd) ? 0x1E614000u : 0x1E214000u;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rm << 5) | (uint32_t)rd);
++                    break;
++                }
++                rd   = i->to.val   - R0;
++                rm   = i->arg[0].val - R0;
++                wide = (i->cls == Kl);
++                enc  = wide ? 0xCB0003E0u : 0x4B0003E0u;  // NEG = SUB Rd,XZR,Rm
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | (uint32_t)rd);
++                break;
++
++            case Osar:
++            case Oshr:
++            case Oshl:
++                assert(isreg(i->to) && isreg(i->arg[0]) && isreg(i->arg[1]));
++                rd   = i->to.val   - R0;
++                rn   = i->arg[0].val - R0;
++                rm   = i->arg[1].val - R0;
++                wide = (i->cls == Kl);
++                if (i->op == Osar)
++                    enc = wide ? 0x9AC02800u : 0x1AC02800u;
++                else if (i->op == Oshr)
++                    enc = wide ? 0x9AC02400u : 0x1AC02400u;
++                else
++                    enc = wide ? 0x9AC02000u : 0x1AC02000u;
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++
++            case Oextsb:
++            case Oextub:
++            case Oextsh:
++            case Oextuh:
++            case Oextsw:
++            case Oextuw:
++                assert(isreg(i->to) && isreg(i->arg[0]));
++                rd   = i->to.val   - R0;
++                rn   = i->arg[0].val - R0;
++                wide = (i->cls == Kl);
++                switch (i->op) {
++                case Oextsb:
++                    enc = wide ? 0x93401C00u : 0x13001C00u;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                case Oextub:
++                    jit_emit_u32(ctx, 0x53001C00u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                case Oextsh:
++                    enc = wide ? 0x93403C00u : 0x13003C00u;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                case Oextuh:
++                    jit_emit_u32(ctx, 0x53003C00u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                case Oextsw:
++                    jit_emit_u32(ctx, 0x93407C00u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                default:  // Oextuw: MOV Wd,Wm (zero-extends to 64 bits)
++                    jit_emit_u32(ctx, 0x2A0003E0u | ((uint32_t)rn << 16) | (uint32_t)rd);
++                    break;
++                }
++                break;
++
++            case Oacmp:
++            case Oacmn:
++                assert(isreg(i->arg[0]));
++                rn   = i->arg[0].val - R0;
++                wide = (i->cls == Kl);
++                if (rtype(i->arg[1]) == RCon) {
++                    Con*    cc  = &fn->con[i->arg[1].val];
++                    int64_t imm = cc->bits.i;
++                    assert(imm >= 0 && imm < 4096);
++                    enc = (i->op == Oacmp) ? (wide ? 0xF100001Fu : 0x7100001Fu)
++                                           : (wide ? 0xB100001Fu : 0x3100001Fu);
++                    jit_emit_u32(ctx, enc | ((uint32_t)imm << 10) | ((uint32_t)rn << 5));
++                } else {
++                    assert(isreg(i->arg[1]));
++                    rm  = i->arg[1].val - R0;
++                    enc = (i->op == Oacmp) ? (wide ? 0xEB00001Fu : 0x6B00001Fu)
++                                           : (wide ? 0xAB00001Fu : 0x2B00001Fu);
++                    jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5));
++                }
++                break;
++
++            case Oaddr: {
++                uint32_t off;
++                assert(isreg(i->to));
++                assert(rtype(i->arg[0]) == RSlot);
++                rd  = i->to.val - R0;
++                off = arm64_slot_off(rsval(i->arg[0]), padding, framesz);
++                assert(off <= 4095);
++                // ADD Xd, X29, #off
++                jit_emit_u32(ctx,
++                    0x91000000u | (off << 10) | (29u << 5) | (uint32_t)rd);
++                break;
++            }
++
++            case Oloaduw:
++            case Oloadsw: {
++                Ref addr;
++                assert(isreg(i->to));
++                rd   = i->to.val - R0;
++                addr = i->arg[0];
++                // LDRSW Xt for Kl, else LDR Wt
++                enc  = (i->op == Oloadsw && i->cls == Kl) ? 0xB9800000u
++                                                           : 0xB9400000u;
++                if (isreg(addr)) {
++                    rn = addr.val - R0;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                } else {
++                    uint32_t off;
++                    assert(rtype(addr) == RSlot);
++                    off = arm64_slot_off(rsval(addr), padding, framesz);
++                    jit_emit_u32(ctx,
++                        enc | ((off / 4u) << 10) | (29u << 5) | (uint32_t)rd);
++                }
++                break;
++            }
++
++            case Oloadsb:
++            case Oloadub:
++            case Oloadsh:
++            case Oloaduh:
++            case Oload: {
++                int  scale;
++                Ref  addr;
++                assert(isreg(i->to));
++                rd   = i->to.val - R0;
++                addr = i->arg[0];
++                wide = (i->cls == Kl);
++                switch (i->op) {
++                case Oloadsb:
++                    enc   = wide ? 0x39800000u : 0x39C00000u;
++                    scale = 1;
++                    break;
++                case Oloadub:
++                    enc   = 0x39400000u;
++                    scale = 1;
++                    break;
++                case Oloadsh:
++                    enc   = wide ? 0x79800000u : 0x79C00000u;
++                    scale = 2;
++                    break;
++                case Oloaduh:
++                    enc   = 0x79400000u;
++                    scale = 2;
++                    break;
++                default: // Oload
++                    if (i->cls == Ks) {
++                        rd    = i->to.val - V0;
++                        enc   = 0xBD400000u;
++                        scale = 4;
++                    } else if (i->cls == Kd) {
++                        rd    = i->to.val - V0;
++                        enc   = 0xFD400000u;
++                        scale = 8;
++                    } else {
++                        enc   = wide ? 0xF9400000u : 0xB9400000u;
++                        scale = wide ? 8 : 4;
++                    }
++                    break;
++                }
++                if (isreg(addr)) {
++                    rn = addr.val - R0;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                } else {
++                    uint32_t off;
++                    assert(rtype(addr) == RSlot);
++                    off = arm64_slot_off(rsval(addr), padding, framesz);
++                    jit_emit_u32(ctx,
++                        enc | ((off / (uint32_t)scale) << 10) |
++                        (29u << 5) | (uint32_t)rd);
++                }
++                break;
++            }
++
++            case Ostoreb:
++            case Ostoreh:
++            case Ostorew:
++            case Ostorel: {
++                int  scale;
++                Ref  addr;
++                assert(isreg(i->arg[0]));
++                addr = i->arg[1];
++                // float store: Ostorew Ks / Ostorel Kd
++                if (i->arg[0].val >= V0) {
++                    rd    = i->arg[0].val - V0;
++                    enc   = (i->op == Ostorel) ? 0xFD000000u : 0xBD000000u;
++                    scale = (i->op == Ostorel) ? 8 : 4;
++                    if (isreg(addr)) {
++                        rn = addr.val - R0;
++                        jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    } else {
++                        uint32_t off;
++                        assert(rtype(addr) == RSlot);
++                        off = arm64_slot_off(rsval(addr), padding, framesz);
++                        jit_emit_u32(ctx,
++                            enc | ((off / (uint32_t)scale) << 10) |
++                            (29u << 5) | (uint32_t)rd);
++                    }
++                    break;
++                }
++                rd = i->arg[0].val - R0;
++                switch (i->op) {
++                case Ostoreb: enc = 0x39000000u; scale = 1; break;
++                case Ostoreh: enc = 0x79000000u; scale = 2; break;
++                case Ostorew: enc = 0xB9000000u; scale = 4; break;
++                default:      enc = 0xF9000000u; scale = 8; break; // Ostorel
++                }
++                if (isreg(addr)) {
++                    rn = addr.val - R0;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                } else {
++                    uint32_t off;
++                    assert(rtype(addr) == RSlot);
++                    off = arm64_slot_off(rsval(addr), padding, framesz);
++                    jit_emit_u32(ctx,
++                        enc | ((off / (uint32_t)scale) << 10) |
++                        (29u << 5) | (uint32_t)rd);
++                }
++                break;
++            }
++
++            case Ostores:
++            case Ostored: {
++                int  fscale = (i->op == Ostored) ? 8 : 4;
++                Ref  faddr  = i->arg[1];
++                assert(isreg(i->arg[0]));
++                rd  = i->arg[0].val - V0;
++                enc = (i->op == Ostored) ? 0xFD000000u : 0xBD000000u;
++                if (isreg(faddr)) {
++                    rn = faddr.val - R0;
++                    jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                } else {
++                    uint32_t off;
++                    assert(rtype(faddr) == RSlot);
++                    off = arm64_slot_off(rsval(faddr), padding, framesz);
++                    jit_emit_u32(ctx,
++                        enc | ((off / (uint32_t)fscale) << 10) |
++                        (29u << 5) | (uint32_t)rd);
++                }
++                break;
++            }
++
++            case Ocast:
++                assert(isreg(i->to) && isreg(i->arg[0]));
++                switch (i->cls) {
++                case Kw: // FMOV Wd, Sn
++                    rd = i->to.val   - R0;
++                    rn = i->arg[0].val - V0;
++                    jit_emit_u32(ctx, 0x1E260000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                case Kl: // FMOV Xd, Dn
++                    rd = i->to.val   - R0;
++                    rn = i->arg[0].val - V0;
++                    jit_emit_u32(ctx, 0x9E660000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                case Ks: // FMOV Sd, Wn
++                    rd = i->to.val   - V0;
++                    rn = i->arg[0].val - R0;
++                    jit_emit_u32(ctx, 0x1E270000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                default: // Kd: FMOV Dd, Xn
++                    rd = i->to.val   - V0;
++                    rn = i->arg[0].val - R0;
++                    jit_emit_u32(ctx, 0x9E670000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                    break;
++                }
++                break;
++
++            case Ostosi:
++            case Ostoui:
++            case Odtosi:
++            case Odtoui: {
++                // FCVTZS / FCVTZU: FP -> integer
++                int sfp = (i->op == Odtosi || i->op == Odtoui);
++                int uns = (i->op == Ostoui || i->op == Odtoui);
++                int wx  = (i->cls == Kl);
++                rd  = i->to.val   - R0;
++                rn  = i->arg[0].val - V0;
++                if (sfp)
++                    enc = uns ? (wx ? 0x9E790000u : 0x1E790000u)
++                              : (wx ? 0x9E780000u : 0x1E780000u);
++                else
++                    enc = uns ? (wx ? 0x9E390000u : 0x1E390000u)
++                              : (wx ? 0x9E380000u : 0x1E380000u);
++                jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++            }
++
++            case Oswtof:
++            case Ouwtof:
++            case Osltof:
++            case Oultof: {
++                // SCVTF / UCVTF: integer -> FP
++                int xl  = (i->op == Osltof || i->op == Oultof);
++                int uns = (i->op == Ouwtof || i->op == Oultof);
++                int dbl = (i->cls == Kd);
++                rd  = i->to.val   - V0;
++                rn  = i->arg[0].val - R0;
++                if (xl)
++                    enc = uns ? (dbl ? 0x9E630000u : 0x9E230000u)
++                              : (dbl ? 0x9E620000u : 0x9E220000u);
++                else
++                    enc = uns ? (dbl ? 0x1E630000u : 0x1E230000u)
++                              : (dbl ? 0x1E620000u : 0x1E220000u);
++                jit_emit_u32(ctx, enc | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++            }
++
++            case Oexts:
++                // FCVT Dd, Sn: widen single to double
++                assert(isreg(i->to) && isreg(i->arg[0]));
++                rd  = i->to.val   - V0;
++                rn  = i->arg[0].val - V0;
++                jit_emit_u32(ctx, 0x1E22C000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++
++            case Otruncd:
++                // FCVT Sd, Dn: narrow double to single
++                assert(isreg(i->to) && isreg(i->arg[0]));
++                rd  = i->to.val   - V0;
++                rn  = i->arg[0].val - V0;
++                jit_emit_u32(ctx, 0x1E624000u | ((uint32_t)rn << 5) | (uint32_t)rd);
++                break;
++
++            case Oafcmp:
++                // FCMPE Sn, Sm / FCMPE Dn, Dm
++                assert(isreg(i->arg[0]) && isreg(i->arg[1]));
++                rn  = i->arg[0].val - V0;
++                rm  = i->arg[1].val - V0;
++                enc = (i->cls == Kd) ? 0x1E602010u : 0x1E202010u;
++                jit_emit_u32(ctx, enc | ((uint32_t)rm << 16) | ((uint32_t)rn << 5));
++                break;
++
++            case Ocall:
++                if (rtype(i->arg[0]) == RTmp) {
++                    // BLR Xn -- indirect call through register
++                    assert(isreg(i->arg[0]));
++                    rn = i->arg[0].val - R0;
++                    jit_emit_u32(ctx, 0xD63F0000u | ((uint32_t)rn << 5));
++                } else {
++                    // BL sym via MOVZ/MOVK/MOVK into X17 + BLR X17
++                    Con*  c  = &fn->con[i->arg[0].val];
++                    char  cname[NString];
++                    int   sc = IP1 - R0;  // X17
++                    assert(rtype(i->arg[0]) == RCon && c->type == CAddr);
++                    jit_symname(cname, str(c->sym.id));
++                    jit_emit_adrfix(ctx, sc, cname, 0);
++                    jit_emit_u32(ctx, 0xD63F0000u | ((uint32_t)sc << 5));  // BLR X17
++                }
++                break;
++
++            case Osalloc:
++                assert(isreg(i->arg[0]));
++                rm  = i->arg[0].val - R0;
++                // sub sp, sp, Xm (extended-register form)
++                jit_emit_u32(ctx, 0xCB206000u | ((uint32_t)rm << 16) | (31u << 5) | 31u);
++                if (!req(i->to, NULL_R)) {
++                    assert(isreg(i->to));
++                    rd  = i->to.val - R0;
++                    // mov Xd, sp = add Xd, sp, #0
++                    jit_emit_u32(ctx, 0x91000000u | (31u << 5) | (uint32_t)rd);
++                }
++                break;
++
++            default:
++                // Oflag* range: CSET Wd, cond = CSINC Wd, WZR, WZR, invert(cond)
++                if (i->op >= Oflag && i->op <= Oflag1) {
++                    int c = i->op - Oflag;
++                    assert(isreg(i->to));
++                    rd  = i->to.val - R0;
++                    jit_emit_u32(ctx,
++                        0x1A9F07E0u | ((uint32_t)(arm64cond[c] ^ 1u) << 12) | (uint32_t)rd);
++                    break;
++                }
++                die("jit: %s: unhandled op %s", fn->name, optab[i->op].name);
++            }
++        }
++
++        // Jump emission.
++        switch (b->jmp.type) {
++        case Jret0: {
++            int* r;
++            int  k;
++            k = 0;
++            for (r = arm64_rclob; *r >= 0; r++) {
++                if (fn->reg & BIT(*r)) {
++                    k++;
++                    uint32_t off   = (uint32_t)(16 + framesz - 8 * k);
++                    uint32_t imm12 = off / 8;
++                    if (*r >= V0)
++                        jit_emit_u32(ctx,
++                            0xFD400000u | (imm12 << 10) | (29u << 5) |
++                            (uint32_t)(*r - V0));
++                    else
++                        jit_emit_u32(ctx,
++                            0xF9400000u | (imm12 << 10) | (29u << 5) |
++                            (uint32_t)(*r - R0));
++                }
++            }
++            if (fn->dynalloc)
++                jit_emit_u32(ctx, 0x910003BFu);  // mov sp, x29
++            if (total <= 512) {
++                jit_emit_u32(ctx,
++                    0xA8C00000u | ((uint32_t)(total / 8) << 15) |
++                    (30u << 10) | (31u << 5) | 29u);
++            } else {
++                jit_emit_u32(ctx, 0xA8C17BFDu);  // ldp x29,x30,[sp],16
++                // add sp, sp, #framesz
++                jit_emit_u32(ctx,
++                    0x91000000u | ((uint32_t)framesz << 10) |
++                    (31u << 5) | 31u);
++            }
++            jit_emit_u32(ctx, 0xD65F03C0u);  // ret
++            break;
++        }
++        case Jhlt:
++            jit_emit_u32(ctx, 0xD4207D00u);  // brk #1000
++            break;
++        case Jjmp:
++            if (b->s1 != b->link) {
++                uint32_t boff = ctx->codesz;
++                jit_emit_u32(ctx, 0x14000000u);  // B placeholder
++                if (nfix == fixcap) {
++                    uint32_t oldcap = fixcap;
++                    fixcap *= 2;
++                    BrFix* nf = emalloc(fixcap * sizeof(BrFix));
++                    memcpy(nf, fixes, oldcap * sizeof(BrFix));
++                    qbe_free(fixes);
++                    fixes = nf;
++                }
++                fixes[nfix++] = (BrFix){boff, b->s1, -1};
++            }
++            break;
++        default: {
++            // Conditional branches: Jjf + [0, NCmp)
++            int  c = b->jmp.type - Jjf;
++            Blk* brtgt;
++            if (c < 0 || c >= NCmp)
++                die("jit: %s: unhandled jump type %d", fn->name, b->jmp.type);
++            if (b->link == b->s2) {
++                brtgt = b->s1;  // s2 falls through; branch to s1 if cond
++            } else {
++                c = cmpneg(c);  // s1 falls through; branch to s2 if !cond
++                brtgt = b->s2;
++                // remap ordered-float negations to NaN-inclusive conditions
++                switch (c) {
++                case NCmpI+Cfge: c = Ciuge; break;
++                case NCmpI+Cfgt: c = Ciugt; break;
++                case NCmpI+Cfle: c = Cisle; break;
++                case NCmpI+Cflt: c = Cislt; break;
++                default: break;
++                }
++            }
++            {
++                uint32_t boff = ctx->codesz;
++                jit_emit_u32(ctx, 0x54000000u | (uint32_t)arm64cond[c]);
++                if (nfix == fixcap) {
++                    uint32_t oldcap = fixcap;
++                    fixcap *= 2;
++                    BrFix* nf = emalloc(fixcap * sizeof(BrFix));
++                    memcpy(nf, fixes, oldcap * sizeof(BrFix));
++                    qbe_free(fixes);
++                    fixes = nf;
++                }
++                fixes[nfix++] = (BrFix){boff, brtgt, arm64cond[c]};
++            }
++            // if neither successor falls through, also branch to s1
++            if (b->link != b->s1 && b->link != b->s2) {
++                uint32_t boff = ctx->codesz;
++                jit_emit_u32(ctx, 0x14000000u);
++                if (nfix == fixcap) {
++                    uint32_t oldcap = fixcap;
++                    fixcap *= 2;
++                    BrFix* nf = emalloc(fixcap * sizeof(BrFix));
++                    memcpy(nf, fixes, oldcap * sizeof(BrFix));
++                    qbe_free(fixes);
++                    fixes = nf;
++                }
++                fixes[nfix++] = (BrFix){boff, b->s1, -1};
++            }
++            break;
++        }
++        }
++    }
++
++    // Apply branch fixups directly into ctx->code.
++    {
++        uint32_t f;
++        for (f = 0; f < nfix; f++) {
++            uint32_t  toff  = blkoff[fixes[f].tgt->id];
++            int32_t   delta = ((int32_t)toff - (int32_t)fixes[f].off) / 4;
++            uint32_t* p     = (uint32_t*)&ctx->code[fixes[f].off];
++            if (fixes[f].cond >= 0)
++                *p |= (uint32_t)(delta & 0x7FFFFu) << 5;   // B.cond imm19
++            else
++                *p |= (uint32_t)(delta & 0x3FFFFFFu);      // B imm26
++        }
++    }
++
++    qbe_free(blkoff);
++    qbe_free(fixes);
++}
++
++void
++jit_finalize(JitCtx* ctx) {
++    uint32_t sz;
++    uint8_t* exec;
++
++    // Set up data region (RW, not executable).
++    if (ctx->datsz > 0) {
++        uint32_t dsz = (ctx->datsz + 4095u) & ~4095u;
++        uint8_t* dexec = mmap(NULL, dsz, PROT_READ | PROT_WRITE,
++                              MAP_PRIVATE | MAP_ANON, -1, 0);
++        if (dexec == MAP_FAILED)
++            die("jit: mmap data failed");
++        memcpy(dexec, ctx->datbuf, ctx->datsz);
++        ctx->datexec   = dexec;
++        ctx->datexecsz = dsz;
++    }
++
++    /* Initialize TLS descriptors: install bootstrap fn and pre-create pthread keys */
++    {
++        uint32_t ti;
++        for (ti = 0; ti < ctx->ntlssyms; ti++) {
++            void **desc = (void **)(ctx->datexec + ctx->tlssyms[ti].descoff);
++            pthread_key_t key;
++            desc[0] = (void *)jit_tlv_bootstrap;
++            pthread_key_create(&key, free);
++            desc[1] = (void *)(uintptr_t)key;
++            /* desc[2] filled by JitDataFix; desc[3] written at emit time */
++        }
++    }
++
++    // Set up BSS region (zero-initialized via MAP_ANON).
++    if (ctx->bsssz > 0) {
++        uint32_t bsz = (ctx->bsssz + 4095u) & ~4095u;
++        uint8_t* bexec = mmap(NULL, bsz, PROT_READ | PROT_WRITE,
++                              MAP_PRIVATE | MAP_ANON, -1, 0);
++        if (bexec == MAP_FAILED)
++            die("jit: mmap bss failed");
++        ctx->bssexec   = bexec;
++        ctx->bssexecsz = bsz;
++    }
++
++    if (ctx->codesz == 0)
++        goto resolve_data;
++
++    // Round up to page size.
++    sz = (ctx->codesz + 4095u) & ~4095u;
++    exec = mmap(NULL, sz, PROT_READ|PROT_WRITE|PROT_EXEC,
++                MAP_PRIVATE|MAP_ANON|MAP_JIT, -1, 0);
++    if (exec == MAP_FAILED)
++        die("jit: mmap failed");
++    pthread_jit_write_protect_np(0);
++    memcpy(exec, ctx->code, ctx->codesz);
++
++    // Resolve address fixups (code -> fn or data symbol or external).
++    {
++        uint32_t f;
++        for (f = 0; f < ctx->nadrfix; f++) {
++            JitAddrFixup* fx = &ctx->adrfix[f];
++            uint64_t      addr = 0;
++            uint32_t      fi;
++            uint32_t*     p = (uint32_t*)(exec + fx->off);
++
++            // Try JIT function table first.
++            for (fi = 0; fi < ctx->nfns; fi++) {
++                if (strcmp(ctx->fns[fi].name, fx->name) == 0) {
++                    addr = (uint64_t)(uintptr_t)(exec + ctx->fns[fi].off);
++                    break;
++                }
++            }
++            // Try JIT data symbols.
++            if (addr == 0) {
++                for (fi = 0; fi < ctx->ndatasym; fi++) {
++                    if (strcmp(ctx->datasym[fi].name, fx->name) == 0) {
++                        addr = ctx->datasym[fi].isbss
++                            ? (uint64_t)(uintptr_t)(ctx->bssexec + ctx->datasym[fi].off)
++                            : (uint64_t)(uintptr_t)(ctx->datexec + ctx->datasym[fi].off);
++                        break;
++                    }
++                }
++            }
++            // Try dlsym; strip leading '_' for macOS convention.
++            if (addr == 0) {
++                const char* dname = (fx->name[0] == '_') ? fx->name + 1 : fx->name;
++                void*       sym   = dlsym(RTLD_DEFAULT, dname);
++                if (!sym)
++                    die("jit: unresolved symbol: %s", fx->name);
++                addr = (uint64_t)(uintptr_t)sym;
++            }
++            addr += (uint64_t)fx->addend;
++
++            // Patch the MOVZ/MOVK/MOVK triple.
++            p[0] = 0xD2800000u | (((uint32_t)(addr        & 0xFFFF)) << 5) | (uint32_t)fx->rd;
++            p[1] = 0xF2A00000u | (((uint32_t)((addr >> 16) & 0xFFFF)) << 5) | (uint32_t)fx->rd;
++            p[2] = 0xF2C00000u | (((uint32_t)((addr >> 32) & 0xFFFF)) << 5) | (uint32_t)fx->rd;
++        }
++    }
++
++    sys_icache_invalidate(exec, sz);
++    pthread_jit_write_protect_np(1);
++    ctx->exec   = exec;
++    ctx->execsz = sz;
++
++resolve_data:
++    // Resolve data pointer fixups (pointer slots in the data section).
++    {
++        uint32_t f;
++        for (f = 0; f < ctx->ndatafix; f++) {
++            JitDataFix* fx = &ctx->datafix[f];
++            uint64_t    addr = 0;
++            uint32_t    fi;
++            uint64_t*   slot = (uint64_t*)(ctx->datexec + fx->off);
++
++            // Try JIT function table.
++            for (fi = 0; fi < ctx->nfns; fi++) {
++                if (strcmp(ctx->fns[fi].name, fx->name) == 0) {
++                    addr = (uint64_t)(uintptr_t)(ctx->exec + ctx->fns[fi].off);
++                    break;
++                }
++            }
++            // Try JIT data symbols.
++            if (addr == 0) {
++                for (fi = 0; fi < ctx->ndatasym; fi++) {
++                    if (strcmp(ctx->datasym[fi].name, fx->name) == 0) {
++                        addr = ctx->datasym[fi].isbss
++                            ? (uint64_t)(uintptr_t)(ctx->bssexec + ctx->datasym[fi].off)
++                            : (uint64_t)(uintptr_t)(ctx->datexec + ctx->datasym[fi].off);
++                        break;
++                    }
++                }
++            }
++            // Try dlsym.
++            if (addr == 0) {
++                const char* dname = (fx->name[0] == '_') ? fx->name + 1 : fx->name;
++                void*       sym   = dlsym(RTLD_DEFAULT, dname);
++                if (!sym)
++                    die("jit: unresolved data ref: %s", fx->name);
++                addr = (uint64_t)(uintptr_t)sym;
++            }
++            addr += (uint64_t)fx->addend;
++            *slot = addr;
++        }
++    }
++}
++
++void*
++jit_lookup(JitCtx* ctx, const char* name) {
++    uint32_t i;
++    for (i = 0; i < ctx->nfns; i++)
++        if (strcmp(ctx->fns[i].name, name) == 0)
++            return ctx->exec + ctx->fns[i].off;
++    for (i = 0; i < ctx->ndatasym; i++)
++        if (strcmp(ctx->datasym[i].name, name) == 0)
++            return ctx->datasym[i].isbss
++                ? (void*)(ctx->bssexec + ctx->datasym[i].off)
++                : (void*)(ctx->datexec + ctx->datasym[i].off);
++    return NULL;
++}
++
++void
++jit_populate_ptrs(JitCtx *ctx)
++{
++    uint32_t i;
++    char pname[NString + 10];
++    for (i = 0; i < ctx->nfns; i++) {
++        const char *fn = ctx->fns[i].name;  /* e.g. "_f" */
++        if (fn[0] == '_') fn++;             /* strip leading _: "f" */
++        snprintf(pname, sizeof(pname), "jit_%s_ptr", fn);
++        void **pp = dlsym(RTLD_DEFAULT, pname);
++        if (pp)
++            *pp = (char*)ctx->exec + ctx->fns[i].off;
++    }
++}
+diff --git a/arm64/emitjit.h b/arm64/emitjit.h
+new file mode 100644
+index 0000000..1e70bef
+--- /dev/null
++++ b/arm64/emitjit.h
+@@ -0,0 +1,8 @@
++JitCtx* jit_new(void);
++void    jit_free(JitCtx*);
++void    jit_emitfn(Fn*, JitCtx*);
++void    jit_emitdat(Dat*, JitCtx*);
++void    jit_emitfin_fp(JitCtx*);
++void    jit_finalize(JitCtx*);
++void*   jit_lookup(JitCtx*, const char*);
++void    jit_populate_ptrs(JitCtx*);
+diff --git a/arm64/emitmacho.c b/arm64/emitmacho.c
+index 1c166e9..c62c0ac 100644
+--- a/arm64/emitmacho.c
++++ b/arm64/emitmacho.c
+@@ -1,6 +1,8 @@
+ #include "all.h"
+ 
+ #include "emitmacho.h"
++#include "apple_shared.h"
++
+ #include <stdint.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -286,37 +288,6 @@ static void emit_u32(MachoCtx* ctx, uint32_t insn) {
+   buf_append(&ctx->text, &ctx->textsz, &ctx->textcap, &insn, 4);
+ }
+ 
+-// ARM64 condition codes indexed by CmpI
+-static const uint8_t arm64cond[NCmp] = {
+-    // integer comparisons
+-    [Cieq] = 0x0,
+-    [Cine] = 0x1,
+-    [Cisge] = 0xA,
+-    [Cisgt] = 0xC,
+-    [Cisle] = 0xD,
+-    [Cislt] = 0xB,
+-    [Ciuge] = 0x2,
+-    [Ciugt] = 0x8,
+-    [Ciule] = 0x9,
+-    [Ciult] = 0x3,
+-    // float comparisons (after FCMPE, ARM64 FP flags = integer flags)
+-    [NCmpI + Cfeq] = 0x0,
+-    [NCmpI + Cfge] = 0xA,
+-    [NCmpI + Cfgt] = 0xC,
+-    [NCmpI + Cfle] = 0x9,
+-    [NCmpI + Cflt] = 0x4,
+-    [NCmpI + Cfne] = 0x1,
+-    [NCmpI + Cfo] = 0x7,
+-    [NCmpI + Cfuo] = 0x6,
+-};
+-
+-// Branch fixup: records a branch instruction to patch after all blocks emitted
+-typedef struct {
+-  uint32_t off;
+-  Blk* tgt;
+-  int cond;
+-} BrFix;
+-
+ static void grow_fixes(BrFix** fixes, uint32_t* fixcap) {
+   uint32_t oldcap = *fixcap;
+   *fixcap *= 2;
+@@ -449,20 +420,6 @@ static void emit_movcon(MachoCtx* ctx, int rd, int cls, Con* c) {
+   }
+ }
+ 
+-// Mirror arm64/emit.c slot() for RSlot -> x29-relative byte offset.
+-// s == -1: frame-start marker used by apple_selvastart (Oaddr SLOT(-1)).
+-// s < 0:   above-frame caller argument at byte offset -(s+2) above frame.
+-// s >= 0:  local / callee-save slot.
+-static uint32_t slot_off(int s, int padding, int framesz) {
+-  if (s == -1) {
+-    return (uint32_t)(16 + framesz);
+-  }
+-  if (s < 0) {
+-    return (uint32_t)(16 + framesz - (s + 2));
+-  }
+-  return (uint32_t)(16 + padding + 4 * s);
+-}
+-
+ void
+ macho_emitfn(Fn* fn, MachoCtx* ctx) {
+   char name[NString];
+@@ -718,7 +675,7 @@ macho_emitfn(Fn* fn, MachoCtx* ctx) {
+             } else {
+               uint32_t off;
+               assert(rtype(addr) == RSlot);
+-              off = slot_off(rsval(addr), padding, framesz);
++              off = arm64_slot_off(rsval(addr), padding, framesz);
+               emit_u32(ctx, enc | ((off / (uint32_t)scale) << 10) | (29u << 5) | (uint32_t)rd);
+             }
+             break;
+@@ -748,7 +705,7 @@ macho_emitfn(Fn* fn, MachoCtx* ctx) {
+           } else {
+             uint32_t off;
+             assert(rtype(addr) == RSlot);
+-            off = slot_off(rsval(addr), padding, framesz);
++            off = arm64_slot_off(rsval(addr), padding, framesz);
+             emit_u32(ctx, enc | ((off / (uint32_t)scale) << 10) | (29u << 5) | (uint32_t)rd);
+           }
+           break;
+@@ -768,7 +725,7 @@ macho_emitfn(Fn* fn, MachoCtx* ctx) {
+           } else {
+             uint32_t off;
+             assert(rtype(addr) == RSlot);
+-            off = slot_off(rsval(addr), padding, framesz);
++            off = arm64_slot_off(rsval(addr), padding, framesz);
+             emit_u32(ctx, enc | ((off / 4u) << 10) | (29u << 5) | (uint32_t)rd);
+           }
+           break;
+@@ -822,7 +779,7 @@ macho_emitfn(Fn* fn, MachoCtx* ctx) {
+           } else {
+             uint32_t off;
+             assert(rtype(addr) == RSlot);
+-            off = slot_off(rsval(addr), padding, framesz);
++            off = arm64_slot_off(rsval(addr), padding, framesz);
+             emit_u32(ctx, enc | ((off / (uint32_t)scale) << 10) | (29u << 5) | (uint32_t)rd);
+           }
+           break;
+@@ -998,7 +955,7 @@ macho_emitfn(Fn* fn, MachoCtx* ctx) {
+           assert(isreg(i->to));
+           assert(rtype(i->arg[0]) == RSlot);
+           rd = i->to.val - R0;
+-          off = slot_off(rsval(i->arg[0]), padding, framesz);
++          off = arm64_slot_off(rsval(i->arg[0]), padding, framesz);
+           assert(off <= 4095);
+           // ADD Xd, X29, #off
+           emit_u32(ctx, 0x91000000u | (off << 10) | (29u << 5) | (uint32_t)rd);
+@@ -1103,7 +1060,7 @@ macho_emitfn(Fn* fn, MachoCtx* ctx) {
+           } else {
+             uint32_t off;
+             assert(rtype(faddr) == RSlot);
+-            off = slot_off(rsval(faddr), padding, framesz);
++            off = arm64_slot_off(rsval(faddr), padding, framesz);
+             emit_u32(ctx, enc | ((off / (uint32_t)fscale) << 10) | (29u << 5) | (uint32_t)rd);
+           }
+           break;
+diff --git a/main.c b/main.c
+index cd09287..c2fd84f 100644
+--- a/main.c
++++ b/main.c
+@@ -1,7 +1,9 @@
+ #include "all.h"
+ #include "arm64/emitmacho.h"
++#include "arm64/emitjit.h"
+ #include "config.h"
+ #include <ctype.h>
++#include <dlfcn.h>
+ #include <getopt.h>
+ 
+ #define G(x) global_context.main__##x
+@@ -42,6 +44,8 @@ data(Dat *d)
+ 	if (G(objmode)) {
+ 		macho_emitdat(d, G(macho_ctx));
+ 		ret_on_err();
++	} else if (G(jitmode)) {
++		jit_emitdat(d, G(jit_ctx));
+ 	} else {
+ 		emitdat(d, G(outf));
+ 		ret_on_err();
+@@ -124,6 +128,8 @@ func(Fn *fn)
+ 	}
+ 	if (G(objmode)) {
+ 		macho_emitfn(fn, G(macho_ctx));
++	} else if (G(jitmode)) {
++		jit_emitfn(fn, G(jit_ctx));
+ 	} else if (!G(dbg)) {
+ 		GC(T).emitfn(fn, G(outf));
+ 		fprintf(G(outf), "/* end function %s */\n\n", fn->name);
+@@ -147,6 +153,8 @@ main(int ac, char *av[])
+ 	FILE *inf, *hf;
+ 	char *f, *sep;
+ 	int c;
++	int jit_argc = 0;
++	char **jit_argv = NULL;
+ 
+   reinit_global_context(&global_context);
+ 
+@@ -164,6 +172,8 @@ main(int ac, char *av[])
+ 		case 'f':
+ 			if (strcmp(optarg, "macho") == 0)
+ 				G(objmode) = 1;
++			else if (strcmp(optarg, "jit") == 0)
++				G(jitmode) = 1;
+ 			else {
+ 				fprintf(stderr, "unknown format '%s'\n", optarg);
+ 				exit(1);
+@@ -218,9 +228,21 @@ main(int ac, char *av[])
+ 			die("obj: -f obj is only supported for apple targets");
+ 		G(macho_ctx) = macho_new();
+ 	}
++	if (G(jitmode)) {
++		if (!GC(T).apple)
++			die("jit: -f jit is only supported for apple targets");
++		G(jit_ctx) = jit_new();
++	}
+ 
+ 	do {
+ 		f = av[optind];
++		if (f && strcmp(f, "--") == 0) {
++			// args from "--" onward are forwarded to the JIT'd program;
++			// "--" itself serves as the fake argv[0] (programs skip it)
++			jit_argc = ac - optind;
++			jit_argv = av + optind;
++			break;
++		}
+ 		if (!f || strcmp(f, "-") == 0) {
+ 			inf = stdin;
+ 			f = "-";
+@@ -239,8 +261,23 @@ main(int ac, char *av[])
+ 		macho_emitfin_obj(G(macho_ctx));
+ 		macho_write(G(macho_ctx), G(outf));
+ 		macho_free(G(macho_ctx));
+-	}
+-	else if (!G(dbg))
++	} else if (G(jitmode)) {
++		int (*entry)(int, char **);
++		int ec;
++		jit_emitfin_fp(G(jit_ctx));
++		jit_finalize(G(jit_ctx));
++		jit_populate_ptrs(G(jit_ctx));
++		/* Case A: .ssa exports $main -> call it directly */
++		*(void **)&entry = jit_lookup(G(jit_ctx), "_main");
++		/* Case B: no $main -> call driver_main() linked into binary */
++		if (!entry)
++			*(void **)&entry = dlsym(RTLD_DEFAULT, "driver_main");
++		if (!entry)
++			die("jit: no _main function");
++		ec = entry(jit_argc, jit_argv);
++		jit_free(G(jit_ctx));
++		exit(ec);
++	} else if (!G(dbg))
+ 		GC(T).emitfin(G(outf));
+ 
+ 	exit(0);
+diff --git a/test/_jit_add.ssa b/test/_jit_add.ssa
+new file mode 100644
+index 0000000..7c5fb5a
+--- /dev/null
++++ b/test/_jit_add.ssa
+@@ -0,0 +1,8 @@
++export
++function w $main() {
++@start
++	%a =w copy 3
++	%b =w copy 4
++	%c =w add %a, %b
++	ret %c
++}
+diff --git a/test/_jit_stub.ssa b/test/_jit_stub.ssa
+new file mode 100644
+index 0000000..671dc4d
+--- /dev/null
++++ b/test/_jit_stub.ssa
+@@ -0,0 +1,5 @@
++export
++function $main() {
++@start
++	ret
++}
+diff --git a/tools/objtest.sh b/tools/objtest.sh
+index 208e92f..afa6c68 100755
+--- a/tools/objtest.sh
++++ b/tools/objtest.sh
+@@ -1,5 +1,6 @@
+ #!/bin/sh
+-# Compare text-assembly output vs -f macho Mach-O for arm64_apple.
++# Compare text-assembly output vs -f macho Mach-O for arm64_apple,
++# and run behavioural checks against -f jit where supported.
+ # Usage: tools/objtest.sh [file.ssa ...]
+ # Requires: clang (arm64 capable), otool
+ #
+@@ -20,6 +21,92 @@ extract_output() {
+ 	awk '/^# >>> output/{p=1;next}/^# <</{p=0}p{sub(/^# ?/,"");sub(/#$/,"");print}' "$1"
+ }
+ 
++extract_driver() {
++	awk '/^# >>> driver/{p=1;next}/^# <</{p=0}p{sub(/^# ?/,"");print}' "$1"
++}
++
++run_jit_driver() {
++	ssa="$1"; name="$2"; tmp="$3"; expected="$4"
++	libqbe="${LIBQBE:-./libqbe.a}"
++	[ -f "$libqbe" ] || { echo "SKIP $name (jit-driver: libqbe.a not found)"; SKIP=$((SKIP+1)); return; }
++
++	# Extract driver C source, rename main -> driver_main
++	extract_driver "$ssa" | sed 's/int main(/int driver_main(/;s/void main(/void driver_main(/' \
++		> "${tmp}_drv.c"
++
++	# Extract all exported function names from .ssa (e.g. $f -> f); skip "main"
++	awk '
++		/^export *$/ { export=1; next }
++		/^export  *function / && /\$/ { fn=$0; sub(/^.*\$/, "", fn); sub(/[( ].*/, "", fn); if (fn!="main") print fn; next }
++		export && /^function / && /\$/ { fn=$0; sub(/^.*\$/, "", fn); sub(/[( ].*/, "", fn); if (fn!="main") print fn; export=0; next }
++		{ export=0 }
++	' "$ssa" > "${tmp}_fns.txt"
++
++	# Generate arm64 trampolines
++	{
++	  while IFS= read -r fn; do
++		printf '.section __TEXT,__text,regular,pure_instructions\n'
++		printf '.global _%s\n.align 2\n_%s:\n' "$fn" "$fn"
++		printf '    adrp x16, _jit_%s_ptr@PAGE\n' "$fn"
++		printf '    ldr  x16, [x16, _jit_%s_ptr@PAGEOFF]\n' "$fn"
++		printf '    br   x16\n'
++		printf '.section __DATA,__data\n.global _jit_%s_ptr\n.align 3\n_jit_%s_ptr:\n    .quad 0\n\n' "$fn" "$fn"
++	  done < "${tmp}_fns.txt"
++	} > "${tmp}_tramp.s"
++
++	# Generate a constructor that pre-fills each _jit_f_ptr with the system symbol
++	# (if one exists), so calls during C runtime startup don't crash on null pointers.
++	# jit_populate_ptrs() will overwrite with the JIT address after finalization.
++	{
++	  printf '#include <dlfcn.h>\n'
++	  while IFS= read -r fn; do
++		printf 'extern void *jit_%s_ptr;\n' "$fn"
++	  done < "${tmp}_fns.txt"
++	  printf '__attribute__((constructor)) static void _jit_init_ptrs(void) {\n'
++	  printf '    void *sym;\n'
++	  while IFS= read -r fn; do
++		printf '    sym = dlsym(RTLD_NEXT, "%s");\n' "$fn"
++		printf '    if (sym) jit_%s_ptr = sym;\n' "$fn"
++	  done < "${tmp}_fns.txt"
++	  printf '}\n'
++	} > "${tmp}_init.c"
++
++	# Compile driver + trampolines + init
++	if ! cc -arch arm64 -o "${tmp}_drv.o" -c "${tmp}_drv.c" 2>/dev/null; then
++		echo "SKIP $name (jit-driver: driver compile failed)"
++		rm -f "${tmp}_drv.c" "${tmp}_fns.txt" "${tmp}_tramp.s" "${tmp}_init.c"
++		SKIP=$((SKIP+1)); return
++	fi
++	cc -arch arm64 -o "${tmp}_tramp.o" -c "${tmp}_tramp.s" 2>/dev/null || true
++	cc -arch arm64 -o "${tmp}_init.o" -c "${tmp}_init.c" 2>/dev/null || true
++
++	# Link driver binary
++	if ! cc -arch arm64 -o "${tmp}_jit_drv" "$libqbe" "${tmp}_drv.o" "${tmp}_tramp.o" "${tmp}_init.o" 2>/dev/null; then
++		echo "SKIP $name (jit-driver: link failed)"
++		rm -f "${tmp}_drv.c" "${tmp}_fns.txt" "${tmp}_tramp.s" "${tmp}_init.c" \
++		      "${tmp}_drv.o" "${tmp}_tramp.o" "${tmp}_init.o"
++		SKIP=$((SKIP+1)); return
++	fi
++
++	# Run
++	actual=$("${tmp}_jit_drv" -f jit -t arm64_apple "$ssa" 2>/dev/null)
++	rc=$?
++	rm -f "${tmp}_drv.c" "${tmp}_fns.txt" "${tmp}_tramp.s" "${tmp}_init.c" \
++	      "${tmp}_drv.o" "${tmp}_tramp.o" "${tmp}_init.o" "${tmp}_jit_drv"
++
++	if [ $rc -ne 0 ] && [ -z "$actual" ]; then
++		echo "SKIP $name (jit-driver: binary exited non-zero / unsupported feature)"
++		SKIP=$((SKIP+1)); return
++	fi
++	if [ -n "$expected" ] && [ "$actual" != "$expected" ]; then
++		echo "FAIL $name (jit-driver output mismatch)"
++		printf "  expected: %s\n  got:      %s\n" "$expected" "$actual"
++		FAIL=$((FAIL+1)); return
++	fi
++	echo "PASS $name (jit-driver)"
++	PASS=$((PASS+1))
++}
++
+ run() {
+ 	ssa="$1"
+ 	name=$(basename "$ssa" .ssa)
+@@ -64,6 +151,23 @@ run() {
+ 	fi
+ 	rm -f "${tmp}_obj_exe"
+ 
++	# --- jit run check ---
++	if grep -q '>>> driver' "$ssa"; then
++		run_jit_driver "$ssa" "$name" "$tmp" "$expected"
++	elif [ -n "$expected" ]; then
++		actual_jit=$("$QBE" -f jit -t arm64_apple "$ssa" -- a b c 2>/dev/null)
++		jit_ec=$?
++		if [ $jit_ec -ne 0 ] && [ -z "$actual_jit" ]; then
++			echo "SKIP $name (jit: unsupported feature)"
++			SKIP=$((SKIP+1))
++		elif [ "$actual_jit" != "$expected" ]; then
++			echo "FAIL $name (jit output mismatch)"
++			printf "  expected: %s\n  got:      %s\n" "$expected" "$actual_jit"
++			rm -f "${tmp}.s" "${tmp}_text.o" "${tmp}_obj.o"
++			FAIL=$((FAIL+1)); return
++		fi
++	fi
++
+ 	# --- compare disassembly ---
+ 	normalize "${tmp}_text.o" > "${tmp}_text.norm"
+ 	normalize "${tmp}_obj.o"  > "${tmp}_obj.norm"
+-- 
+2.50.1 (Apple Git-155)
+

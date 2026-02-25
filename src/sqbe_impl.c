@@ -469,6 +469,9 @@ void sq_init(SqConfiguration* config) {
   if (config->format == SQ_FORMAT_OBJ_MACHO && GC(T).apple) {
     global_context.main__objmode = 1;
     global_context.main__macho_ctx = macho_new();
+  } else if (config->format == SQ_FORMAT_JIT && GC(T).apple) {
+    global_context.main__jitmode = 1;
+    global_context.main__jit_ctx = jit_new();
   }
 
   global_context.main__outf = config->output;
@@ -497,6 +500,19 @@ bool sq_shutdown(void) {
       macho_emitfin_obj(global_context.main__macho_ctx);
       macho_write(global_context.main__macho_ctx, global_context.main__outf);
       macho_free(global_context.main__macho_ctx);
+    } else if (global_context.main__jitmode) {
+      int (*entry)(int, char**);
+      int ec;
+      jit_emitfin_fp(global_context.main__jit_ctx);
+      jit_finalize(global_context.main__jit_ctx);
+      jit_populate_ptrs(global_context.main__jit_ctx);
+      *(void**)&entry = jit_lookup(global_context.main__jit_ctx, "_main");
+      if (!entry) {
+        die("jit: no _main function");
+      }
+      ec = entry(0, NULL); // jit_argc, jit_argv);  TODO XXX
+      jit_free(global_context.main__jit_ctx);
+      exit(ec);
     } else {
       GC(T).emitfin(global_context.main__outf);
     }
