@@ -667,7 +667,7 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
                 if line.startswith("#include <assert.h>"):
                     out.write("/* skipping assert.h */\n")
                     continue
-                if line.startswith("#include <dlfcn.h>"):
+                if file == "main.c" and line.startswith("#include <dlfcn.h>"):
                     out.write("/* skipping dlfcn.h */\n")
                     continue
                 if line.strip().startswith('#include "ops.h"') or line.strip().startswith(
