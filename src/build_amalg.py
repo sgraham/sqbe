@@ -413,11 +413,13 @@ def staticize_prototypes(contents):
         if (line.startswith("void ") or line.startswith("uint32_t ") or line.startswith("char *")
                 or line.startswith("int ") or line.startswith("uint ") or line.startswith("bits ")
                 or line.startswith("Ins *") or line.startswith("Ref ") or
-                line.startswith("MachoCtx*") or line.startswith("Blk *")) and line.endswith(");"):
+                line.startswith("MachoCtx*") or line.startswith("Blk *") or
+                line.startswith("JitCtx*") or line.startswith("void* ")) and line.endswith(");"):
             line = "static " + line
         elif (line.startswith("extern Target T")
               or line.startswith("extern GlobalContext global_context")
-              or line.startswith("extern Op ")):
+              or line.startswith("extern Op ")
+              or line.startswith("uint8_t arm64cond")):
             line = "static " + line.replace("extern ", "")
         result.append(line)
     return "\n".join(result)
@@ -588,6 +590,10 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
                 contents = remove_lines_range(contents, "static Target *tlist", "};")
                 contents = remove_function(contents, "void", "reinit_global_context")
 
+            if file == "arm64/apple_shared.c":
+                contents = contents.replace("uint8_t arm64cond",
+                                            "static uint8_t arm64cond")
+
             if file == "util.c":
                 contents = remove_function(contents, "void *", "emalloc")
                 contents = remove_function(contents, "void *", "alloc")
@@ -660,6 +666,9 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
                     continue
                 if line.startswith("#include <assert.h>"):
                     out.write("/* skipping assert.h */\n")
+                    continue
+                if line.startswith("#include <dlfcn.h>"):
+                    out.write("/* skipping dlfcn.h */\n")
                     continue
                 if line.strip().startswith('#include "ops.h"') or line.strip().startswith(
                         '#include "../ops.h"'):
