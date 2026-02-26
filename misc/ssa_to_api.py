@@ -141,6 +141,23 @@ TYPE_MAP = {
     'sh': 'sq_type_shalf', 'uh': 'sq_type_uhalf',
 }
 
+# Two-operand: sq_i_OP(type, a0, a1) -> SqRef  (has _into variant)
+_TWO_OP_TYPED = {
+    'add', 'sub', 'mul', 'div', 'rem', 'udiv', 'urem',
+    'and', 'or', 'xor', 'sar', 'shr', 'shl',
+    'ceqw', 'cnew', 'csgew', 'csgtw', 'cslew', 'csltw',
+    'cugew', 'cugtw', 'culew', 'cultw',
+    'ceql', 'cnel', 'csgel', 'csgtl', 'cslel', 'csltl',
+    'cugel', 'cugtl', 'culel', 'cultl',
+    'ceqs', 'cges', 'cgts', 'cles', 'clts', 'cnes', 'cos', 'cuos',
+    'ceqd', 'cged', 'cgtd', 'cled', 'cltd', 'cned', 'cod', 'cuod',
+}
+
+# One-operand with type: sq_i_OP(type, a0) -> SqRef  (has _into variant)
+_ONE_OP_TYPED = {
+    'neg', 'copy',
+}
+
 
 # ---------------------------------------------------------------------------
 # Parser
@@ -236,9 +253,9 @@ class Parser:
             return f'sq_ref_extern("{name}")'
 
     def _sfloat(self, hex_str):
-        import struct, math
+        import struct
         try:
-            val = int(hex_str, 16) if hex_str.startswith(('0x', '0X')) else int(hex_str)
+            val = int(hex_str, 16)
             f = struct.unpack('f', struct.pack('I', val & 0xFFFFFFFF))[0]
             return f'sq_const_single({_fmt_float(f)}f)'
         except (ValueError, struct.error):
@@ -247,7 +264,7 @@ class Parser:
     def _dfloat(self, hex_str):
         import struct
         try:
-            val = int(hex_str, 16) if hex_str.startswith(('0x', '0X')) else int(hex_str)
+            val = int(hex_str, 16)
             d = struct.unpack('d', struct.pack('Q', val & 0xFFFFFFFFFFFFFFFF))[0]
             return f'sq_const_double({_fmt_float(d)})'
         except (ValueError, struct.error):
@@ -448,14 +465,47 @@ class Parser:
         args = self._parse_instr_args(op)
         return {'dest': dest, 'type': itype, 'op': op, 'args': args}
 
+    def _parse_raw_val(self):
+        """Parse a value, returning raw (kind, val) tuple for later resolution."""
+        t = self.peek()
+        if t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT'):
+            self.advance()
+            return (t.kind, t.val)
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: expected value, got {t}")
+
+    def _resolve_raw_val(self, raw):
+        """Resolve a raw (kind, val) tuple into C code string."""
+        kind, val = raw
+        if kind == 'TMP':
+            return mangle_tmp(val)
+        elif kind == 'SYM':
+            return self._resolve_sym(val)
+        elif kind == 'NUM':
+            return f'sq_const_int({val})'
+        elif kind == 'SFLOAT':
+            return self._sfloat(val)
+        elif kind == 'DFLOAT':
+            return self._dfloat(val)
+        else:
+            raise ParseError(f"cannot resolve value: ({kind}, {val})")
+
     def _parse_instr_args(self, op):
         """Parse instruction arguments based on the specific instruction."""
         if op == 'ret':
-            # 0 or 1 value
             t = self.peek()
             if t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT'):
-                return [self.parse_val()]
+                return [self._parse_raw_val()]
             return []
+
+        if op in _TWO_OP_TYPED:
+            a0 = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            a1 = self._parse_raw_val()
+            return [a0, a1]
+
+        if op in _ONE_OP_TYPED:
+            return [self._parse_raw_val()]
 
         raise ParseError(f"unsupported instruction: {op}")
 
@@ -465,13 +515,9 @@ class Parser:
         used_before_def = set()
         for blk in blocks:
             for raw in instrs[blk]:
-                # Scan for TMP references in args
                 for a in raw['args']:
-                    if isinstance(a, str) and a.startswith('v_'):
-                        # This is a resolved tmp ref - extract original name
-                        pass
-                # For now, forward refs will be populated when we have
-                # phi and more complex instructions. Placeholder.
+                    if isinstance(a, tuple) and a[0] == 'TMP' and a[1] not in defined:
+                        used_before_def.add(a[1])
                 if raw['dest']:
                     defined.add(raw['dest'])
         return used_before_def
@@ -480,15 +526,39 @@ class Parser:
         """Emit C code for one instruction."""
         op = raw['op']
         dest = raw['dest']
+        itype = raw['type']
         args = raw['args']
 
         if op == 'ret':
             if args:
-                self.emit(f'sq_i_ret({args[0]});')
+                self.emit(f'sq_i_ret({self._resolve_raw_val(args[0])});')
             else:
                 self.emit('sq_i_ret_void();')
+            return
+
+        if op in _TWO_OP_TYPED:
+            a0 = self._resolve_raw_val(args[0])
+            a1 = self._resolve_raw_val(args[1])
+            ctype = itype or 'sq_type_word'
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}, {a1}')
+            return
+
+        if op in _ONE_OP_TYPED:
+            a0 = self._resolve_raw_val(args[0])
+            ctype = itype or 'sq_type_word'
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}')
+            return
+
+        raise ParseError(f"unsupported instruction in emit: {op}")
+
+    def _emit_dest(self, dest, forward_refs, func, args_str):
+        """Emit an instruction call, handling dest assignment and _into variants."""
+        if dest is None:
+            self.emit(f'{func}({args_str});')
+        elif dest in forward_refs:
+            self.emit(f'{func}_into({mangle_tmp(dest)}, {args_str});')
         else:
-            raise ParseError(f"unsupported instruction in emit: {op}")
+            self.emit(f'SqRef {mangle_tmp(dest)} = {func}({args_str});')
 
 
 # ---------------------------------------------------------------------------
