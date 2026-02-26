@@ -158,6 +158,11 @@ _ONE_OP_TYPED = {
     'neg', 'copy',
 }
 
+# Void two-operand store instructions: sq_i_OP(val, addr)  (no type, no dest)
+_STORE_INSTRS = {
+    'storeb', 'storeh', 'storew', 'storel', 'stores', 'stored',
+}
+
 
 # ---------------------------------------------------------------------------
 # Parser
@@ -487,6 +492,8 @@ class Parser:
             return self._sfloat(val)
         elif kind == 'DFLOAT':
             return self._dfloat(val)
+        elif kind == 'BLK':
+            return mangle_block(val)
         else:
             raise ParseError(f"cannot resolve value: ({kind}, {val})")
 
@@ -506,6 +513,44 @@ class Parser:
 
         if op in _ONE_OP_TYPED:
             return [self._parse_raw_val()]
+
+        if op in _STORE_INSTRS:
+            # storew val, addr  (no type, no dest)
+            a0 = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            a1 = self._parse_raw_val()
+            return [a0, a1]
+
+        if op == 'jmp':
+            # jmp @label
+            blk = self.expect('BLK')
+            return [('BLK', blk.val)]
+
+        if op == 'jnz':
+            # jnz %cond, @true, @false
+            cond = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            btrue = self.expect('BLK')
+            self.expect('PUNCT', ',')
+            bfalse = self.expect('BLK')
+            return [cond, ('BLK', btrue.val), ('BLK', bfalse.val)]
+
+        if op == 'phi':
+            # phi @b0 val0, @b1 val1
+            pairs = []
+            while self.peek().kind == 'BLK':
+                blk = self.expect('BLK')
+                val = self._parse_raw_val()
+                pairs.append(('BLK', blk.val))
+                pairs.append(val)
+                if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                    self.advance()
+            if len(pairs) != 4:
+                raise ParseError(
+                    f"{self.filename}:{self.peek().line}: "
+                    f"phi requires exactly 2 predecessors, got {len(pairs)//2}"
+                )
+            return pairs
 
         raise ParseError(f"unsupported instruction: {op}")
 
@@ -547,6 +592,38 @@ class Parser:
             a0 = self._resolve_raw_val(args[0])
             ctype = itype or 'sq_type_word'
             self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}')
+            return
+
+        if op in _STORE_INSTRS:
+            a0 = self._resolve_raw_val(args[0])
+            a1 = self._resolve_raw_val(args[1])
+            self.emit(f'sq_i_{op}({a0}, {a1});')
+            return
+
+        if op == 'jmp':
+            self.emit(f'sq_i_jmp({mangle_block(args[0][1])});')
+            return
+
+        if op == 'jnz':
+            cond = self._resolve_raw_val(args[0])
+            btrue  = mangle_block(args[1][1])
+            bfalse = mangle_block(args[2][1])
+            self.emit(f'sq_i_jnz({cond}, {btrue}, {bfalse});')
+            return
+
+        if op == 'phi':
+            # args = [('BLK', b0), val0, ('BLK', b1), val1]
+            b0  = mangle_block(args[0][1])
+            v0  = self._resolve_raw_val(args[1])
+            b1  = mangle_block(args[2][1])
+            v1  = self._resolve_raw_val(args[3])
+            ctype = itype or 'sq_type_word'
+            # phi has no _into variant; dest is always freshly defined here
+            if dest in forward_refs:
+                # already declared — just assign (no SqRef re-declaration)
+                self.emit(f'{mangle_tmp(dest)} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
+            else:
+                self.emit(f'SqRef {mangle_tmp(dest)} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
             return
 
         raise ParseError(f"unsupported instruction in emit: {op}")
