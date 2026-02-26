@@ -149,6 +149,10 @@ void sq_type_add_field(SqType field);
 void sq_type_add_field_with_count(SqType field, uint32_t count);
 SqType sq_type_struct_end(void);
 
+// Create an opaque ("dark") type: type :name = align N { size }.
+// These are passed by pointer in the ABI, matching QBE's isdark semantics.
+SqType sq_type_opaque(const char* name, int align, uint64_t size);
+
 void sq_itemctx_activate(SqItemCtx ctx);
 
 // The returned SqItemCtx is already sq_itemctx_activate()d. If generating
@@ -189,6 +193,7 @@ SqRef sq_ref_for_symbol(SqSymbol sym);
 SqRef sq_ref_declare(void);
 
 SqRef sq_ref_extern(const char* name);
+SqRef sq_ref_extern_tls(const char* name);
 
 #define sq_func_param(type) sq_func_param_named(type, NULL)
 SqRef sq_func_param_named(SqType type, const char* name);
@@ -206,7 +211,9 @@ void sq_i_ret(SqRef val);
 void sq_i_jmp(SqBlock block);
 void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false);
 
-// TODO: only 2-branch phi supported currently
+SqRef sq_i_phia(SqType size_class, int narg, SqBlock* blocks, SqRef* vals);
+void sq_i_phia_into(SqRef into, SqType size_class, int narg, SqBlock* blocks, SqRef* vals);
+
 SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1);
 
 void sq_i_blit(SqRef from, SqRef to, int num_bytes);

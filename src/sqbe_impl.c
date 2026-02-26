@@ -696,7 +696,7 @@ SqSymbol sq_func_end(void) {
   G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
   G(curf)->nmem = 0;
   G(curf)->nblk = SQC(pfs.num_blocks);
-	G(curf)->rpo = vnew(G(nblk), sizeof G(curf)->rpo[0], PFn);
+  G(curf)->rpo = vnew(G(nblk), sizeof G(curf)->rpo[0], PFn);
   for (Blk* b = G(curf)->start; b; b = b->link) {
     SQ_ASSERT(b->dlink == 0);
   }
@@ -745,6 +745,16 @@ SqRef sq_ref_extern(const char* name) {
   return _internal_ref_to_sqref(ret);
 }
 
+SqRef sq_ref_extern_tls(const char* name) {
+  SQ_ERR_CHECK((SqRef){0});
+  Con c = {0};
+  c.sym.type = SThr;
+  c.type = CAddr;
+  c.sym.id = intern((char*)name);
+  Ref ret = newcon(&c, G(curf));
+  return _internal_ref_to_sqref(ret);
+}
+
 SqBlock sq_block_declare_named(const char* name) {
   SQ_ERR_CHECK((SqBlock){0});
   SQ_ASSERT(SQC(pfs.num_blocks) < SQC(pfs.max_blocks));
@@ -752,8 +762,8 @@ SqBlock sq_block_declare_named(const char* name) {
   Blk* blk = _sqblock_to_internal_blk(ret);
   memset(blk, 0, sizeof(Blk));
   blk->id = ret.u;
-	blk->ins = vnew(0, sizeof blk->ins[0], PFn);
-	blk->pred = vnew(0, sizeof blk->pred[0], PFn);
+  blk->ins = vnew(0, sizeof blk->ins[0], PFn);
+  blk->pred = vnew(0, sizeof blk->pred[0], PFn);
   SQ_NAMED_IF_DEBUG(blk->name, name);
   return ret;
 }
@@ -968,31 +978,46 @@ void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
   qbe_parse_closeblk();
 }
 
-SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
-  SQ_ERR_CHECK((SqRef){0});
+void sq_i_phia_into(SqRef into, SqType size_class, int narg, SqBlock* blocks, SqRef* vals) {
+  SQ_ERR_CHECK_VOID();
   if (SQC(pfs.ps) != PPhi || G(curb) == G(curf)->start) {
     err_("unexpected phi instruction");
-    return (SqRef){0};
+    return;
   }
 
-  Ref tmp = newtmp(NULL, Kx, G(curf));
-  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
+  Ref tmp = _sqref_to_internal_ref(into);
 
   Phi* phi = alloc(sizeof *phi);
   phi->to = tmp;
   phi->cls = size_class.u;
-  int i = 2;  // TODO: variable if necessary
-  phi->arg = vnew(i, sizeof(Ref), PFn);
-  phi->arg[0] = _sqref_to_internal_ref(val0);
-  phi->arg[1] = _sqref_to_internal_ref(val1);
-  phi->blk = vnew(i, sizeof(Blk*), PFn);
-  phi->blk[0] = _sqblock_to_internal_blk(block0);
-  phi->blk[1] = _sqblock_to_internal_blk(block1);
-  phi->narg = i;
+  phi->arg = vnew(narg, sizeof(Ref), PFn);
+  for (int i = 0; i < narg; ++i) {
+    phi->arg[i] = _sqref_to_internal_ref(vals[i]);
+  }
+  phi->blk = vnew(narg, sizeof(Blk*), PFn);
+  for (int i = 0; i < narg; ++i) {
+    phi->blk[i] = _sqblock_to_internal_blk(blocks[i]);
+  }
+  phi->narg = narg;
   *G(plink) = phi;
   G(plink) = &phi->link;
   SQC(pfs.ps) = PPhi;
-  return _internal_ref_to_sqref(tmp);
+}
+
+SqRef sq_i_phia(SqType size_class, int narg, SqBlock* blocks, SqRef* vals) {
+  SQ_ERR_CHECK((SqRef){0});
+  Ref tmp = newtmp(NULL, Kx, G(curf));
+  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
+  SqRef sqtmp = _internal_ref_to_sqref(tmp);
+  sq_i_phia_into(sqtmp, size_class, narg, blocks, vals);
+  SQ_ERR_CHECK((SqRef){0});
+  return sqtmp;
+}
+
+SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
+  SqBlock blocks[2] = { block0, block1 };
+  SqRef vals[2] = { val0, val1 };
+  return sq_i_phia(size_class, 2, blocks, vals);
 }
 
 void sq_i_blit(SqRef from, SqRef to, int num_bytes) {
@@ -1376,5 +1401,32 @@ SqType sq_type_struct_end(void) {
   SQC(curty_build_n) = 0;
   SQC(curty_build_sz) = 0;
   SQC(curty_build_al) = 0;
+  return ret;
+}
+
+SqType sq_type_opaque(const char* name, int align, uint64_t size) {
+  SQ_ERR_CHECK((SqType){0});
+  vgrow(&GC(typ), SQC(ntyp) + 1);
+  SQC(curty) = &GC(typ)[SQC(ntyp)++];
+  SQC(curty)->isdark = 1;
+  SQC(curty)->isunion = 0;
+  SQC(curty)->size = size;
+  SQC(curty)->nunion = 1;
+  strncpy(SQC(curty)->name, name, NString - 1);
+  SQC(curty)->fields = vnew(1, sizeof SQC(curty)->fields[0], PHeap);
+  SQC(curty)->fields[0][0].type = FEnd;
+  int al = 0;
+  if (align > 0) {
+    for (al = 0; align /= 2; al++) {
+      // Nothing.
+    }
+  }
+  SQC(curty)->align = al;
+  if (GC(debug)['T']) {
+    fprintf(stderr, "\n> Parsed type:\n");
+    printtyp(SQC(curty), stderr);
+  }
+  SqType ret = {SQC(curty) - GC(typ)};
+  SQC(curty) = NULL;
   return ret;
 }

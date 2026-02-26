@@ -1,0 +1,1207 @@
+#!/usr/bin/env python3
+"""Translate QBE .ssa files to C code using the sqbe API."""
+
+import re
+import sys
+
+
+# ---------------------------------------------------------------------------
+# Tokenizer
+# ---------------------------------------------------------------------------
+
+class Token:
+    __slots__ = ('kind', 'val', 'line')
+    def __init__(self, kind, val, line=0):
+        self.kind = kind
+        self.val = val
+        self.line = line
+    def __repr__(self):
+        return f'Token({self.kind!r}, {self.val!r})'
+
+
+def tokenize(text):
+    tokens = []
+    i = 0
+    line = 1
+    while i < len(text):
+        c = text[i]
+        if c == '\n':
+            line += 1
+            i += 1
+            continue
+        if c in ' \t\r':
+            i += 1
+            continue
+        if c == '#':
+            while i < len(text) and text[i] != '\n':
+                i += 1
+            continue
+        if c == '"':
+            j = i + 1
+            s = ''
+            while j < len(text) and text[j] != '"':
+                if text[j] == '\\':
+                    j += 1
+                    if j < len(text):
+                        esc = text[j]
+                        if esc == 'n': s += '\n'
+                        elif esc == 't': s += '\t'
+                        elif esc == '\\': s += '\\'
+                        elif esc == '"': s += '"'
+                        elif esc == '0': s += '\0'
+                        else: s += esc
+                else:
+                    s += text[j]
+                j += 1
+            tokens.append(Token('STRING', s, line))
+            i = j + 1
+            continue
+        if c in '%$@:':
+            j = i + 1
+            while j < len(text) and (text[j].isalnum() or text[j] in '_.-'):
+                j += 1
+            name = text[i+1:j]
+            sigil_map = {'%': 'TMP', '$': 'SYM', '@': 'BLK', ':': 'TYP'}
+            tokens.append(Token(sigil_map[c], name, line))
+            i = j
+            continue
+        # s_XXXX float literal
+        if c == 's' and i+1 < len(text) and text[i+1] == '_':
+            j = i + 2
+            while j < len(text) and (text[j].isalnum() or text[j] in '_.+-'):
+                j += 1
+            tokens.append(Token('SFLOAT', text[i+2:j], line))
+            i = j
+            continue
+        # d_XXXX float literal
+        if c == 'd' and i+1 < len(text) and text[i+1] == '_':
+            j = i + 2
+            while j < len(text) and (text[j].isalnum() or text[j] in '_.+-'):
+                j += 1
+            tokens.append(Token('DFLOAT', text[i+2:j], line))
+            i = j
+            continue
+        # numbers (including negative)
+        if c == '-' or c.isdigit():
+            j = i + 1 if c == '-' else i
+            if c == '-' and (j >= len(text) or not text[j].isdigit()):
+                tokens.append(Token('PUNCT', '-', line))
+                i = j
+                continue
+            while j < len(text) and text[j].isdigit():
+                j += 1
+            if j < len(text) and text[j] == '.':
+                j += 1
+                while j < len(text) and text[j].isdigit():
+                    j += 1
+            tokens.append(Token('NUM', text[i:j], line))
+            i = j
+            continue
+        if c in '(){}=,+':
+            tokens.append(Token('PUNCT', c, line))
+            i += 1
+            continue
+        if c == '.' and i+2 < len(text) and text[i+1] == '.' and text[i+2] == '.':
+            tokens.append(Token('DOTS', '...', line))
+            i += 3
+            continue
+        if c.isalpha() or c == '_':
+            j = i
+            while j < len(text) and (text[j].isalnum() or text[j] == '_'):
+                j += 1
+            tokens.append(Token('WORD', text[i:j], line))
+            i = j
+            continue
+        i += 1
+    return tokens
+
+
+# ---------------------------------------------------------------------------
+# Name mangling
+# ---------------------------------------------------------------------------
+
+def mangle_tmp(name):
+    return 'v_' + re.sub(r'[^a-zA-Z0-9_]', '_', name)
+
+def mangle_block(name):
+    return 'b_' + re.sub(r'[^a-zA-Z0-9_]', '_', name)
+
+def mangle_sym(name):
+    return 'sym_' + re.sub(r'[^a-zA-Z0-9_]', '_', name)
+
+
+# ---------------------------------------------------------------------------
+# Type mapping
+# ---------------------------------------------------------------------------
+
+TYPE_MAP = {
+    'w': 'sq_type_word', 'l': 'sq_type_long',
+    's': 'sq_type_single', 'd': 'sq_type_double',
+    'sb': 'sq_type_sbyte', 'ub': 'sq_type_ubyte',
+    'sh': 'sq_type_shalf', 'uh': 'sq_type_uhalf',
+    'env': 'sq_type_env',
+}
+
+# Two-operand: sq_i_OP(type, a0, a1) -> SqRef  (has _into variant)
+_TWO_OP_TYPED = {
+    'add', 'sub', 'mul', 'div', 'rem', 'udiv', 'urem',
+    'and', 'or', 'xor', 'sar', 'shr', 'shl',
+    'ceqw', 'cnew', 'csgew', 'csgtw', 'cslew', 'csltw',
+    'cugew', 'cugtw', 'culew', 'cultw',
+    'ceql', 'cnel', 'csgel', 'csgtl', 'cslel', 'csltl',
+    'cugel', 'cugtl', 'culel', 'cultl',
+    'ceqs', 'cges', 'cgts', 'cles', 'clts', 'cnes', 'cos', 'cuos',
+    'ceqd', 'cged', 'cgtd', 'cled', 'cltd', 'cned', 'cod', 'cuod',
+}
+
+# One-operand with type: sq_i_OP(type, a0) -> SqRef  (has _into variant)
+_ONE_OP_TYPED = {
+    'neg', 'copy',
+    'vaarg',
+    'extsb', 'extub', 'extsh', 'extuh',
+    'stosi', 'stoui', 'dtosi', 'dtoui',
+    'swtof', 'uwtof', 'sltof', 'ultof',
+    'cast',
+}
+
+# One-operand WITHOUT type: sq_i_OP(a0) -> SqRef  (has _into variant)
+_ONE_OP_NOTYPE = {
+    'extsw', 'extuw', 'exts', 'truncd',
+}
+
+# Void one-operand instructions: sq_i_OP(a0)  (no type, no dest)
+_VOID_ONE_OP = {
+    'vastart',
+}
+
+# Void two-operand store instructions: sq_i_OP(val, addr)  (no type, no dest)
+_STORE_INSTRS = {
+    'storeb', 'storeh', 'storew', 'storel', 'stores', 'stored',
+}
+
+# Load instructions: sq_i_OP(type, addr) -> SqRef  (has _into variant)
+# loadw/loadl/loads/loadd map to sq_i_load with the corresponding type.
+_LOAD_GENERIC = {'loadw': 'sq_type_word', 'loadl': 'sq_type_long',
+                 'loads': 'sq_type_single', 'loadd': 'sq_type_double'}
+_LOAD_EXT = {
+    'load',  # generic: uses assignment type directly
+    'loadsb', 'loadub', 'loadsh', 'loaduh', 'loadsw', 'loaduw',
+}
+
+# Alloc instructions: sq_i_OP(size) -> SqRef  (no type param, has _into variant)
+_ALLOC_INSTRS = {'alloc4', 'alloc8', 'alloc16'}
+
+
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
+
+class ParseError(Exception):
+    pass
+
+
+class Parser:
+    def __init__(self, tokens, filename="<stdin>"):
+        self.tokens = tokens
+        self.pos = 0
+        self.filename = filename
+        self.lines = []
+        self.indent = 1
+        self.data_symbols = {}   # name -> C var for SqSymbol
+        self.func_symbols = {}   # name -> C var for SqSymbol
+        self.type_map = {}       # typename -> C var for SqType
+        self.tls_symbols = set() # names of thread-local data symbols
+        self.declared_vars = set()  # SqRef names declared in current function
+
+    def peek(self, offset=0):
+        p = self.pos + offset
+        return self.tokens[p] if p < len(self.tokens) else Token('EOF', '', 0)
+
+    def advance(self):
+        t = self.tokens[self.pos] if self.pos < len(self.tokens) else Token('EOF', '', 0)
+        self.pos += 1
+        return t
+
+    def expect(self, kind, val=None):
+        t = self.advance()
+        if t.kind != kind or (val is not None and t.val != val):
+            raise ParseError(f"{self.filename}:{t.line}: expected {kind} {val!r}, got {t}")
+        return t
+
+    def at_end(self):
+        return self.pos >= len(self.tokens)
+
+    def emit(self, s):
+        self.lines.append('  ' * self.indent + s)
+
+    def emit_raw(self, s):
+        self.lines.append(s)
+
+    # -----------------------------------------------------------------------
+    # Type parsing
+    # -----------------------------------------------------------------------
+
+    def parse_type(self):
+        """Try to parse a type. Returns C type string or None."""
+        t = self.peek()
+        if t.kind == 'WORD' and t.val in TYPE_MAP:
+            self.advance()
+            return TYPE_MAP[t.val]
+        elif t.kind == 'TYP':
+            self.advance()
+            if t.val in self.type_map:
+                return self.type_map[t.val]
+            raise ParseError(f"{self.filename}:{t.line}: unknown type :{t.val}")
+        return None
+
+    # -----------------------------------------------------------------------
+    # Value parsing
+    # -----------------------------------------------------------------------
+
+    def parse_val(self):
+        """Parse a value: %tmp, $sym, integer, s_/d_ float."""
+        t = self.peek()
+        if t.kind == 'TMP':
+            self.advance()
+            return mangle_tmp(t.val)
+        elif t.kind == 'SYM':
+            self.advance()
+            return self._resolve_sym(t.val)
+        elif t.kind == 'NUM':
+            self.advance()
+            return f'sq_const_int({t.val})'
+        elif t.kind == 'SFLOAT':
+            self.advance()
+            return self._sfloat(t.val)
+        elif t.kind == 'DFLOAT':
+            self.advance()
+            return self._dfloat(t.val)
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: expected value, got {t}")
+
+    def _resolve_sym(self, name):
+        if name in self.data_symbols:
+            return f'sq_ref_for_symbol({self.data_symbols[name]})'
+        else:
+            # Use extern ref for functions (handles forward refs and recursion).
+            return f'sq_ref_extern("{name}")'
+
+    def _sfloat(self, val_str):
+        import struct
+        # Decimal literal (e.g. s_1, s_-1, s_0.5) takes priority.
+        try:
+            f = float(val_str)
+            return f'sq_const_single({_fmt_float(f)}f)'
+        except ValueError:
+            pass
+        # Hex bit-pattern (e.g. s_3f800000).
+        try:
+            bits = int(val_str, 16)
+            f = struct.unpack('f', struct.pack('I', bits & 0xFFFFFFFF))[0]
+            return f'sq_const_single({_fmt_float(f)}f)'
+        except (ValueError, struct.error):
+            return f'sq_const_single({val_str}f)'
+
+    def _dfloat(self, val_str):
+        import struct
+        # Decimal literal (e.g. d_1, d_-1, d_16, d_0.5) takes priority.
+        try:
+            d = float(val_str)
+            return f'sq_const_double({_fmt_float(d)})'
+        except ValueError:
+            pass
+        # Hex bit-pattern (e.g. d_3ff0000000000000).
+        try:
+            bits = int(val_str, 16)
+            d = struct.unpack('d', struct.pack('Q', bits & 0xFFFFFFFFFFFFFFFF))[0]
+            return f'sq_const_double({_fmt_float(d)})'
+        except (ValueError, struct.error):
+            return f'sq_const_double({val_str})'
+
+    # -----------------------------------------------------------------------
+    # Top-level
+    # -----------------------------------------------------------------------
+
+    def parse(self):
+        self.emit_raw('#define SQBE_IMPLEMENTATION')
+        self.emit_raw('#include "sqbe.h"')
+        self.emit_raw('')
+        self.emit_raw('int main(int argc, char** argv) {')
+        self.emit('if (argc != 2) {')
+        self.indent += 1
+        self.emit('fprintf(stderr, "usage: %s <output.s>\\n", argv[0]);')
+        self.emit('return 1;')
+        self.indent -= 1
+        self.emit('}')
+        self.emit('SqConfiguration config = SQ_CONFIGURATION_DEFAULT;')
+        self.emit('config.output = fopen(argv[1], "wb");')
+        self.emit('sq_init(&config);')
+        self.emit('')
+
+        while not self.at_end():
+            self._parse_toplevel()
+
+        self.emit('')
+        self.emit('if (!sq_shutdown()) {')
+        self.indent += 1
+        self.emit('return 1;')
+        self.indent -= 1
+        self.emit('}')
+        self.emit('fclose(config.output);')
+        self.emit('return 0;')
+        self.emit_raw('}')
+
+    def _parse_toplevel(self):
+        linkage = self._parse_linkage()
+        t = self.peek()
+        if t.kind == 'WORD' and t.val == 'type':
+            self._parse_type_def()
+        elif t.kind == 'WORD' and t.val == 'data':
+            self._parse_data(linkage)
+        elif t.kind == 'WORD' and t.val == 'function':
+            self._parse_function(linkage)
+        elif t.kind == 'EOF':
+            return
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: unexpected at top level: {t}")
+
+    def _parse_linkage(self):
+        exported = False
+        tls = False
+        while True:
+            t = self.peek()
+            if t.kind == 'WORD' and t.val == 'export':
+                self.advance()
+                exported = True
+            elif t.kind == 'WORD' and t.val == 'thread':
+                if self.peek(1).kind == 'WORD' and self.peek(1).val == 'data':
+                    self.advance()  # consume 'thread', 'data' consumed by data parser
+                    tls = True
+                else:
+                    break
+            elif t.kind == 'WORD' and t.val == 'section':
+                self.advance()
+                self.expect('STRING')
+                if self.peek().kind == 'STRING':
+                    self.advance()
+            else:
+                break
+        return {'exported': exported, 'tls': tls}
+
+    def _linkage_str(self, info, align=0):
+        """Build a SqLinkage C expression from a linkage info dict."""
+        if not info['tls'] and align == 0:
+            return 'sq_linkage_export' if info['exported'] else 'sq_linkage_default'
+        exported_str = 'true' if info['exported'] else 'false'
+        tls_str = 'true' if info['tls'] else 'false'
+        return f'sq_linkage_create({align}, {exported_str}, {tls_str}, false, NULL, NULL)'
+
+    # -----------------------------------------------------------------------
+    # Type definitions
+    # -----------------------------------------------------------------------
+
+    _FIELD_TYPE_MAP = {
+        'b': 'sq_type_byte',  'h': 'sq_type_half',
+        'w': 'sq_type_word',  'l': 'sq_type_long',
+        's': 'sq_type_single','d': 'sq_type_double',
+    }
+
+    def _parse_type_def(self):
+        self.expect('WORD', 'type')
+        name_tok = self.expect('TYP')
+        name = name_tok.val
+        self.expect('PUNCT', '=')
+
+        align = 0
+        if self.peek().kind == 'WORD' and self.peek().val == 'align':
+            self.advance()
+            align = int(self.advance().val)
+
+        ty_var = 'ty_' + re.sub(r'[^a-zA-Z0-9_]', '_', name)
+        self.emit(f'SqType {ty_var};')
+        self.type_map[name] = ty_var
+
+        self.expect('PUNCT', '{')
+
+        t = self.peek()
+        if t.kind == 'NUM':
+            # Opaque ("dark") type: type :name = align N { SIZE }
+            # QBE passes these by pointer (isdark=1); sq_type_opaque replicates this.
+            size = int(self.advance().val)
+            self.expect('PUNCT', '}')
+            self.emit(f'{ty_var} = sq_type_opaque("{name}", {align}, {size});')
+        else:
+            self.emit('{')
+            self.indent += 1
+            self.emit(f'sq_type_struct_start("{name}", {align});')
+            if t.kind == 'PUNCT' and t.val == '{':
+                # Union: { { variant1 } { variant2 } ... } — use first variant only
+                self._parse_union_fields()
+            else:
+                self._parse_struct_fields()
+            self.expect('PUNCT', '}')
+            self.emit(f'{ty_var} = sq_type_struct_end();')
+            self.indent -= 1
+            self.emit('}')
+        self.emit('')
+
+    def _parse_struct_fields(self):
+        """Parse comma-separated struct field list until next '}'."""
+        while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
+            self._parse_one_type_field()
+            if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                self.advance()
+
+    def _parse_union_fields(self):
+        """Union: { { f1 } { f2 } } — emit first variant, skip rest."""
+        first = True
+        while self.peek().kind == 'PUNCT' and self.peek().val == '{':
+            self.expect('PUNCT', '{')
+            if first:
+                self._parse_struct_fields()
+                first = False
+            else:
+                depth = 1
+                while not self.at_end() and depth > 0:
+                    t = self.advance()
+                    if t.kind == 'PUNCT' and t.val == '{': depth += 1
+                    elif t.kind == 'PUNCT' and t.val == '}': depth -= 1
+                continue
+            self.expect('PUNCT', '}')
+
+    def _parse_one_type_field(self):
+        """Parse one struct field: (b|h|w|l|s|d|:type) [count]"""
+        t = self.peek()
+        if t.kind == 'TYP':
+            self.advance()
+            field_type = self.type_map.get(t.val)
+            if field_type is None:
+                raise ParseError(f"{self.filename}:{t.line}: unknown type :{t.val}")
+        elif t.kind == 'WORD' and t.val in self._FIELD_TYPE_MAP:
+            self.advance()
+            field_type = self._FIELD_TYPE_MAP[t.val]
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: expected field type, got {t}")
+
+        if self.peek().kind == 'NUM':
+            count = int(self.advance().val)
+            if count > 1:
+                self.emit(f'sq_type_add_field_with_count({field_type}, {count});')
+                return
+        self.emit(f'sq_type_add_field({field_type});')
+
+    # -----------------------------------------------------------------------
+    # Data definitions
+    # -----------------------------------------------------------------------
+
+    def _parse_data(self, linkage):
+        self.expect('WORD', 'data')
+        name = self.expect('SYM').val
+        self.expect('PUNCT', '=')
+
+        # optional: align N
+        align = 0
+        if self.peek().kind == 'WORD' and self.peek().val == 'align':
+            self.advance()
+            align = int(self.advance().val)
+
+        self.expect('PUNCT', '{')
+
+        # Pre-declare the symbol at outer scope so functions can reference it.
+        sym_var = mangle_sym(name)
+        self.emit(f'SqSymbol {sym_var};')
+        self.data_symbols[name] = sym_var
+        if linkage['tls']:
+            self.tls_symbols.add(name)
+
+        self.emit('{')
+        self.indent += 1
+        linkage_str = self._linkage_str(linkage, align)
+        self.emit(f'sq_data_start({linkage_str}, "{name}");')
+
+        while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
+            t = self.peek()
+            if t.kind != 'WORD':
+                raise ParseError(f"{self.filename}:{t.line}: expected data member type, got {t}")
+            mtype = self.advance().val
+
+            if mtype == 'z':
+                # zero fill: z N
+                n_tok = self.advance()
+                n = int(n_tok.val)
+                for _ in range(n):
+                    self.emit('sq_data_byte(0);')
+            elif mtype == 'b':
+                t2 = self.peek()
+                if t2.kind == 'STRING':
+                    self.advance()
+                    self.emit(f'sq_data_string("{c_escape(t2.val)}");')
+                else:
+                    val = self._data_num_val(mtype)
+                    self.emit(f'sq_data_byte({val});')
+            elif mtype == 'h':
+                val = self._data_num_val(mtype)
+                self.emit(f'sq_data_half({val});')
+            elif mtype == 'w':
+                self._emit_data_member('sq_data_word', 'sq_data_ref')
+            elif mtype == 'l':
+                self._emit_data_member('sq_data_long', 'sq_data_ref')
+            elif mtype == 's':
+                val = self._data_float_val('s')
+                self.emit(f'sq_data_single({val}f);')
+            elif mtype == 'd':
+                val = self._data_float_val('d')
+                self.emit(f'sq_data_double({val});')
+            else:
+                raise ParseError(f"{self.filename}:{t.line}: unknown data member type: {mtype}")
+
+            if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                self.advance()
+
+        self.expect('PUNCT', '}')
+        self.emit(f'{sym_var} = sq_data_end();')
+        self.indent -= 1
+        self.emit('}')
+        self.emit('')
+
+    def _data_num_val(self, mtype):
+        """Parse a numeric literal for a data member."""
+        t = self.peek()
+        if t.kind == 'NUM':
+            self.advance()
+            return t.val
+        raise ParseError(f"{self.filename}:{t.line}: expected number in data member, got {t}")
+
+    def _data_float_val(self, mtype):
+        """Parse a float literal for a data member (returns C float string)."""
+        t = self.peek()
+        if t.kind == 'SFLOAT':
+            self.advance()
+            return self._sfloat(t.val).replace('sq_const_single(', '').rstrip('f)')
+        if t.kind == 'DFLOAT':
+            self.advance()
+            return self._dfloat(t.val).replace('sq_const_double(', '').rstrip(')')
+        if t.kind == 'NUM':
+            self.advance()
+            return t.val
+        raise ParseError(f"{self.filename}:{t.line}: expected float in data member, got {t}")
+
+    def _emit_data_member(self, int_fn, ref_fn):
+        """Emit a w or l data member which may be a number or symbol reference."""
+        t = self.peek()
+        if t.kind == 'SYM':
+            sym_name = self.advance().val
+            offset = 0
+            if self.peek().kind == 'PUNCT' and self.peek().val == '+':
+                self.advance()
+                offset = int(self.advance().val)
+            if sym_name in self.data_symbols:
+                sym_var = self.data_symbols[sym_name]
+            elif sym_name in self.func_symbols:
+                sym_var = self.func_symbols[sym_name]
+            else:
+                # Forward reference — declare a placeholder (unusual but handle it)
+                sym_var = mangle_sym(sym_name)
+                self.emit(f'/* warning: forward ref to ${sym_name} */')
+            self.emit(f'{ref_fn}({sym_var}, {offset});')
+        elif t.kind == 'NUM':
+            self.advance()
+            self.emit(f'{int_fn}({t.val});')
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: expected number or symbol in data member, got {t}")
+
+    def _skip_until_closing_brace(self):
+        """Skip past the next balanced { ... } including the keyword before it."""
+        # Skip tokens until we hit '{'
+        while not self.at_end():
+            t = self.advance()
+            if t.kind == 'PUNCT' and t.val == '{':
+                break
+        depth = 1
+        while not self.at_end() and depth > 0:
+            t = self.advance()
+            if t.kind == 'PUNCT' and t.val == '{':
+                depth += 1
+            elif t.kind == 'PUNCT' and t.val == '}':
+                depth -= 1
+
+    # -----------------------------------------------------------------------
+    # Function parsing
+    # -----------------------------------------------------------------------
+
+    def _parse_function(self, linkage):
+        self.expect('WORD', 'function')
+
+        ret_type = self.parse_type()
+        if ret_type is None:
+            ret_type = 'sq_type_void'
+
+        name = self.expect('SYM').val
+
+        # Parse parameters
+        self.expect('PUNCT', '(')
+        params = []
+        while not (self.peek().kind == 'PUNCT' and self.peek().val == ')'):
+            if self.peek().kind == 'DOTS':
+                self.advance()
+                break
+            ptype = self.parse_type()
+            if ptype is None:
+                raise ParseError(f"{self.filename}:{self.peek().line}: expected param type")
+            pname = None
+            if self.peek().kind == 'TMP':
+                pname = self.advance().val
+            params.append((ptype, pname))
+            if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                self.advance()
+        self.expect('PUNCT', ')')
+        self.expect('PUNCT', '{')
+
+        # Two-pass: first collect blocks and instructions, then emit.
+        # Pass 1: collect block names and raw instructions.
+        blocks, instrs = self._collect_blocks()
+
+        # Pass 2: determine forward references.
+        param_names = {p[1] for p in params if p[1]}
+        forward_refs = self._find_forward_refs(blocks, instrs, param_names)
+
+        # Detect params that are also redefined in the function body.  These
+        # need a phi at the loop merge point, so we pre-declare a multi-def
+        # ref for them and seed it with a copy of the param in the entry block.
+        param_redefs = {
+            raw['dest']
+            for blk in blocks for raw in instrs[blk]
+            if raw['dest'] in param_names and raw['dest'] not in forward_refs
+        }
+
+        # Declare the symbol var at outer scope so later functions can reference it.
+        sym_var = mangle_sym(name)
+        self.emit(f'SqSymbol {sym_var};')
+        self.func_symbols[name] = sym_var
+
+        # Each function body in its own C scope to avoid name collisions.
+        self.emit('{')
+        self.indent += 1
+        # Emit function start.
+        self.emit(f'sq_func_start({self._linkage_str(linkage)}, {ret_type}, "{name}");')
+        # For params that are redefined in the body, emit under an alias so the
+        # pre-declared multi-def ref can reuse the original name.
+        for ptype, pname in params:
+            if pname:
+                if pname in param_redefs:
+                    alias = f'{mangle_tmp(pname)}_param'
+                    self.emit(f'SqRef {alias} = sq_func_param_named({ptype}, "{pname}");')
+                else:
+                    self.emit(f'SqRef {mangle_tmp(pname)} = sq_func_param_named({ptype}, "{pname}");')
+            else:
+                self.emit(f'sq_func_param({ptype});')
+
+        # Emit forward declarations in order of first use (matches QBE's ID assignment).
+        for tmp_name in forward_refs:
+            self.emit(f'SqRef {mangle_tmp(tmp_name)} = sq_ref_declare();')
+
+        # Pre-declare multi-def refs for redefined params.
+        for pname in param_redefs:
+            self.emit(f'SqRef {mangle_tmp(pname)} = sq_ref_declare();')
+
+        # Track declared SqRef names for this function to avoid duplicate decls.
+        self.declared_vars = set(forward_refs) | set(param_names)
+
+        # Pre-declare all blocks.
+        if blocks:
+            self.emit(f'SqBlock {mangle_block(blocks[0])} = sq_func_get_entry_block();')
+            for blk in blocks[1:]:
+                self.emit(f'SqBlock {mangle_block(blk)} = sq_block_declare_named("{blk}");')
+
+        # Seed the phi for redefined params: in the entry block, copy the param
+        # value into the multi-def ref so the backend sees it as a predecessor def.
+        for ptype, pname in params:
+            if pname in param_redefs:
+                alias = f'{mangle_tmp(pname)}_param'
+                self.emit(f'sq_i_copy_into({mangle_tmp(pname)}, {ptype}, {alias});')
+
+        # Emit blocks and instructions.
+        for i, blk in enumerate(blocks):
+            self.emit('')
+            if i > 0:
+                self.emit(f'sq_block_start({mangle_block(blk)});')
+            for raw_instr in instrs[blk]:
+                self._emit_instr(raw_instr, set(forward_refs) | param_redefs)
+
+        self.emit(f'{sym_var} = sq_func_end();')
+        self.indent -= 1
+        self.emit('}')
+        self.emit('')
+
+    def _collect_blocks(self):
+        """Collect block names and tokenized instructions from function body."""
+        blocks = []
+        instrs = {}  # block_name -> list of (dest, type, op, token_ranges)
+        current_block = None
+
+        while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
+            t = self.peek()
+            if t.kind == 'BLK':
+                self.advance()
+                current_block = t.val
+                blocks.append(current_block)
+                instrs[current_block] = []
+            elif current_block is not None:
+                raw = self._parse_one_instr()
+                instrs[current_block].append(raw)
+            else:
+                raise ParseError(f"{self.filename}:{t.line}: instruction outside block")
+
+        self.expect('PUNCT', '}')
+        return blocks, instrs
+
+    def _parse_one_instr(self):
+        """Parse one instruction, returning a structured dict.
+
+        Each instruction knows its own argument grammar, so we parse
+        exactly the right number of tokens.
+        """
+        t = self.peek()
+
+        # Check for assignment: %tmp =T op args
+        dest = None
+        itype = None
+        if t.kind == 'TMP' and self.peek(1).kind == 'PUNCT' and self.peek(1).val == '=':
+            dest = self.advance().val
+            self.expect('PUNCT', '=')
+            itype = self.parse_type()
+
+        op = self.expect('WORD').val
+        args = self._parse_instr_args(op)
+        return {'dest': dest, 'type': itype, 'op': op, 'args': args}
+
+    def _parse_raw_val(self):
+        """Parse a value, returning raw (kind, val) tuple for later resolution."""
+        t = self.peek()
+        if t.kind == 'WORD' and t.val == 'thread':
+            self.advance()  # consume 'thread'
+            sym = self.expect('SYM')
+            return ('TLSSYM', sym.val)
+        elif t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT'):
+            self.advance()
+            return (t.kind, t.val)
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: expected value, got {t}")
+
+    def _resolve_raw_val(self, raw):
+        """Resolve a raw (kind, val) tuple into C code string."""
+        kind, val = raw
+        if kind == 'TMP':
+            return mangle_tmp(val)
+        elif kind == 'SYM':
+            return self._resolve_sym(val)
+        elif kind == 'TLSSYM':
+            return f'sq_ref_extern_tls("{val}")'
+        elif kind == 'NUM':
+            return f'sq_const_int({val})'
+        elif kind == 'SFLOAT':
+            return self._sfloat(val)
+        elif kind == 'DFLOAT':
+            return self._dfloat(val)
+        elif kind == 'BLK':
+            return mangle_block(val)
+        else:
+            raise ParseError(f"cannot resolve value: ({kind}, {val})")
+
+    def _parse_instr_args(self, op):
+        """Parse instruction arguments based on the specific instruction."""
+        if op == 'ret':
+            t = self.peek()
+            if t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT') or (
+                    t.kind == 'WORD' and t.val == 'thread'):
+                return [self._parse_raw_val()]
+            return []
+
+        if op in _TWO_OP_TYPED:
+            a0 = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            a1 = self._parse_raw_val()
+            return [a0, a1]
+
+        if op in _ONE_OP_TYPED:
+            return [self._parse_raw_val()]
+
+        if op in _ONE_OP_NOTYPE:
+            return [self._parse_raw_val()]
+
+        if op in _VOID_ONE_OP:
+            return [self._parse_raw_val()]
+
+        if op in _STORE_INSTRS:
+            # storew val, addr  (no type, no dest)
+            a0 = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            a1 = self._parse_raw_val()
+            return [a0, a1]
+
+        if op in _LOAD_GENERIC or op in _LOAD_EXT:
+            return [self._parse_raw_val()]
+
+        if op in _ALLOC_INSTRS:
+            return [self._parse_raw_val()]
+
+        if op == 'blit':
+            # blit src, dst, N
+            src = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            dst = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            n = self._parse_raw_val()
+            return [src, dst, n]
+
+        if op == 'jmp':
+            # jmp @label
+            blk = self.expect('BLK')
+            return [('BLK', blk.val)]
+
+        if op == 'jnz':
+            # jnz %cond, @true, @false
+            cond = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            btrue = self.expect('BLK')
+            self.expect('PUNCT', ',')
+            bfalse = self.expect('BLK')
+            return [cond, ('BLK', btrue.val), ('BLK', bfalse.val)]
+
+        if op == 'phi':
+            # phi @b0 val0, @b1 val1 [, @b2 val2 ...]
+            # Predecessors are comma-separated; stop when no comma follows.
+            pairs = []
+            while self.peek().kind == 'BLK':
+                blk = self.expect('BLK')
+                val = self._parse_raw_val()
+                pairs.append(('BLK', blk.val))
+                pairs.append(val)
+                if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                    self.advance()
+                else:
+                    break
+            return pairs
+
+        if op == 'call':
+            # call callee(T0 arg0, T1 arg1, ..., T argN)
+            # callee is $sym or %tmp
+            t = self.peek()
+            if t.kind == 'SYM':
+                callee = ('SYM', self.advance().val)
+            elif t.kind == 'TMP':
+                callee = ('TMP', self.advance().val)
+            else:
+                raise ParseError(f"{self.filename}:{t.line}: expected callee, got {t}")
+            self.expect('PUNCT', '(')
+            call_args = []
+            while not (self.peek().kind == 'PUNCT' and self.peek().val == ')'):
+                if self.peek().kind == 'DOTS':
+                    self.advance()
+                    call_args.append(('VARARGS',))
+                    if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                        self.advance()
+                    continue
+                atype = self.parse_type()
+                if atype is None:
+                    raise ParseError(
+                        f"{self.filename}:{self.peek().line}: expected arg type in call"
+                    )
+                aval = self._parse_raw_val()
+                call_args.append(('ARG', atype, aval))
+                if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                    self.advance()
+            self.expect('PUNCT', ')')
+            return [callee] + call_args
+
+        if op == 'hlt':
+            return []
+
+        raise ParseError(f"unsupported instruction: {op}")
+
+    def _find_forward_refs(self, blocks, instrs, param_names):
+        """Find temporaries that need sq_ref_declare() and _into treatment:
+        - used before defined (forward refs, e.g. in phis across back-edges)
+        - defined in more than one block (multi-defs need _into in every block
+          so the backend can insert the implicit phi at the merge point)
+
+        Returns a list: forward refs in first-use order, then any multi-defs
+        not already captured, in first-definition order.
+        """
+        # Find variables defined in more than one block.
+        def_block_count = {}
+        for blk in blocks:
+            for raw in instrs[blk]:
+                if raw['dest'] and raw['dest'] not in param_names:
+                    def_block_count[raw['dest']] = def_block_count.get(raw['dest'], 0) + 1
+        multi_defs = {v for v, cnt in def_block_count.items() if cnt > 1}
+
+        # Forward refs: first-use order.
+        defined = set(param_names)
+        seen = set()
+        ordered = []
+        for blk in blocks:
+            for raw in instrs[blk]:
+                for a in raw['args']:
+                    if isinstance(a, tuple) and a[0] == 'TMP' and a[1] not in defined:
+                        if a[1] not in seen:
+                            seen.add(a[1])
+                            ordered.append(a[1])
+                if raw['dest']:
+                    defined.add(raw['dest'])
+
+        # Append multi-defs not already captured as forward refs, in
+        # first-definition order (scan blocks again).
+        for blk in blocks:
+            for raw in instrs[blk]:
+                if raw['dest'] and raw['dest'] in multi_defs and raw['dest'] not in seen:
+                    seen.add(raw['dest'])
+                    ordered.append(raw['dest'])
+
+        return ordered
+
+    def _emit_instr(self, raw, forward_refs):
+        """Emit C code for one instruction."""
+        op = raw['op']
+        dest = raw['dest']
+        itype = raw['type']
+        args = raw['args']
+
+        if op == 'ret':
+            if args:
+                self.emit(f'sq_i_ret({self._resolve_raw_val(args[0])});')
+            else:
+                self.emit('sq_i_ret_void();')
+            return
+
+        if op in _TWO_OP_TYPED:
+            a0 = self._resolve_raw_val(args[0])
+            a1 = self._resolve_raw_val(args[1])
+            ctype = itype or 'sq_type_word'
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}, {a1}')
+            return
+
+        if op in _ONE_OP_TYPED:
+            a0 = self._resolve_raw_val(args[0])
+            ctype = itype or 'sq_type_word'
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}')
+            return
+
+        if op in _ONE_OP_NOTYPE:
+            a0 = self._resolve_raw_val(args[0])
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', a0)
+            return
+
+        if op in _VOID_ONE_OP:
+            a0 = self._resolve_raw_val(args[0])
+            self.emit(f'sq_i_{op}({a0});')
+            return
+
+        if op in _STORE_INSTRS:
+            a0 = self._resolve_raw_val(args[0])
+            a1 = self._resolve_raw_val(args[1])
+            self.emit(f'sq_i_{op}({a0}, {a1});')
+            return
+
+        if op in _LOAD_GENERIC:
+            a0 = self._resolve_raw_val(args[0])
+            # QBE normalises loadw to loadsw internally regardless of destination
+            # type; use the destination type so the IR matches.
+            if op == 'loadw':
+                ctype = itype or 'sq_type_word'
+                self._emit_dest(dest, forward_refs, 'sq_i_loadsw', f'{ctype}, {a0}')
+            else:
+                fixed_type = _LOAD_GENERIC[op]
+                self._emit_dest(dest, forward_refs, 'sq_i_load', f'{fixed_type}, {a0}')
+            return
+
+        if op in _LOAD_EXT:
+            a0 = self._resolve_raw_val(args[0])
+            ctype = itype or 'sq_type_word'
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}')
+            return
+
+        if op in _ALLOC_INSTRS:
+            a0 = self._resolve_raw_val(args[0])
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', a0)
+            return
+
+        if op == 'blit':
+            src = self._resolve_raw_val(args[0])
+            dst = self._resolve_raw_val(args[1])
+            # count is always a numeric literal (sq_i_blit takes int, not SqRef)
+            n = args[2][1] if args[2][0] == 'NUM' else self._resolve_raw_val(args[2])
+            self.emit(f'sq_i_blit({src}, {dst}, {n});')
+            return
+
+        if op == 'jmp':
+            self.emit(f'sq_i_jmp({mangle_block(args[0][1])});')
+            return
+
+        if op == 'jnz':
+            cond = self._resolve_raw_val(args[0])
+            btrue  = mangle_block(args[1][1])
+            bfalse = mangle_block(args[2][1])
+            self.emit(f'sq_i_jnz({cond}, {btrue}, {bfalse});')
+            return
+
+        if op == 'hlt':
+            self.emit('sq_i_hlt();')
+            return
+
+        if op == 'call':
+            # args = [callee, ...call_args]
+            callee_raw = args[0]
+            if callee_raw[0] == 'SYM':
+                func_expr = self._resolve_sym(callee_raw[1])
+            else:
+                func_expr = mangle_tmp(callee_raw[1])
+            result_type = itype or 'sq_type_void'
+            # Build SqCallArg list
+            ca_parts = []
+            for a in args[1:]:
+                if a[0] == 'VARARGS':
+                    ca_parts.append('sq_varargs_begin')
+                else:
+                    _, atype, aval = a
+                    aval_str = self._resolve_raw_val(aval)
+                    ca_parts.append(f'(SqCallArg){{{atype}, {aval_str}}}')
+            n = len(ca_parts)
+            if n <= 8:
+                if n == 0:
+                    call_expr = f'sq_i_call0({result_type}, {func_expr})'
+                else:
+                    call_expr = f'sq_i_call{n}({result_type}, {func_expr}, {", ".join(ca_parts)})'
+            else:
+                # sq_i_calla: build a compound array literal
+                arr = '{' + ', '.join(ca_parts) + '}'
+                call_expr = f'sq_i_calla({result_type}, {func_expr}, {n}, (SqCallArg[]){arr})'
+            if dest is None:
+                self.emit(f'{call_expr};')
+            elif dest in self.declared_vars:
+                self.emit(f'{mangle_tmp(dest)} = {call_expr};')
+            else:
+                self.declared_vars.add(dest)
+                self.emit(f'SqRef {mangle_tmp(dest)} = {call_expr};')
+            return
+
+        if op == 'phi':
+            # args = [('BLK', b0), val0, ('BLK', b1), val1, ...]
+            n = len(args) // 2
+            ctype = itype or 'sq_type_word'
+            already = dest in forward_refs or dest in self.declared_vars
+            vd = mangle_tmp(dest)
+            if already:
+                # Must use _into to write the phi result into the pre-declared ref.
+                # sq_i_phia_into works for any n (including 2).
+                blks = ', '.join(mangle_block(args[i*2][1]) for i in range(n))
+                vals = ', '.join(self._resolve_raw_val(args[i*2+1]) for i in range(n))
+                self.emit(f'SqBlock _phi_blks_{vd}[] = {{{blks}}};')
+                self.emit(f'SqRef _phi_vals_{vd}[] = {{{vals}}};')
+                self.emit(f'sq_i_phia_into({vd}, {ctype}, {n}, _phi_blks_{vd}, _phi_vals_{vd});')
+            elif n == 2:
+                b0, v0 = mangle_block(args[0][1]), self._resolve_raw_val(args[1])
+                b1, v1 = mangle_block(args[2][1]), self._resolve_raw_val(args[3])
+                self.declared_vars.add(dest)
+                self.emit(f'SqRef {vd} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
+            else:
+                blks = ', '.join(mangle_block(args[i*2][1]) for i in range(n))
+                vals = ', '.join(self._resolve_raw_val(args[i*2+1]) for i in range(n))
+                self.emit(f'SqBlock _phi_blks_{vd}[] = {{{blks}}};')
+                self.emit(f'SqRef _phi_vals_{vd}[] = {{{vals}}};')
+                self.declared_vars.add(dest)
+                self.emit(f'SqRef {vd} = sq_i_phia({ctype}, {n}, _phi_blks_{vd}, _phi_vals_{vd});')
+            return
+
+        raise ParseError(f"unsupported instruction in emit: {op}")
+
+    def _emit_dest(self, dest, forward_refs, func, args_str):
+        """Emit an instruction call, handling dest assignment and _into variants."""
+        if dest is None:
+            self.emit(f'{func}({args_str});')
+        elif dest in forward_refs:
+            self.emit(f'{func}_into({mangle_tmp(dest)}, {args_str});')
+        elif dest in self.declared_vars:
+            # Re-definition of same name in a different block — assign without redeclaring.
+            self.emit(f'{mangle_tmp(dest)} = {func}({args_str});')
+        else:
+            self.declared_vars.add(dest)
+            self.emit(f'SqRef {mangle_tmp(dest)} = {func}({args_str});')
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fmt_float(f):
+    import math
+    if math.isinf(f):
+        return '(1.0/0.0)' if f > 0 else '(-1.0/0.0)'
+    if math.isnan(f):
+        return '(0.0/0.0)'
+    s = repr(f)
+    if '.' not in s and 'e' not in s and 'E' not in s:
+        s += '.0'
+    return s
+
+
+def c_escape(s):
+    r = ''
+    for c in s:
+        if c == '\\': r += '\\\\'
+        elif c == '"': r += '\\"'
+        elif c == '\n': r += '\\n'
+        elif c == '\t': r += '\\t'
+        elif c == '\0': r += '\\0'
+        elif ord(c) < 32 or ord(c) > 126: r += f'\\x{ord(c):02x}'
+        else: r += c
+    return r
+
+
+def has_multiway_phi(text):
+    """Check if .ssa has phi nodes with 3+ predecessors."""
+    for line in text.split('\n'):
+        line = line.strip()
+        if '=' not in line:
+            continue
+        parts = line.split('=', 1)
+        if len(parts) != 2:
+            continue
+        rhs = parts[1].strip()
+        # Strip optional type prefix (w, l, s, d, sb, ub, sh, uh)
+        for t in ('sb ', 'ub ', 'sh ', 'uh ', 'w ', 'l ', 's ', 'd '):
+            if rhs.startswith(t):
+                rhs = rhs[len(t):]
+                break
+        if rhs.startswith('phi '):
+            if rhs.count('@') > 2:
+                return True
+    return False
+
+
+def translate(text, filename="<stdin>"):
+    tokens = tokenize(text)
+    parser = Parser(tokens, filename)
+    parser.parse()
+    return '\n'.join(parser.lines) + '\n'
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(f"usage: {sys.argv[0]} <file.ssa>", file=sys.stderr)
+        sys.exit(1)
+
+    filename = sys.argv[1]
+    with open(filename) as f:
+        text = f.read()
+
+    try:
+        c_code = translate(text, filename)
+        print(c_code, end='')
+    except ParseError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
