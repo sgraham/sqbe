@@ -651,8 +651,8 @@ class Parser:
             else:
                 self.emit(f'sq_func_param({ptype});')
 
-        # Emit forward declarations.
-        for tmp_name in sorted(forward_refs):
+        # Emit forward declarations in order of first use (matches QBE's ID assignment).
+        for tmp_name in forward_refs:
             self.emit(f'SqRef {mangle_tmp(tmp_name)} = sq_ref_declare();')
 
         # Track declared SqRef names for this function to avoid duplicate decls.
@@ -859,17 +859,24 @@ class Parser:
         raise ParseError(f"unsupported instruction: {op}")
 
     def _find_forward_refs(self, blocks, instrs, param_names):
-        """Find temporaries used before defined (excluding params)."""
+        """Find temporaries used before defined (excluding params).
+
+        Returns a list in order of first use, so sq_ref_declare() calls are
+        emitted in the same order as QBE would assign IDs (first-used first).
+        """
         defined = set(param_names)
-        used_before_def = set()
+        seen = set()
+        ordered = []
         for blk in blocks:
             for raw in instrs[blk]:
                 for a in raw['args']:
                     if isinstance(a, tuple) and a[0] == 'TMP' and a[1] not in defined:
-                        used_before_def.add(a[1])
+                        if a[1] not in seen:
+                            seen.add(a[1])
+                            ordered.append(a[1])
                 if raw['dest']:
                     defined.add(raw['dest'])
-        return used_before_def
+        return ordered
 
     def _emit_instr(self, raw, forward_refs):
         """Emit C code for one instruction."""
