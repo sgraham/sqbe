@@ -285,23 +285,37 @@ class Parser:
             # Use extern ref for functions (handles forward refs and recursion).
             return f'sq_ref_extern("{name}")'
 
-    def _sfloat(self, hex_str):
+    def _sfloat(self, val_str):
         import struct
+        # Decimal literal (e.g. s_1, s_-1, s_0.5) takes priority.
         try:
-            val = int(hex_str, 16)
-            f = struct.unpack('f', struct.pack('I', val & 0xFFFFFFFF))[0]
+            f = float(val_str)
+            return f'sq_const_single({_fmt_float(f)}f)'
+        except ValueError:
+            pass
+        # Hex bit-pattern (e.g. s_3f800000).
+        try:
+            bits = int(val_str, 16)
+            f = struct.unpack('f', struct.pack('I', bits & 0xFFFFFFFF))[0]
             return f'sq_const_single({_fmt_float(f)}f)'
         except (ValueError, struct.error):
-            return f'sq_const_single({hex_str}f)'
+            return f'sq_const_single({val_str}f)'
 
-    def _dfloat(self, hex_str):
+    def _dfloat(self, val_str):
         import struct
+        # Decimal literal (e.g. d_1, d_-1, d_16, d_0.5) takes priority.
         try:
-            val = int(hex_str, 16)
-            d = struct.unpack('d', struct.pack('Q', val & 0xFFFFFFFFFFFFFFFF))[0]
+            d = float(val_str)
+            return f'sq_const_double({_fmt_float(d)})'
+        except ValueError:
+            pass
+        # Hex bit-pattern (e.g. d_3ff0000000000000).
+        try:
+            bits = int(val_str, 16)
+            d = struct.unpack('d', struct.pack('Q', bits & 0xFFFFFFFFFFFFFFFF))[0]
             return f'sq_const_double({_fmt_float(d)})'
         except (ValueError, struct.error):
-            return f'sq_const_double({hex_str})'
+            return f'sq_const_double({val_str})'
 
     # -----------------------------------------------------------------------
     # Top-level
