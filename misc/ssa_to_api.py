@@ -411,6 +411,11 @@ class Parser:
         param_names = {p[1] for p in params if p[1]}
         forward_refs = self._find_forward_refs(blocks, instrs, param_names)
 
+        # Declare the symbol var at outer scope so later functions can reference it.
+        sym_var = mangle_sym(name)
+        self.emit(f'SqSymbol {sym_var};')
+        self.func_symbols[name] = sym_var
+
         # Each function body in its own C scope to avoid name collisions.
         self.emit('{')
         self.indent += 1
@@ -443,8 +448,7 @@ class Parser:
             for raw_instr in instrs[blk]:
                 self._emit_instr(raw_instr, forward_refs)
 
-        self.emit(f'SqSymbol {mangle_sym(name)} = sq_func_end();')
-        self.func_symbols[name] = mangle_sym(name)
+        self.emit(f'{sym_var} = sq_func_end();')
         self.indent -= 1
         self.emit('}')
         self.emit('')
@@ -588,6 +592,40 @@ class Parser:
                 )
             return pairs
 
+        if op == 'call':
+            # call callee(T0 arg0, T1 arg1, ..., T argN)
+            # callee is $sym or %tmp
+            t = self.peek()
+            if t.kind == 'SYM':
+                callee = ('SYM', self.advance().val)
+            elif t.kind == 'TMP':
+                callee = ('TMP', self.advance().val)
+            else:
+                raise ParseError(f"{self.filename}:{t.line}: expected callee, got {t}")
+            self.expect('PUNCT', '(')
+            call_args = []
+            while not (self.peek().kind == 'PUNCT' and self.peek().val == ')'):
+                if self.peek().kind == 'DOTS':
+                    self.advance()
+                    call_args.append(('VARARGS',))
+                    if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                        self.advance()
+                    continue
+                atype = self.parse_type()
+                if atype is None:
+                    raise ParseError(
+                        f"{self.filename}:{self.peek().line}: expected arg type in call"
+                    )
+                aval = self._parse_raw_val()
+                call_args.append(('ARG', atype, aval))
+                if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                    self.advance()
+            self.expect('PUNCT', ')')
+            return [callee] + call_args
+
+        if op == 'hlt':
+            return []
+
         raise ParseError(f"unsupported instruction: {op}")
 
     def _find_forward_refs(self, blocks, instrs, param_names):
@@ -669,6 +707,46 @@ class Parser:
             btrue  = mangle_block(args[1][1])
             bfalse = mangle_block(args[2][1])
             self.emit(f'sq_i_jnz({cond}, {btrue}, {bfalse});')
+            return
+
+        if op == 'hlt':
+            self.emit('sq_i_hlt();')
+            return
+
+        if op == 'call':
+            # args = [callee, ...call_args]
+            callee_raw = args[0]
+            if callee_raw[0] == 'SYM':
+                func_expr = self._resolve_sym(callee_raw[1])
+            else:
+                func_expr = mangle_tmp(callee_raw[1])
+            result_type = itype or 'sq_type_void'
+            # Build SqCallArg list
+            ca_parts = []
+            for a in args[1:]:
+                if a[0] == 'VARARGS':
+                    ca_parts.append('sq_varargs_begin')
+                else:
+                    _, atype, aval = a
+                    aval_str = self._resolve_raw_val(aval)
+                    ca_parts.append(f'(SqCallArg){{{atype}, {aval_str}}}')
+            n = len(ca_parts)
+            if n <= 8:
+                if n == 0:
+                    call_expr = f'sq_i_call0({result_type}, {func_expr})'
+                else:
+                    call_expr = f'sq_i_call{n}({result_type}, {func_expr}, {", ".join(ca_parts)})'
+            else:
+                # sq_i_calla: build a compound array literal
+                arr = '{' + ', '.join(ca_parts) + '}'
+                call_expr = f'sq_i_calla({result_type}, {func_expr}, {n}, (SqCallArg[]){arr})'
+            if dest is None:
+                self.emit(f'{call_expr};')
+            elif dest in self.declared_vars:
+                self.emit(f'{mangle_tmp(dest)} = {call_expr};')
+            else:
+                self.declared_vars.add(dest)
+                self.emit(f'SqRef {mangle_tmp(dest)} = {call_expr};')
             return
 
         if op == 'phi':
