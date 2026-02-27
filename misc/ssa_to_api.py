@@ -649,6 +649,15 @@ class Parser:
         param_names = {p[1] for p in params if p[1]}
         forward_refs = self._find_forward_refs(blocks, instrs, param_names)
 
+        # Detect params that are also redefined in the function body.  These
+        # need a phi at the loop merge point, so we pre-declare a multi-def
+        # ref for them and seed it with a copy of the param in the entry block.
+        param_redefs = {
+            raw['dest']
+            for blk in blocks for raw in instrs[blk]
+            if raw['dest'] in param_names and raw['dest'] not in forward_refs
+        }
+
         # Declare the symbol var at outer scope so later functions can reference it.
         sym_var = mangle_sym(name)
         self.emit(f'SqSymbol {sym_var};')
@@ -659,15 +668,25 @@ class Parser:
         self.indent += 1
         # Emit function start.
         self.emit(f'sq_func_start({linkage}, {ret_type}, "{name}");')
+        # For params that are redefined in the body, emit under an alias so the
+        # pre-declared multi-def ref can reuse the original name.
         for ptype, pname in params:
             if pname:
-                self.emit(f'SqRef {mangle_tmp(pname)} = sq_func_param_named({ptype}, "{pname}");')
+                if pname in param_redefs:
+                    alias = f'{mangle_tmp(pname)}_param'
+                    self.emit(f'SqRef {alias} = sq_func_param_named({ptype}, "{pname}");')
+                else:
+                    self.emit(f'SqRef {mangle_tmp(pname)} = sq_func_param_named({ptype}, "{pname}");')
             else:
                 self.emit(f'sq_func_param({ptype});')
 
         # Emit forward declarations in order of first use (matches QBE's ID assignment).
         for tmp_name in forward_refs:
             self.emit(f'SqRef {mangle_tmp(tmp_name)} = sq_ref_declare();')
+
+        # Pre-declare multi-def refs for redefined params.
+        for pname in param_redefs:
+            self.emit(f'SqRef {mangle_tmp(pname)} = sq_ref_declare();')
 
         # Track declared SqRef names for this function to avoid duplicate decls.
         self.declared_vars = set(forward_refs) | set(param_names)
@@ -678,13 +697,20 @@ class Parser:
             for blk in blocks[1:]:
                 self.emit(f'SqBlock {mangle_block(blk)} = sq_block_declare_named("{blk}");')
 
+        # Seed the phi for redefined params: in the entry block, copy the param
+        # value into the multi-def ref so the backend sees it as a predecessor def.
+        for ptype, pname in params:
+            if pname in param_redefs:
+                alias = f'{mangle_tmp(pname)}_param'
+                self.emit(f'sq_i_copy_into({mangle_tmp(pname)}, {ptype}, {alias});')
+
         # Emit blocks and instructions.
         for i, blk in enumerate(blocks):
             self.emit('')
             if i > 0:
                 self.emit(f'sq_block_start({mangle_block(blk)});')
             for raw_instr in instrs[blk]:
-                self._emit_instr(raw_instr, forward_refs)
+                self._emit_instr(raw_instr, set(forward_refs) | param_redefs)
 
         self.emit(f'{sym_var} = sq_func_end();')
         self.indent -= 1
@@ -873,11 +899,23 @@ class Parser:
         raise ParseError(f"unsupported instruction: {op}")
 
     def _find_forward_refs(self, blocks, instrs, param_names):
-        """Find temporaries used before defined (excluding params).
+        """Find temporaries that need sq_ref_declare() and _into treatment:
+        - used before defined (forward refs, e.g. in phis across back-edges)
+        - defined in more than one block (multi-defs need _into in every block
+          so the backend can insert the implicit phi at the merge point)
 
-        Returns a list in order of first use, so sq_ref_declare() calls are
-        emitted in the same order as QBE would assign IDs (first-used first).
+        Returns a list: forward refs in first-use order, then any multi-defs
+        not already captured, in first-definition order.
         """
+        # Find variables defined in more than one block.
+        def_block_count = {}
+        for blk in blocks:
+            for raw in instrs[blk]:
+                if raw['dest'] and raw['dest'] not in param_names:
+                    def_block_count[raw['dest']] = def_block_count.get(raw['dest'], 0) + 1
+        multi_defs = {v for v, cnt in def_block_count.items() if cnt > 1}
+
+        # Forward refs: first-use order.
         defined = set(param_names)
         seen = set()
         ordered = []
@@ -890,6 +928,15 @@ class Parser:
                             ordered.append(a[1])
                 if raw['dest']:
                     defined.add(raw['dest'])
+
+        # Append multi-defs not already captured as forward refs, in
+        # first-definition order (scan blocks again).
+        for blk in blocks:
+            for raw in instrs[blk]:
+                if raw['dest'] and raw['dest'] in multi_defs and raw['dest'] not in seen:
+                    seen.add(raw['dest'])
+                    ordered.append(raw['dest'])
+
         return ordered
 
     def _emit_instr(self, raw, forward_refs):
