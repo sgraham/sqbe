@@ -327,7 +327,7 @@ class Parser:
         if t.kind == 'WORD' and t.val == 'type':
             self._skip_until_closing_brace()  # stub
         elif t.kind == 'WORD' and t.val == 'data':
-            self._skip_until_closing_brace()  # stub
+            self._parse_data(linkage)
         elif t.kind == 'WORD' and t.val == 'function':
             self._parse_function(linkage)
         elif t.kind == 'EOF':
@@ -355,6 +355,122 @@ class Parser:
             else:
                 break
         return 'sq_linkage_export' if exported else 'sq_linkage_default'
+
+    # -----------------------------------------------------------------------
+    # Data definitions
+    # -----------------------------------------------------------------------
+
+    def _parse_data(self, linkage):
+        self.expect('WORD', 'data')
+        name = self.expect('SYM').val
+        self.expect('PUNCT', '=')
+
+        # optional: align N
+        if self.peek().kind == 'WORD' and self.peek().val == 'align':
+            self.advance()
+            self.advance()  # consume N (ignore it; sqbe doesn't expose alignment)
+
+        self.expect('PUNCT', '{')
+
+        # Pre-declare the symbol at outer scope so functions can reference it.
+        sym_var = mangle_sym(name)
+        self.emit(f'SqSymbol {sym_var};')
+        self.data_symbols[name] = sym_var
+
+        self.emit('{')
+        self.indent += 1
+        self.emit(f'sq_data_start({linkage}, "{name}");')
+
+        while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
+            t = self.peek()
+            if t.kind != 'WORD':
+                raise ParseError(f"{self.filename}:{t.line}: expected data member type, got {t}")
+            mtype = self.advance().val
+
+            if mtype == 'z':
+                # zero fill: z N
+                n_tok = self.advance()
+                n = int(n_tok.val)
+                for _ in range(n):
+                    self.emit('sq_data_byte(0);')
+            elif mtype == 'b':
+                t2 = self.peek()
+                if t2.kind == 'STRING':
+                    self.advance()
+                    self.emit(f'sq_data_string("{c_escape(t2.val)}");')
+                else:
+                    val = self._data_num_val(mtype)
+                    self.emit(f'sq_data_byte({val});')
+            elif mtype == 'h':
+                val = self._data_num_val(mtype)
+                self.emit(f'sq_data_half({val});')
+            elif mtype == 'w':
+                self._emit_data_member('sq_data_word', 'sq_data_ref')
+            elif mtype == 'l':
+                self._emit_data_member('sq_data_long', 'sq_data_ref')
+            elif mtype == 's':
+                val = self._data_float_val('s')
+                self.emit(f'sq_data_single({val}f);')
+            elif mtype == 'd':
+                val = self._data_float_val('d')
+                self.emit(f'sq_data_double({val});')
+            else:
+                raise ParseError(f"{self.filename}:{t.line}: unknown data member type: {mtype}")
+
+            if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                self.advance()
+
+        self.expect('PUNCT', '}')
+        self.emit(f'{sym_var} = sq_data_end();')
+        self.indent -= 1
+        self.emit('}')
+        self.emit('')
+
+    def _data_num_val(self, mtype):
+        """Parse a numeric literal for a data member."""
+        t = self.peek()
+        if t.kind == 'NUM':
+            self.advance()
+            return t.val
+        raise ParseError(f"{self.filename}:{t.line}: expected number in data member, got {t}")
+
+    def _data_float_val(self, mtype):
+        """Parse a float literal for a data member (returns C float string)."""
+        t = self.peek()
+        if t.kind == 'SFLOAT':
+            self.advance()
+            return self._sfloat(t.val).replace('sq_const_single(', '').rstrip('f)')
+        if t.kind == 'DFLOAT':
+            self.advance()
+            return self._dfloat(t.val).replace('sq_const_double(', '').rstrip(')')
+        if t.kind == 'NUM':
+            self.advance()
+            return t.val
+        raise ParseError(f"{self.filename}:{t.line}: expected float in data member, got {t}")
+
+    def _emit_data_member(self, int_fn, ref_fn):
+        """Emit a w or l data member which may be a number or symbol reference."""
+        t = self.peek()
+        if t.kind == 'SYM':
+            sym_name = self.advance().val
+            offset = 0
+            if self.peek().kind == 'PUNCT' and self.peek().val == '+':
+                self.advance()
+                offset = int(self.advance().val)
+            if sym_name in self.data_symbols:
+                sym_var = self.data_symbols[sym_name]
+            elif sym_name in self.func_symbols:
+                sym_var = self.func_symbols[sym_name]
+            else:
+                # Forward reference — declare a placeholder (unusual but handle it)
+                sym_var = mangle_sym(sym_name)
+                self.emit(f'/* warning: forward ref to ${sym_name} */')
+            self.emit(f'{ref_fn}({sym_var}, {offset});')
+        elif t.kind == 'NUM':
+            self.advance()
+            self.emit(f'{int_fn}({t.val});')
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: expected number or symbol in data member, got {t}")
 
     def _skip_until_closing_brace(self):
         """Skip past the next balanced { ... } including the keyword before it."""
