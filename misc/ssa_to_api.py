@@ -325,7 +325,7 @@ class Parser:
         linkage = self._parse_linkage()
         t = self.peek()
         if t.kind == 'WORD' and t.val == 'type':
-            self._skip_until_closing_brace()  # stub
+            self._parse_type_def()
         elif t.kind == 'WORD' and t.val == 'data':
             self._parse_data(linkage)
         elif t.kind == 'WORD' and t.val == 'function':
@@ -355,6 +355,99 @@ class Parser:
             else:
                 break
         return 'sq_linkage_export' if exported else 'sq_linkage_default'
+
+    # -----------------------------------------------------------------------
+    # Type definitions
+    # -----------------------------------------------------------------------
+
+    _FIELD_TYPE_MAP = {
+        'b': 'sq_type_byte',  'h': 'sq_type_half',
+        'w': 'sq_type_word',  'l': 'sq_type_long',
+        's': 'sq_type_single','d': 'sq_type_double',
+    }
+
+    def _parse_type_def(self):
+        self.expect('WORD', 'type')
+        name_tok = self.expect('TYP')
+        name = name_tok.val
+        self.expect('PUNCT', '=')
+
+        align = 0
+        if self.peek().kind == 'WORD' and self.peek().val == 'align':
+            self.advance()
+            align = int(self.advance().val)
+
+        ty_var = 'ty_' + re.sub(r'[^a-zA-Z0-9_]', '_', name)
+        self.emit(f'SqType {ty_var};')
+        self.type_map[name] = ty_var
+
+        self.emit('{')
+        self.indent += 1
+        self.emit(f'sq_type_struct_start("{name}", {align});')
+
+        self.expect('PUNCT', '{')
+
+        t = self.peek()
+        if t.kind == 'NUM':
+            # Opaque type: { SIZE } — emit empty struct, consume body
+            while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
+                self.advance()
+        elif t.kind == 'PUNCT' and t.val == '{':
+            # Union: { { variant1 } { variant2 } ... } — use first variant only
+            self._parse_union_fields()
+        else:
+            self._parse_struct_fields()
+
+        self.expect('PUNCT', '}')
+        self.emit(f'{ty_var} = sq_type_struct_end();')
+        self.indent -= 1
+        self.emit('}')
+        self.emit('')
+
+    def _parse_struct_fields(self):
+        """Parse comma-separated struct field list until next '}'."""
+        while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
+            self._parse_one_type_field()
+            if self.peek().kind == 'PUNCT' and self.peek().val == ',':
+                self.advance()
+
+    def _parse_union_fields(self):
+        """Union: { { f1 } { f2 } } — emit first variant, skip rest."""
+        first = True
+        while self.peek().kind == 'PUNCT' and self.peek().val == '{':
+            self.expect('PUNCT', '{')
+            if first:
+                self._parse_struct_fields()
+                first = False
+            else:
+                depth = 1
+                while not self.at_end() and depth > 0:
+                    t = self.advance()
+                    if t.kind == 'PUNCT' and t.val == '{': depth += 1
+                    elif t.kind == 'PUNCT' and t.val == '}': depth -= 1
+                continue
+            self.expect('PUNCT', '}')
+
+    def _parse_one_type_field(self):
+        """Parse one struct field: (b|h|w|l|s|d|:type) [count]"""
+        t = self.peek()
+        if t.kind == 'TYP':
+            self.advance()
+            field_type = self.type_map.get(t.val)
+            if field_type is None:
+                raise ParseError(f"{self.filename}:{t.line}: unknown type :{t.val}")
+        elif t.kind == 'WORD' and t.val in self._FIELD_TYPE_MAP:
+            self.advance()
+            field_type = self._FIELD_TYPE_MAP[t.val]
+        else:
+            raise ParseError(f"{self.filename}:{t.line}: expected field type, got {t}")
+
+        if self.peek().kind == 'NUM':
+            count = int(self.advance().val)
+            if count > 1:
+                self.emit(f'sq_type_add_field_with_count({field_type}, {count});')
+                return
+        self.emit(f'sq_type_add_field({field_type});')
 
     # -----------------------------------------------------------------------
     # Data definitions
