@@ -696,7 +696,7 @@ SqSymbol sq_func_end(void) {
   G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
   G(curf)->nmem = 0;
   G(curf)->nblk = SQC(pfs.num_blocks);
-	G(curf)->rpo = vnew(G(nblk), sizeof G(curf)->rpo[0], PFn);
+  G(curf)->rpo = vnew(G(nblk), sizeof G(curf)->rpo[0], PFn);
   for (Blk* b = G(curf)->start; b; b = b->link) {
     SQ_ASSERT(b->dlink == 0);
   }
@@ -752,8 +752,8 @@ SqBlock sq_block_declare_named(const char* name) {
   Blk* blk = _sqblock_to_internal_blk(ret);
   memset(blk, 0, sizeof(Blk));
   blk->id = ret.u;
-	blk->ins = vnew(0, sizeof blk->ins[0], PFn);
-	blk->pred = vnew(0, sizeof blk->pred[0], PFn);
+  blk->ins = vnew(0, sizeof blk->ins[0], PFn);
+  blk->pred = vnew(0, sizeof blk->pred[0], PFn);
   SQ_NAMED_IF_DEBUG(blk->name, name);
   return ret;
 }
@@ -968,7 +968,7 @@ void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
   qbe_parse_closeblk();
 }
 
-SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
+SqRef sq_i_phia(SqType size_class, int narg, SqBlock* blocks, SqRef* vals) {
   SQ_ERR_CHECK((SqRef){0});
   if (SQC(pfs.ps) != PPhi || G(curb) == G(curf)->start) {
     err_("unexpected phi instruction");
@@ -981,18 +981,37 @@ SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, Sq
   Phi* phi = alloc(sizeof *phi);
   phi->to = tmp;
   phi->cls = size_class.u;
-  int i = 2;  // TODO: variable if necessary
-  phi->arg = vnew(i, sizeof(Ref), PFn);
-  phi->arg[0] = _sqref_to_internal_ref(val0);
-  phi->arg[1] = _sqref_to_internal_ref(val1);
-  phi->blk = vnew(i, sizeof(Blk*), PFn);
-  phi->blk[0] = _sqblock_to_internal_blk(block0);
-  phi->blk[1] = _sqblock_to_internal_blk(block1);
-  phi->narg = i;
+  phi->arg = vnew(narg, sizeof(Ref), PFn);
+  for (int i = 0; i < narg; ++i) {
+    phi->arg[i] = _sqref_to_internal_ref(vals[i]);
+  }
+  phi->blk = vnew(narg, sizeof(Blk*), PFn);
+  for (int i = 0; i < narg; ++i) {
+    phi->blk[i] = _sqblock_to_internal_blk(blocks[i]);
+  }
+  phi->narg = narg;
   *G(plink) = phi;
   G(plink) = &phi->link;
   SQC(pfs.ps) = PPhi;
   return _internal_ref_to_sqref(tmp);
+}
+
+SqRef sq_i_phi2(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
+  SqBlock blocks[2] = { block0, block1 };
+  SqRef vals[2] = { val0, val1 };
+  return sq_i_phia(size_class, 2, blocks, vals);
+}
+
+SqRef sq_i_phi3(SqType size_class,
+                SqBlock block0,
+                SqRef val0,
+                SqBlock block1,
+                SqRef val1,
+                SqBlock block2,
+                SqRef val2) {
+  SqBlock blocks[3] = { block0, block1, block2 };
+  SqRef vals[3] = { val0, val1, val2 };
+  return sq_i_phia(size_class, 3, blocks, vals);
 }
 
 void sq_i_blit(SqRef from, SqRef to, int num_bytes) {
