@@ -163,6 +163,18 @@ _STORE_INSTRS = {
     'storeb', 'storeh', 'storew', 'storel', 'stores', 'stored',
 }
 
+# Load instructions: sq_i_OP(type, addr) -> SqRef  (has _into variant)
+# loadw/loadl/loads/loadd map to sq_i_load with the corresponding type.
+_LOAD_GENERIC = {'loadw': 'sq_type_word', 'loadl': 'sq_type_long',
+                 'loads': 'sq_type_single', 'loadd': 'sq_type_double'}
+_LOAD_EXT = {
+    'load',  # generic: uses assignment type directly
+    'loadsb', 'loadub', 'loadsh', 'loaduh', 'loadsw', 'loaduw',
+}
+
+# Alloc instructions: sq_i_OP(size) -> SqRef  (no type param, has _into variant)
+_ALLOC_INSTRS = {'alloc4', 'alloc8', 'alloc16'}
+
 
 # ---------------------------------------------------------------------------
 # Parser
@@ -182,6 +194,7 @@ class Parser:
         self.data_symbols = {}   # name -> C var for SqSymbol
         self.func_symbols = {}   # name -> C var for SqSymbol
         self.type_map = {}       # typename -> C var for SqType
+        self.declared_vars = set()  # SqRef names declared in current function
 
     def peek(self, offset=0):
         p = self.pos + offset
@@ -398,6 +411,9 @@ class Parser:
         param_names = {p[1] for p in params if p[1]}
         forward_refs = self._find_forward_refs(blocks, instrs, param_names)
 
+        # Each function body in its own C scope to avoid name collisions.
+        self.emit('{')
+        self.indent += 1
         # Emit function start.
         self.emit(f'sq_func_start({linkage}, {ret_type}, "{name}");')
         for ptype, pname in params:
@@ -409,6 +425,9 @@ class Parser:
         # Emit forward declarations.
         for tmp_name in sorted(forward_refs):
             self.emit(f'SqRef {mangle_tmp(tmp_name)} = sq_ref_declare();')
+
+        # Track declared SqRef names for this function to avoid duplicate decls.
+        self.declared_vars = set(forward_refs) | set(param_names)
 
         # Pre-declare all blocks.
         if blocks:
@@ -426,6 +445,8 @@ class Parser:
 
         self.emit(f'SqSymbol {mangle_sym(name)} = sq_func_end();')
         self.func_symbols[name] = mangle_sym(name)
+        self.indent -= 1
+        self.emit('}')
         self.emit('')
 
     def _collect_blocks(self):
@@ -521,6 +542,21 @@ class Parser:
             a1 = self._parse_raw_val()
             return [a0, a1]
 
+        if op in _LOAD_GENERIC or op in _LOAD_EXT:
+            return [self._parse_raw_val()]
+
+        if op in _ALLOC_INSTRS:
+            return [self._parse_raw_val()]
+
+        if op == 'blit':
+            # blit src, dst, N
+            src = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            dst = self._parse_raw_val()
+            self.expect('PUNCT', ',')
+            n = self._parse_raw_val()
+            return [src, dst, n]
+
         if op == 'jmp':
             # jmp @label
             blk = self.expect('BLK')
@@ -538,7 +574,7 @@ class Parser:
         if op == 'phi':
             # phi @b0 val0, @b1 val1
             pairs = []
-            while self.peek().kind == 'BLK':
+            while len(pairs) < 4 and self.peek().kind == 'BLK':
                 blk = self.expect('BLK')
                 val = self._parse_raw_val()
                 pairs.append(('BLK', blk.val))
@@ -600,6 +636,30 @@ class Parser:
             self.emit(f'sq_i_{op}({a0}, {a1});')
             return
 
+        if op in _LOAD_GENERIC:
+            fixed_type = _LOAD_GENERIC[op]
+            a0 = self._resolve_raw_val(args[0])
+            self._emit_dest(dest, forward_refs, 'sq_i_load', f'{fixed_type}, {a0}')
+            return
+
+        if op in _LOAD_EXT:
+            a0 = self._resolve_raw_val(args[0])
+            ctype = itype or 'sq_type_word'
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}')
+            return
+
+        if op in _ALLOC_INSTRS:
+            a0 = self._resolve_raw_val(args[0])
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', a0)
+            return
+
+        if op == 'blit':
+            src = self._resolve_raw_val(args[0])
+            dst = self._resolve_raw_val(args[1])
+            n   = self._resolve_raw_val(args[2])
+            self.emit(f'sq_i_blit({src}, {dst}, {n});')
+            return
+
         if op == 'jmp':
             self.emit(f'sq_i_jmp({mangle_block(args[0][1])});')
             return
@@ -619,10 +679,11 @@ class Parser:
             v1  = self._resolve_raw_val(args[3])
             ctype = itype or 'sq_type_word'
             # phi has no _into variant; dest is always freshly defined here
-            if dest in forward_refs:
+            if dest in forward_refs or dest in self.declared_vars:
                 # already declared — just assign (no SqRef re-declaration)
                 self.emit(f'{mangle_tmp(dest)} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
             else:
+                self.declared_vars.add(dest)
                 self.emit(f'SqRef {mangle_tmp(dest)} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
             return
 
@@ -634,7 +695,11 @@ class Parser:
             self.emit(f'{func}({args_str});')
         elif dest in forward_refs:
             self.emit(f'{func}_into({mangle_tmp(dest)}, {args_str});')
+        elif dest in self.declared_vars:
+            # Re-definition of same name in a different block — assign without redeclaring.
+            self.emit(f'{mangle_tmp(dest)} = {func}({args_str});')
         else:
+            self.declared_vars.add(dest)
             self.emit(f'SqRef {mangle_tmp(dest)} = {func}({args_str});')
 
 
@@ -671,13 +736,14 @@ def has_multiway_phi(text):
     """Check if .ssa has phi nodes with 3+ predecessors."""
     for line in text.split('\n'):
         line = line.strip()
-        if '= ' not in line:
+        if '=' not in line:
             continue
         parts = line.split('=', 1)
         if len(parts) != 2:
             continue
         rhs = parts[1].strip()
-        for t in ('w ', 'l ', 's ', 'd ', 'sb ', 'ub ', 'sh ', 'uh '):
+        # Strip optional type prefix (w, l, s, d, sb, ub, sh, uh)
+        for t in ('sb ', 'ub ', 'sh ', 'uh ', 'w ', 'l ', 's ', 'd '):
             if rhs.startswith(t):
                 rhs = rhs[len(t):]
                 break
