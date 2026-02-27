@@ -158,6 +158,15 @@ _TWO_OP_TYPED = {
 _ONE_OP_TYPED = {
     'neg', 'copy',
     'vaarg',
+    'extsb', 'extub', 'extsh', 'extuh',
+    'stosi', 'stoui', 'dtosi', 'dtoui',
+    'swtof', 'uwtof', 'sltof', 'ultof',
+    'cast',
+}
+
+# One-operand WITHOUT type: sq_i_OP(a0) -> SqRef  (has _into variant)
+_ONE_OP_NOTYPE = {
+    'extsw', 'extuw', 'exts', 'truncd',
 }
 
 # Void one-operand instructions: sq_i_OP(a0)  (no type, no dest)
@@ -272,9 +281,8 @@ class Parser:
     def _resolve_sym(self, name):
         if name in self.data_symbols:
             return f'sq_ref_for_symbol({self.data_symbols[name]})'
-        elif name in self.func_symbols:
-            return f'sq_ref_for_symbol({self.func_symbols[name]})'
         else:
+            # Use extern ref for functions (handles forward refs and recursion).
             return f'sq_ref_extern("{name}")'
 
     def _sfloat(self, hex_str):
@@ -755,6 +763,9 @@ class Parser:
         if op in _ONE_OP_TYPED:
             return [self._parse_raw_val()]
 
+        if op in _ONE_OP_NOTYPE:
+            return [self._parse_raw_val()]
+
         if op in _VOID_ONE_OP:
             return [self._parse_raw_val()]
 
@@ -887,6 +898,11 @@ class Parser:
             self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}')
             return
 
+        if op in _ONE_OP_NOTYPE:
+            a0 = self._resolve_raw_val(args[0])
+            self._emit_dest(dest, forward_refs, f'sq_i_{op}', a0)
+            return
+
         if op in _VOID_ONE_OP:
             a0 = self._resolve_raw_val(args[0])
             self.emit(f'sq_i_{op}({a0});')
@@ -899,9 +915,13 @@ class Parser:
             return
 
         if op in _LOAD_GENERIC:
-            fixed_type = _LOAD_GENERIC[op]
             a0 = self._resolve_raw_val(args[0])
-            self._emit_dest(dest, forward_refs, 'sq_i_load', f'{fixed_type}, {a0}')
+            # loadw with a long destination is a sign-extending load (loadsw).
+            if op == 'loadw' and itype == 'sq_type_long':
+                self._emit_dest(dest, forward_refs, 'sq_i_loadsw', f'sq_type_long, {a0}')
+            else:
+                fixed_type = _LOAD_GENERIC[op]
+                self._emit_dest(dest, forward_refs, 'sq_i_load', f'{fixed_type}, {a0}')
             return
 
         if op in _LOAD_EXT:
@@ -918,7 +938,8 @@ class Parser:
         if op == 'blit':
             src = self._resolve_raw_val(args[0])
             dst = self._resolve_raw_val(args[1])
-            n   = self._resolve_raw_val(args[2])
+            # count is always a numeric literal (sq_i_blit takes int, not SqRef)
+            n = args[2][1] if args[2][0] == 'NUM' else self._resolve_raw_val(args[2])
             self.emit(f'sq_i_blit({src}, {dst}, {n});')
             return
 
