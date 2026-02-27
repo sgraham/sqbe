@@ -139,6 +139,7 @@ TYPE_MAP = {
     's': 'sq_type_single', 'd': 'sq_type_double',
     'sb': 'sq_type_sbyte', 'ub': 'sq_type_ubyte',
     'sh': 'sq_type_shalf', 'uh': 'sq_type_uhalf',
+    'env': 'sq_type_env',
 }
 
 # Two-operand: sq_i_OP(type, a0, a1) -> SqRef  (has _into variant)
@@ -156,6 +157,12 @@ _TWO_OP_TYPED = {
 # One-operand with type: sq_i_OP(type, a0) -> SqRef  (has _into variant)
 _ONE_OP_TYPED = {
     'neg', 'copy',
+    'vaarg',
+}
+
+# Void one-operand instructions: sq_i_OP(a0)  (no type, no dest)
+_VOID_ONE_OP = {
+    'vastart',
 }
 
 # Void two-operand store instructions: sq_i_OP(val, addr)  (no type, no dest)
@@ -748,6 +755,9 @@ class Parser:
         if op in _ONE_OP_TYPED:
             return [self._parse_raw_val()]
 
+        if op in _VOID_ONE_OP:
+            return [self._parse_raw_val()]
+
         if op in _STORE_INSTRS:
             # storew val, addr  (no type, no dest)
             a0 = self._parse_raw_val()
@@ -875,6 +885,11 @@ class Parser:
             a0 = self._resolve_raw_val(args[0])
             ctype = itype or 'sq_type_word'
             self._emit_dest(dest, forward_refs, f'sq_i_{op}', f'{ctype}, {a0}')
+            return
+
+        if op in _VOID_ONE_OP:
+            a0 = self._resolve_raw_val(args[0])
+            self.emit(f'sq_i_{op}({a0});')
             return
 
         if op in _STORE_INSTRS:
