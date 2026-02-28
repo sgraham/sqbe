@@ -12,6 +12,8 @@ sqbe differs from qbe in the following ways:
 - Windows support (sqbe's `amd64_win` target was upstreamed to qbe `master`, but
   sqbe also builds on Windows)
 - A C API (rather than file-based textual input)
+- Helper script at `misc/ssa_to_api.py` that converts an existing .ssa into sqbe
+  C API calls.
 - [Amalgamated build](https://github.com/sgraham/sqbe/releases/tag/nightly) for
   easy integration
 - Context-ized implementation to be suitable for library use
