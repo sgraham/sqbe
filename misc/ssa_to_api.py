@@ -846,20 +846,18 @@ class Parser:
             return [cond, ('BLK', btrue.val), ('BLK', bfalse.val)]
 
         if op == 'phi':
-            # phi @b0 val0, @b1 val1
+            # phi @b0 val0, @b1 val1 [, @b2 val2 ...]
+            # Predecessors are comma-separated; stop when no comma follows.
             pairs = []
-            while len(pairs) < 4 and self.peek().kind == 'BLK':
+            while self.peek().kind == 'BLK':
                 blk = self.expect('BLK')
                 val = self._parse_raw_val()
                 pairs.append(('BLK', blk.val))
                 pairs.append(val)
                 if self.peek().kind == 'PUNCT' and self.peek().val == ',':
                     self.advance()
-            if len(pairs) != 4:
-                raise ParseError(
-                    f"{self.filename}:{self.peek().line}: "
-                    f"phi requires exactly 2 predecessors, got {len(pairs)//2}"
-                )
+                else:
+                    break
             return pairs
 
         if op == 'call':
@@ -1063,19 +1061,31 @@ class Parser:
             return
 
         if op == 'phi':
-            # args = [('BLK', b0), val0, ('BLK', b1), val1]
-            b0  = mangle_block(args[0][1])
-            v0  = self._resolve_raw_val(args[1])
-            b1  = mangle_block(args[2][1])
-            v1  = self._resolve_raw_val(args[3])
+            # args = [('BLK', b0), val0, ('BLK', b1), val1, ...]
+            n = len(args) // 2
             ctype = itype or 'sq_type_word'
-            # phi has no _into variant; dest is always freshly defined here
-            if dest in forward_refs or dest in self.declared_vars:
-                # already declared — just assign (no SqRef re-declaration)
-                self.emit(f'{mangle_tmp(dest)} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
+            already = dest in forward_refs or dest in self.declared_vars
+            vd = mangle_tmp(dest)
+            if n == 2:
+                b0, v0 = mangle_block(args[0][1]), self._resolve_raw_val(args[1])
+                b1, v1 = mangle_block(args[2][1]), self._resolve_raw_val(args[3])
+                expr = f'sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1})'
+            elif n == 3:
+                b0, v0 = mangle_block(args[0][1]), self._resolve_raw_val(args[1])
+                b1, v1 = mangle_block(args[2][1]), self._resolve_raw_val(args[3])
+                b2, v2 = mangle_block(args[4][1]), self._resolve_raw_val(args[5])
+                expr = f'sq_i_phi3({ctype}, {b0}, {v0}, {b1}, {v1}, {b2}, {v2})'
+            else:
+                blks = ', '.join(mangle_block(args[i*2][1])   for i in range(n))
+                vals = ', '.join(self._resolve_raw_val(args[i*2+1]) for i in range(n))
+                self.emit(f'SqBlock _phi_blks_{vd}[] = {{{blks}}};')
+                self.emit(f'SqRef _phi_vals_{vd}[] = {{{vals}}};')
+                expr = f'sq_i_phia({ctype}, {n}, _phi_blks_{vd}, _phi_vals_{vd})'
+            if already:
+                self.emit(f'{vd} = {expr};')
             else:
                 self.declared_vars.add(dest)
-                self.emit(f'SqRef {mangle_tmp(dest)} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
+                self.emit(f'SqRef {vd} = {expr};')
             return
 
         raise ParseError(f"unsupported instruction in emit: {op}")
@@ -1159,10 +1169,6 @@ def main():
     filename = sys.argv[1]
     with open(filename) as f:
         text = f.read()
-
-    if has_multiway_phi(text):
-        print(f"error: {filename} has 3+ way phi nodes (not supported)", file=sys.stderr)
-        sys.exit(2)
 
     try:
         c_code = translate(text, filename)
