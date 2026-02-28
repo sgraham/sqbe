@@ -193,6 +193,7 @@ SqRef sq_ref_for_symbol(SqSymbol sym);
 SqRef sq_ref_declare(void);
 
 SqRef sq_ref_extern(const char* name);
+SqRef sq_ref_extern_tls(const char* name);
 
 #define sq_func_param(type) sq_func_param_named(type, NULL)
 SqRef sq_func_param_named(SqType type, const char* name);

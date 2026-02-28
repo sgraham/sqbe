@@ -745,6 +745,16 @@ SqRef sq_ref_extern(const char* name) {
   return _internal_ref_to_sqref(ret);
 }
 
+SqRef sq_ref_extern_tls(const char* name) {
+  SQ_ERR_CHECK((SqRef){0});
+  Con c = {0};
+  c.sym.type = SThr;
+  c.type = CAddr;
+  c.sym.id = intern((char*)name);
+  Ref ret = newcon(&c, G(curf));
+  return _internal_ref_to_sqref(ret);
+}
+
 SqBlock sq_block_declare_named(const char* name) {
   SQ_ERR_CHECK((SqBlock){0});
   SQ_ASSERT(SQC(pfs.num_blocks) < SQC(pfs.max_blocks));

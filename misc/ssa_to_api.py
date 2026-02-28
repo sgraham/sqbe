@@ -210,6 +210,7 @@ class Parser:
         self.data_symbols = {}   # name -> C var for SqSymbol
         self.func_symbols = {}   # name -> C var for SqSymbol
         self.type_map = {}       # typename -> C var for SqType
+        self.tls_symbols = set() # names of thread-local data symbols
         self.declared_vars = set()  # SqRef names declared in current function
 
     def peek(self, offset=0):
@@ -366,6 +367,7 @@ class Parser:
 
     def _parse_linkage(self):
         exported = False
+        tls = False
         while True:
             t = self.peek()
             if t.kind == 'WORD' and t.val == 'export':
@@ -374,6 +376,7 @@ class Parser:
             elif t.kind == 'WORD' and t.val == 'thread':
                 if self.peek(1).kind == 'WORD' and self.peek(1).val == 'data':
                     self.advance()  # consume 'thread', 'data' consumed by data parser
+                    tls = True
                 else:
                     break
             elif t.kind == 'WORD' and t.val == 'section':
@@ -383,7 +386,15 @@ class Parser:
                     self.advance()
             else:
                 break
-        return 'sq_linkage_export' if exported else 'sq_linkage_default'
+        return {'exported': exported, 'tls': tls}
+
+    def _linkage_str(self, info, align=0):
+        """Build a SqLinkage C expression from a linkage info dict."""
+        if not info['tls'] and align == 0:
+            return 'sq_linkage_export' if info['exported'] else 'sq_linkage_default'
+        exported_str = 'true' if info['exported'] else 'false'
+        tls_str = 'true' if info['tls'] else 'false'
+        return f'sq_linkage_create({align}, {exported_str}, {tls_str}, false, NULL, NULL)'
 
     # -----------------------------------------------------------------------
     # Type definitions
@@ -489,9 +500,10 @@ class Parser:
         self.expect('PUNCT', '=')
 
         # optional: align N
+        align = 0
         if self.peek().kind == 'WORD' and self.peek().val == 'align':
             self.advance()
-            self.advance()  # consume N (ignore it; sqbe doesn't expose alignment)
+            align = int(self.advance().val)
 
         self.expect('PUNCT', '{')
 
@@ -499,10 +511,13 @@ class Parser:
         sym_var = mangle_sym(name)
         self.emit(f'SqSymbol {sym_var};')
         self.data_symbols[name] = sym_var
+        if linkage['tls']:
+            self.tls_symbols.add(name)
 
         self.emit('{')
         self.indent += 1
-        self.emit(f'sq_data_start({linkage}, "{name}");')
+        linkage_str = self._linkage_str(linkage, align)
+        self.emit(f'sq_data_start({linkage_str}, "{name}");')
 
         while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
             t = self.peek()
@@ -668,7 +683,7 @@ class Parser:
         self.emit('{')
         self.indent += 1
         # Emit function start.
-        self.emit(f'sq_func_start({linkage}, {ret_type}, "{name}");')
+        self.emit(f'sq_func_start({self._linkage_str(linkage)}, {ret_type}, "{name}");')
         # For params that are redefined in the body, emit under an alias so the
         # pre-declared multi-def ref can reuse the original name.
         for ptype, pname in params:
@@ -763,7 +778,11 @@ class Parser:
     def _parse_raw_val(self):
         """Parse a value, returning raw (kind, val) tuple for later resolution."""
         t = self.peek()
-        if t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT'):
+        if t.kind == 'WORD' and t.val == 'thread':
+            self.advance()  # consume 'thread'
+            sym = self.expect('SYM')
+            return ('TLSSYM', sym.val)
+        elif t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT'):
             self.advance()
             return (t.kind, t.val)
         else:
@@ -776,6 +795,8 @@ class Parser:
             return mangle_tmp(val)
         elif kind == 'SYM':
             return self._resolve_sym(val)
+        elif kind == 'TLSSYM':
+            return f'sq_ref_extern_tls("{val}")'
         elif kind == 'NUM':
             return f'sq_const_int({val})'
         elif kind == 'SFLOAT':
@@ -791,7 +812,8 @@ class Parser:
         """Parse instruction arguments based on the specific instruction."""
         if op == 'ret':
             t = self.peek()
-            if t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT'):
+            if t.kind in ('TMP', 'SYM', 'NUM', 'SFLOAT', 'DFLOAT') or (
+                    t.kind == 'WORD' and t.val == 'thread'):
                 return [self._parse_raw_val()]
             return []
 
