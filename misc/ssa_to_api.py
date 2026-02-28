@@ -1069,26 +1069,26 @@ class Parser:
             ctype = itype or 'sq_type_word'
             already = dest in forward_refs or dest in self.declared_vars
             vd = mangle_tmp(dest)
-            if n == 2:
-                b0, v0 = mangle_block(args[0][1]), self._resolve_raw_val(args[1])
-                b1, v1 = mangle_block(args[2][1]), self._resolve_raw_val(args[3])
-                expr = f'sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1})'
-            elif n == 3:
-                b0, v0 = mangle_block(args[0][1]), self._resolve_raw_val(args[1])
-                b1, v1 = mangle_block(args[2][1]), self._resolve_raw_val(args[3])
-                b2, v2 = mangle_block(args[4][1]), self._resolve_raw_val(args[5])
-                expr = f'sq_i_phi3({ctype}, {b0}, {v0}, {b1}, {v1}, {b2}, {v2})'
-            else:
-                blks = ', '.join(mangle_block(args[i*2][1])   for i in range(n))
+            if already:
+                # Must use _into to write the phi result into the pre-declared ref.
+                # sq_i_phia_into works for any n (including 2).
+                blks = ', '.join(mangle_block(args[i*2][1]) for i in range(n))
                 vals = ', '.join(self._resolve_raw_val(args[i*2+1]) for i in range(n))
                 self.emit(f'SqBlock _phi_blks_{vd}[] = {{{blks}}};')
                 self.emit(f'SqRef _phi_vals_{vd}[] = {{{vals}}};')
-                expr = f'sq_i_phia({ctype}, {n}, _phi_blks_{vd}, _phi_vals_{vd})'
-            if already:
-                self.emit(f'{vd} = {expr};')
-            else:
+                self.emit(f'sq_i_phia_into({vd}, {ctype}, {n}, _phi_blks_{vd}, _phi_vals_{vd});')
+            elif n == 2:
+                b0, v0 = mangle_block(args[0][1]), self._resolve_raw_val(args[1])
+                b1, v1 = mangle_block(args[2][1]), self._resolve_raw_val(args[3])
                 self.declared_vars.add(dest)
-                self.emit(f'SqRef {vd} = {expr};')
+                self.emit(f'SqRef {vd} = sq_i_phi({ctype}, {b0}, {v0}, {b1}, {v1});')
+            else:
+                blks = ', '.join(mangle_block(args[i*2][1]) for i in range(n))
+                vals = ', '.join(self._resolve_raw_val(args[i*2+1]) for i in range(n))
+                self.emit(f'SqBlock _phi_blks_{vd}[] = {{{blks}}};')
+                self.emit(f'SqRef _phi_vals_{vd}[] = {{{vals}}};')
+                self.declared_vars.add(dest)
+                self.emit(f'SqRef {vd} = sq_i_phia({ctype}, {n}, _phi_blks_{vd}, _phi_vals_{vd});')
             return
 
         raise ParseError(f"unsupported instruction in emit: {op}")

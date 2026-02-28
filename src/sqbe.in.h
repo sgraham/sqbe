@@ -211,11 +211,9 @@ void sq_i_jmp(SqBlock block);
 void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false);
 
 SqRef sq_i_phia(SqType size_class, int narg, SqBlock* blocks, SqRef* vals);
+void sq_i_phia_into(SqRef into, SqType size_class, int narg, SqBlock* blocks, SqRef* vals);
 
-#define sq_i_phi(size_class, block0, val0, block1, val1) \
-  sq_i_phi2(size_class, block0, val0, block1, val1)
-SqRef sq_i_phi2(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1);
-SqRef sq_i_phi3(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1, SqBlock block2, SqRef val2);
+SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1);
 
 void sq_i_blit(SqRef from, SqRef to, int num_bytes);
 

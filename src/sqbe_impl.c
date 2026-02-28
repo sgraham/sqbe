@@ -968,15 +968,14 @@ void sq_i_jnz(SqRef cond, SqBlock if_true, SqBlock if_false) {
   qbe_parse_closeblk();
 }
 
-SqRef sq_i_phia(SqType size_class, int narg, SqBlock* blocks, SqRef* vals) {
-  SQ_ERR_CHECK((SqRef){0});
+void sq_i_phia_into(SqRef into, SqType size_class, int narg, SqBlock* blocks, SqRef* vals) {
+  SQ_ERR_CHECK_VOID();
   if (SQC(pfs.ps) != PPhi || G(curb) == G(curf)->start) {
     err_("unexpected phi instruction");
-    return (SqRef){0};
+    return;
   }
 
-  Ref tmp = newtmp(NULL, Kx, G(curf));
-  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
+  Ref tmp = _sqref_to_internal_ref(into);
 
   Phi* phi = alloc(sizeof *phi);
   phi->to = tmp;
@@ -993,25 +992,22 @@ SqRef sq_i_phia(SqType size_class, int narg, SqBlock* blocks, SqRef* vals) {
   *G(plink) = phi;
   G(plink) = &phi->link;
   SQC(pfs.ps) = PPhi;
-  return _internal_ref_to_sqref(tmp);
 }
 
-SqRef sq_i_phi2(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
+SqRef sq_i_phia(SqType size_class, int narg, SqBlock* blocks, SqRef* vals) {
+  SQ_ERR_CHECK((SqRef){0});
+  Ref tmp = newtmp(NULL, Kx, G(curf));
+  SQ_NAMED_IF_DEBUG(G(curf)->tmp[tmp.val].name, NULL);
+  SqRef sqtmp = _internal_ref_to_sqref(tmp);
+  sq_i_phia_into(sqtmp, size_class, narg, blocks, vals);
+  SQ_ERR_CHECK((SqRef){0});
+  return sqtmp;
+}
+
+SqRef sq_i_phi(SqType size_class, SqBlock block0, SqRef val0, SqBlock block1, SqRef val1) {
   SqBlock blocks[2] = { block0, block1 };
   SqRef vals[2] = { val0, val1 };
   return sq_i_phia(size_class, 2, blocks, vals);
-}
-
-SqRef sq_i_phi3(SqType size_class,
-                SqBlock block0,
-                SqRef val0,
-                SqBlock block1,
-                SqRef val1,
-                SqBlock block2,
-                SqRef val2) {
-  SqBlock blocks[3] = { block0, block1, block2 };
-  SqRef vals[3] = { val0, val1, val2 };
-  return sq_i_phia(size_class, 3, blocks, vals);
 }
 
 void sq_i_blit(SqRef from, SqRef to, int num_bytes) {
