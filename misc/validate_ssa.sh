@@ -21,14 +21,6 @@ if [[ ! -x "$QBE" ]]; then
   exit 1
 fi
 
-# Determine QBE target from uname so platform-specific skip directives work.
-case "$(uname -s)/$(uname -m)" in
-  Darwin/arm64)   QBE_TARGET="arm64_apple" ;;
-  Darwin/x86_64)  QBE_TARGET="amd64_apple" ;;
-  Linux/x86_64)   QBE_TARGET="amd64_sysv"  ;;
-  Linux/aarch64)  QBE_TARGET="arm64"        ;;
-  *)              QBE_TARGET="unknown"       ;;
-esac
 
 # ---------------------------------------------------------------------------
 # validate one file; echoes PASS / FAIL / SKIP
@@ -43,21 +35,6 @@ validate_one() {
   local gen_exe="/tmp/sqbe_gen_${base}"
   local gen_s="/tmp/sqbe_gen_${base}.s"
 
-  # Check for skip directive in file header.
-  # Format: "# skip [target1 target2 ...] [(reason)]"
-  # Skip unconditionally if no targets listed; skip only if our target matches
-  # if targets are listed.
-  local skip_line
-  skip_line=$(head -3 "$ssa" | grep '^# skip' || true)
-  if [[ -n "$skip_line" ]]; then
-    # Extract the target list: words after "# skip", stopping at "(" or end.
-    local targets
-    targets=$(echo "$skip_line" | sed 's/^# skip//' | sed 's/(.*//' | xargs)
-    if [[ -z "$targets" || " $targets " == *" $QBE_TARGET "* ]]; then
-      echo "SKIP $ssa  (# skip directive)"
-      return
-    fi
-  fi
 
   # Translate; exit code 2 means multi-way phi (unsupported)
   local rc=0

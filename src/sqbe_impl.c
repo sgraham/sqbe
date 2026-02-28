@@ -1397,3 +1397,30 @@ SqType sq_type_struct_end(void) {
   SQC(curty_build_al) = 0;
   return ret;
 }
+
+SqType sq_type_opaque(const char* name, int align, uint64_t size) {
+  SQ_ERR_CHECK((SqType){0});
+  vgrow(&GC(typ), SQC(ntyp) + 1);
+  SQC(curty) = &GC(typ)[SQC(ntyp)++];
+  SQC(curty)->isdark = 1;
+  SQC(curty)->isunion = 0;
+  SQC(curty)->size = size;
+  SQC(curty)->nunion = 1;
+  strncpy(SQC(curty)->name, name, NString - 1);
+  SQC(curty)->fields = vnew(1, sizeof SQC(curty)->fields[0], PHeap);
+  SQC(curty)->fields[0][0].type = FEnd;
+  int al = 0;
+  if (align > 0) {
+    for (al = 0; align /= 2; al++) {
+      // Nothing.
+    }
+  }
+  SQC(curty)->align = al;
+  if (GC(debug)['T']) {
+    fprintf(stderr, "\n> Parsed type:\n");
+    printtyp(SQC(curty), stderr);
+  }
+  SqType ret = {SQC(curty) - GC(typ)};
+  SQC(curty) = NULL;
+  return ret;
+}

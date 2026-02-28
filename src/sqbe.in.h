@@ -149,6 +149,10 @@ void sq_type_add_field(SqType field);
 void sq_type_add_field_with_count(SqType field, uint32_t count);
 SqType sq_type_struct_end(void);
 
+// Create an opaque ("dark") type: type :name = align N { size }.
+// These are passed by pointer in the ABI, matching QBE's isdark semantics.
+SqType sq_type_opaque(const char* name, int align, uint64_t size);
+
 void sq_itemctx_activate(SqItemCtx ctx);
 
 // The returned SqItemCtx is already sq_itemctx_activate()d. If generating

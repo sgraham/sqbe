@@ -410,27 +410,28 @@ class Parser:
         self.emit(f'SqType {ty_var};')
         self.type_map[name] = ty_var
 
-        self.emit('{')
-        self.indent += 1
-        self.emit(f'sq_type_struct_start("{name}", {align});')
-
         self.expect('PUNCT', '{')
 
         t = self.peek()
         if t.kind == 'NUM':
-            # Opaque type: { SIZE } — emit empty struct, consume body
-            while not (self.peek().kind == 'PUNCT' and self.peek().val == '}'):
-                self.advance()
-        elif t.kind == 'PUNCT' and t.val == '{':
-            # Union: { { variant1 } { variant2 } ... } — use first variant only
-            self._parse_union_fields()
+            # Opaque ("dark") type: type :name = align N { SIZE }
+            # QBE passes these by pointer (isdark=1); sq_type_opaque replicates this.
+            size = int(self.advance().val)
+            self.expect('PUNCT', '}')
+            self.emit(f'{ty_var} = sq_type_opaque("{name}", {align}, {size});')
         else:
-            self._parse_struct_fields()
-
-        self.expect('PUNCT', '}')
-        self.emit(f'{ty_var} = sq_type_struct_end();')
-        self.indent -= 1
-        self.emit('}')
+            self.emit('{')
+            self.indent += 1
+            self.emit(f'sq_type_struct_start("{name}", {align});')
+            if t.kind == 'PUNCT' and t.val == '{':
+                # Union: { { variant1 } { variant2 } ... } — use first variant only
+                self._parse_union_fields()
+            else:
+                self._parse_struct_fields()
+            self.expect('PUNCT', '}')
+            self.emit(f'{ty_var} = sq_type_struct_end();')
+            self.indent -= 1
+            self.emit('}')
         self.emit('')
 
     def _parse_struct_fields(self):
@@ -982,9 +983,11 @@ class Parser:
 
         if op in _LOAD_GENERIC:
             a0 = self._resolve_raw_val(args[0])
-            # loadw with a long destination is a sign-extending load (loadsw).
-            if op == 'loadw' and itype == 'sq_type_long':
-                self._emit_dest(dest, forward_refs, 'sq_i_loadsw', f'sq_type_long, {a0}')
+            # QBE normalises loadw to loadsw internally regardless of destination
+            # type; use the destination type so the IR matches.
+            if op == 'loadw':
+                ctype = itype or 'sq_type_word'
+                self._emit_dest(dest, forward_refs, 'sq_i_loadsw', f'{ctype}, {a0}')
             else:
                 fixed_type = _LOAD_GENERIC[op]
                 self._emit_dest(dest, forward_refs, 'sq_i_load', f'{fixed_type}, {a0}')
