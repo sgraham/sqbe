@@ -1,4 +1,4 @@
-From d537a0559bd7f023cb11d6227ef16f2cd9f4b482 Mon Sep 17 00:00:00 2001
+From a2d941b42796bbc44b7f1b4aabe1217ed7b42e9d Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
 Subject: [PATCH 07/17] Replace sprintf with snprintf and remove static return
@@ -149,10 +149,10 @@ index 97db08f..d559349 100644
  			c->sym.id = intern(buf);
  			r2 = newtmp("isel", Kl, fn);
 diff --git a/parse.c b/parse.c
-index b0b1529..38b5929 100644
+index 3f406fa..ccfa1f0 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -361,7 +361,7 @@ expect(int t)
+@@ -364,7 +364,7 @@ expect(int t)
  		return;
  	s1 = ttoa[t] ? ttoa[t] : "??";
  	s2 = ttoa[t1] ? ttoa[t1] : "??";

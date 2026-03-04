@@ -1,4 +1,4 @@
-From c2d5ea0214f42805affe0b238a89ed4eccbcdb3c Mon Sep 17 00:00:00 2001
+From 9da0435e1c6f597061ae01cc5fe171b8c61e4183 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Tue, 14 Jan 2025 16:50:50 -0800
 Subject: [PATCH 03/17] Add printtyp() and debug['T']
@@ -34,10 +34,10 @@ index ed1ac94..ebde93c 100644
  
  extern Target T_amd64_sysv;
 diff --git a/parse.c b/parse.c
-index 406d13f..25a0e1a 100644
+index 25b7e73..230e001 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -1071,6 +1071,11 @@ parsetyp(void)
+@@ -1074,6 +1074,11 @@ parsetyp(void)
  	} else
  		parsefields(ty->fields[n++], ty, t);
  	ty->nunion = n;
@@ -49,7 +49,7 @@ index 406d13f..25a0e1a 100644
  }
  
  static void
-@@ -1269,6 +1274,41 @@ printcon(Con *c, FILE *f)
+@@ -1272,6 +1277,41 @@ printcon(Con *c, FILE *f)
  	}
  }
  

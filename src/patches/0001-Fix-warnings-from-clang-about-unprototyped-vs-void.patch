@@ -1,4 +1,4 @@
-From 00a35bf91b457f9bb79e33ad97bf0249db5e984e Mon Sep 17 00:00:00 2001
+From 397708a4261eb2d9c7c5b217f728cfddf9038f37 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Sun, 12 Jan 2025 22:08:28 -0800
 Subject: [PATCH 01/17] Fix warnings from clang about unprototyped vs (void)
@@ -32,7 +32,7 @@ index 6d160f0..4096843 100644
  	static Blk z;
  	Blk *b;
 diff --git a/parse.c b/parse.c
-index 7ab3ea5..406d13f 100644
+index a063367..25b7e73 100644
 --- a/parse.c
 +++ b/parse.c
 @@ -185,7 +185,7 @@ err(char *s, ...)
@@ -53,7 +53,7 @@ index 7ab3ea5..406d13f 100644
  {
  	uint64_t n;
  	int c, m;
-@@ -228,7 +228,7 @@ getint()
+@@ -231,7 +231,7 @@ getint()
  }
  
  static int
@@ -62,7 +62,7 @@ index 7ab3ea5..406d13f 100644
  {
  	static char tok[NString];
  	int c, i, esc;
-@@ -338,7 +338,7 @@ Alpha:
+@@ -341,7 +341,7 @@ Alpha:
  }
  
  static int
@@ -71,7 +71,7 @@ index 7ab3ea5..406d13f 100644
  {
  	if (thead == Txxx)
  		thead = lex();
-@@ -346,7 +346,7 @@ peek()
+@@ -349,7 +349,7 @@ peek()
  }
  
  static int
@@ -80,7 +80,7 @@ index 7ab3ea5..406d13f 100644
  {
  	int t;
  
-@@ -356,7 +356,7 @@ next()
+@@ -359,7 +359,7 @@ next()
  }
  
  static int
@@ -89,7 +89,7 @@ index 7ab3ea5..406d13f 100644
  {
  	int t;
  
-@@ -421,7 +421,7 @@ tmpref(char *v)
+@@ -424,7 +424,7 @@ tmpref(char *v)
  }
  
  static Ref
@@ -98,7 +98,7 @@ index 7ab3ea5..406d13f 100644
  {
  	Con c;
  
-@@ -586,7 +586,7 @@ findblk(char *name)
+@@ -589,7 +589,7 @@ findblk(char *name)
  }
  
  static void
@@ -107,7 +107,7 @@ index 7ab3ea5..406d13f 100644
  {
  	idup(curb, insb, curi-insb);
  	blink = &curb->link;
-@@ -1017,7 +1017,7 @@ parsefields(Field *fld, Typ *ty, int t)
+@@ -1020,7 +1020,7 @@ parsefields(Field *fld, Typ *ty, int t)
  }
  
  static void

@@ -1,4 +1,4 @@
-From 4c887d444326cdd634479d81fd013a27fcd8128f Mon Sep 17 00:00:00 2001
+From 3903b4da126aea5c2e69f5a2a4827c79c468d303 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 13 Feb 2025 09:53:46 -0800
 Subject: [PATCH 08/17] add possibility for err to be non-fatal, only useful in
@@ -274,7 +274,7 @@ index f450793..950e2db 100644
  	fillcfg(fn);
  	simplcfg(fn);
 diff --git a/parse.c b/parse.c
-index 38b5929..ad22742 100644
+index ccfa1f0..e248bb9 100644
 --- a/parse.c
 +++ b/parse.c
 @@ -148,7 +148,7 @@ enum {
@@ -294,7 +294,7 @@ index 38b5929..ad22742 100644
  	exit(1);
  }
  
-@@ -277,7 +278,7 @@ lex(void)
+@@ -280,7 +281,7 @@ lex(void)
  		for (i=1;; i++) {
  			c = fgetc(G(inf));
  			if (c == EOF)
@@ -303,7 +303,7 @@ index 38b5929..ad22742 100644
  			vgrow(&G(tokval).str, i+2);
  			G(tokval).str[i] = c;
  			if (c == '"' && !esc) {
-@@ -289,11 +290,11 @@ lex(void)
+@@ -292,11 +293,11 @@ lex(void)
  	}
  Alpha:
  	if (!isalpha(c) && c != '.' && c != '_')
@@ -317,7 +317,7 @@ index 38b5929..ad22742 100644
  		G(lex_tok)[i++] = c;
  		c = fgetc(G(inf));
  	} while (isalpha(c) || c == '$' || c == '.' || c == '_' || isdigit(c));
-@@ -305,7 +306,7 @@ Alpha:
+@@ -308,7 +309,7 @@ Alpha:
  	}
  	t = G(lexh)[hash(G(lex_tok))*K >> parse__M];
  	if (t == Txxx || strcmp(kwmap[t], G(lex_tok)) != 0) {
@@ -326,7 +326,7 @@ index 38b5929..ad22742 100644
  		return Txxx;
  	}
  	return t;
-@@ -437,7 +438,7 @@ findtyp(int i)
+@@ -440,7 +441,7 @@ findtyp(int i)
  	while (--i >= 0)
  		if (strcmp(G(tokval).str, GC(typ)[i].name) == 0)
  			return i;
@@ -335,7 +335,7 @@ index 38b5929..ad22742 100644
  }
  
  static int
-@@ -445,7 +446,7 @@ parsecls(int *tyn)
+@@ -448,7 +449,7 @@ parsecls(int *tyn)
  {
  	switch (next()) {
  	default:
@@ -344,7 +344,7 @@ index 38b5929..ad22742 100644
  	case Ttyp:
  		*tyn = findtyp(G(ntyp));
  		return Kc;
-@@ -479,13 +480,13 @@ parserefl(int arg)
+@@ -482,13 +483,13 @@ parserefl(int arg)
  	expect(Tlparen);
  	while (peek() != Trparen) {
  		if (GC(curi) - GC(insb) >= NIns)
@@ -361,7 +361,7 @@ index 38b5929..ad22742 100644
  			vararg = 1;
  			if (arg) {
  				*GC(curi) = (Ins){.op = Oargv};
-@@ -495,7 +496,7 @@ parserefl(int arg)
+@@ -498,7 +499,7 @@ parserefl(int arg)
  			goto Next;
  		case Tenv:
  			if (hasenv)
@@ -370,7 +370,7 @@ index 38b5929..ad22742 100644
  			hasenv = 1;
  			env = 1;
  			next();
-@@ -508,9 +509,9 @@ parserefl(int arg)
+@@ -511,9 +512,9 @@ parserefl(int arg)
  		}
  		r = parseref();
  		if (req(r, NULL_R))
@@ -382,7 +382,7 @@ index 38b5929..ad22742 100644
  		if (env)
  			if (arg)
  				*GC(curi) = (Ins){Oarge, k, NULL_R, {r}};
-@@ -567,6 +568,8 @@ closeblk(void)
+@@ -570,6 +571,8 @@ closeblk(void)
  	GC(curi) = GC(insb);
  }
  
@@ -391,7 +391,7 @@ index 38b5929..ad22742 100644
  static PState
  parseline(PState ps)
  {
-@@ -580,7 +583,7 @@ parseline(PState ps)
+@@ -583,7 +586,7 @@ parseline(PState ps)
  
  	t = nextnl();
  	if (ps == PLbl && t != Tlbl && t != Trbrace)
@@ -400,7 +400,7 @@ index 38b5929..ad22742 100644
  	switch (t) {
  	case Ttmp:
  		r = tmpref(G(tokval).str);
-@@ -599,7 +602,7 @@ parseline(PState ps)
+@@ -602,7 +605,7 @@ parseline(PState ps)
  			op = t;
  			break;
  		}
@@ -409,7 +409,7 @@ index 38b5929..ad22742 100644
  	case Trbrace:
  		return PEnd;
  	case Tlbl:
-@@ -610,7 +613,7 @@ parseline(PState ps)
+@@ -613,7 +616,7 @@ parseline(PState ps)
  			G(curb)->s1 = b;
  		}
  		if (b->jmp.type != Jxxx)
@@ -418,7 +418,7 @@ index 38b5929..ad22742 100644
  		*G(blink) = b;
  		G(curb) = b;
  		G(plink) = &G(curb)->phi;
-@@ -623,7 +626,7 @@ parseline(PState ps)
+@@ -626,7 +629,7 @@ parseline(PState ps)
  		else if (G(rcls) != K0) {
  			r = parseref();
  			if (req(r, NULL_R))
@@ -427,7 +427,7 @@ index 38b5929..ad22742 100644
  			G(curb)->jmp.arg = r;
  		}
  		goto Close;
-@@ -634,7 +637,7 @@ parseline(PState ps)
+@@ -637,7 +640,7 @@ parseline(PState ps)
  		G(curb)->jmp.type = Jjnz;
  		r = parseref();
  		if (req(r, NULL_R))
@@ -436,7 +436,7 @@ index 38b5929..ad22742 100644
  		G(curb)->jmp.arg = r;
  		expect(Tcomma);
  	Jump:
-@@ -646,7 +649,7 @@ parseline(PState ps)
+@@ -649,7 +652,7 @@ parseline(PState ps)
  			G(curb)->s2 = findblk(G(tokval).str);
  		}
  		if (G(curb)->s1 == G(curf)->start || G(curb)->s2 == G(curf)->start)
@@ -445,7 +445,7 @@ index 38b5929..ad22742 100644
  		goto Close;
  	case Thlt:
  		G(curb)->jmp.type = Jhlt;
-@@ -661,13 +664,13 @@ parseline(PState ps)
+@@ -664,13 +667,13 @@ parseline(PState ps)
  		expect(Tint);
  		arg[0] = INT(G(tokval).num);
  		if (arg[0].val != G(tokval).num)
@@ -461,7 +461,7 @@ index 38b5929..ad22742 100644
  		} else
  			arg[1] = INT(0);
  		goto Ins;
-@@ -693,34 +696,34 @@ parseline(PState ps)
+@@ -696,34 +699,34 @@ parseline(PState ps)
  	if (op == Talloc1 || op == Talloc2)
  		op = Oalloc;
  	if (op == Ovastart && !G(curf)->vararg)
@@ -502,7 +502,7 @@ index 38b5929..ad22742 100644
  		phi = alloc(sizeof *phi);
  		phi->to = r;
  		phi->cls = k;
-@@ -734,30 +737,30 @@ parseline(PState ps)
+@@ -737,30 +740,30 @@ parseline(PState ps)
  		return PPhi;
  	case Tblit:
  		if (GC(curi) - GC(insb) >= NIns-1)
@@ -538,7 +538,7 @@ index 38b5929..ad22742 100644
  		GC(curi)->op = op;
  		GC(curi)->cls = k;
  		GC(curi)->to = r;
-@@ -898,19 +901,19 @@ parsefn(Lnk *lnk)
+@@ -901,19 +904,19 @@ parsefn(Lnk *lnk)
  	else
  		G(rcls) = K0;
  	if (next() != Tglo)
@@ -562,7 +562,7 @@ index 38b5929..ad22742 100644
  	G(curf)->mem = vnew(0, sizeof G(curf)->mem[0], PFn);
  	G(curf)->nmem = 0;
  	G(curf)->nblk = G(nblk);
-@@ -1164,9 +1167,9 @@ parselnk(Lnk *lnk)
+@@ -1167,9 +1170,9 @@ parselnk(Lnk *lnk)
  			break;
  		case Tsection:
  			if (lnk->sec)
@@ -574,7 +574,7 @@ index 38b5929..ad22742 100644
  			lnk->sec = G(tokval).str;
  			if (peek() == Tstr) {
  				next();
-@@ -1175,9 +1178,9 @@ parselnk(Lnk *lnk)
+@@ -1178,9 +1181,9 @@ parselnk(Lnk *lnk)
  			break;
  		default:
  			if (t == Tfunc && lnk->thread)

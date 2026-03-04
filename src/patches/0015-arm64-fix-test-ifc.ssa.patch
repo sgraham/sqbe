@@ -1,4 +1,4 @@
-From f5a46f03e93852ea44c29a9059273dc52c0f396f Mon Sep 17 00:00:00 2001
+From 6069d1b1f72627b2d0497b1b59f14d22142abe80 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 20 Feb 2026 10:37:38 -0800
 Subject: [PATCH 15/17] arm64: fix test/ifc.ssa

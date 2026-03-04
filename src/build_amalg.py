@@ -419,7 +419,7 @@ def staticize_prototypes(contents):
         elif (line.startswith("extern Target T")
               or line.startswith("extern GlobalContext global_context")
               or line.startswith("extern Op ")
-              or line.startswith("uint8_t arm64cond")):
+              or line.startswith("extern uint8_t arm64cond")):
             line = "static " + line.replace("extern ", "")
         result.append(line)
     return "\n".join(result)

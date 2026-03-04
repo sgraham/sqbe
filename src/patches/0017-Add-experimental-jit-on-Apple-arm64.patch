@@ -1,4 +1,4 @@
-From 83b35c626a38f23e8a0983f40396af7ff99c00f0 Mon Sep 17 00:00:00 2001
+From ab6ed7ca8b13723cfcb71f5ac6fe0331735fc347 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Wed, 25 Feb 2026 15:23:43 -0800
 Subject: [PATCH 17/17] Add experimental jit on Apple arm64

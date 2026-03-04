@@ -1,4 +1,4 @@
-From 74cd6154fc52a5b2b8258150cf015f3870036189 Mon Sep 17 00:00:00 2001
+From 63367a773e5c29c1a0dbc572edb15ba4241003a1 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 20 Feb 2026 10:50:21 -0800
 Subject: [PATCH 16/17] Add experimental direct Mach-O emission

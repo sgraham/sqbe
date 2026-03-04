@@ -1,4 +1,4 @@
-From f0e17ade01ecdb91020a4bc2153541317735b6f3 Mon Sep 17 00:00:00 2001
+From ab192a0596f8b1c2ba42e922471c47bdfb1f34f9 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 13 Feb 2026 21:07:03 -0800
 Subject: [PATCH 14/17] avoid redefinition of popcnt when amalgamated
