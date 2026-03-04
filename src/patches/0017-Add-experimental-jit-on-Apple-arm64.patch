@@ -1,4 +1,4 @@
-From 231d691bdc91a2cb72debd100ab4661929964008 Mon Sep 17 00:00:00 2001
+From 83b35c626a38f23e8a0983f40396af7ff99c00f0 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Wed, 25 Feb 2026 15:23:43 -0800
 Subject: [PATCH 17/17] Add experimental jit on Apple arm64
@@ -144,7 +144,7 @@ index 0000000..7da21e5
 +};
 diff --git a/arm64/apple_shared.h b/arm64/apple_shared.h
 new file mode 100644
-index 0000000..e022d9e
+index 0000000..3b97730
 --- /dev/null
 +++ b/arm64/apple_shared.h
 @@ -0,0 +1,10 @@
@@ -157,7 +157,7 @@ index 0000000..e022d9e
 +
 +uint32_t arm64_slot_off(int s, int padding, int framesz);
 +
-+uint8_t arm64cond[NCmp];
++extern uint8_t arm64cond[NCmp];
 diff --git a/arm64/emitjit.c b/arm64/emitjit.c
 new file mode 100644
 index 0000000..a8e6613
