@@ -1,7 +1,7 @@
-From 63367a773e5c29c1a0dbc572edb15ba4241003a1 Mon Sep 17 00:00:00 2001
+From 4fe57815a523d22cd17032823e93461f264cf6eb Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 20 Feb 2026 10:50:21 -0800
-Subject: [PATCH 16/17] Add experimental direct Mach-O emission
+Subject: [PATCH 16/18] Add experimental direct Mach-O emission
 
 With `-f macho`, directly emits a macOS .o rather than .s.
 
@@ -2350,5 +2350,5 @@ index 0000000..208e92f
 +echo "passed=$PASS failed=$FAIL skipped=$SKIP"
 +[ "$FAIL" -eq 0 ]
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

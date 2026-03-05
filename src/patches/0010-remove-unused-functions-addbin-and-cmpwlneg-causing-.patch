@@ -1,14 +1,15 @@
-From 9d7f4a9ab8776dfb142669ff4f499b9b5b35af58 Mon Sep 17 00:00:00 2001
+From 80ae35287cd2f9930dcaeb2b293c6ae8ab715d10 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:53:27 -0700
-Subject: [PATCH 10/17] remove unused functions addbin and cmpwlneg causing
+Subject: [PATCH 10/18] remove unused functions addbin and cmpwlneg causing
  warnings
 
 also remove sort of (?) unused var in gvndup
 ---
  all.h  |  1 -
+ gvn.c  |  4 ++--
  util.c | 10 ----------
- 2 files changed, 11 deletions(-)
+ 3 files changed, 2 insertions(+), 13 deletions(-)
 
 diff --git a/all.h b/all.h
 index e89c313..950fafd 100644
@@ -22,6 +23,24 @@ index e89c313..950fafd 100644
  int clsmerge(short *, short);
  int phicls(int, Tmp *);
  uint phiargn(Phi *, Blk *);
+diff --git a/gvn.c b/gvn.c
+index be2994a..8cd52b4 100644
+--- a/gvn.c
++++ b/gvn.c
+@@ -41,11 +41,11 @@ static uint gvntbln;
+ static Ins *
+ gvndup(Ins *i, int insert)
+ {
+-	uint idx, n;
++	uint idx;
+ 	Ins *ii;
+ 
+ 	idx = ihash(i) % gvntbln;
+-	for (n=1;; n++) {
++	for (;;) {
+ 		ii = gvntbl[idx];
+ 		if (!ii)
+ 			break;
 diff --git a/util.c b/util.c
 index e1e2dcb..d0495fe 100644
 --- a/util.c
@@ -44,5 +63,5 @@ index e1e2dcb..d0495fe 100644
  clsmerge(short *pk, short k)
  {
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

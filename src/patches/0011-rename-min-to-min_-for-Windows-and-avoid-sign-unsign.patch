@@ -1,7 +1,7 @@
-From be2cf02dc6df6344a84816aea3a5a1d91f70576d Mon Sep 17 00:00:00 2001
+From f652d77925dbebc645f24a138ffd50a18abf7a2d Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 12:55:16 -0700
-Subject: [PATCH 11/17] rename min() to min_() for Windows, and avoid
+Subject: [PATCH 11/18] rename min() to min_() for Windows, and avoid
  sign/unsigned warning
 
 ---
@@ -52,5 +52,5 @@ index 0e3a104..1a61920 100644
  
  		w  = Wsb + (i->op - Oextsb);
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

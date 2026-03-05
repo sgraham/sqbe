@@ -1,7 +1,7 @@
-From ab6ed7ca8b13723cfcb71f5ac6fe0331735fc347 Mon Sep 17 00:00:00 2001
+From a8f874099f072f5daf8d4e014bbec7fa1345771e Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Wed, 25 Feb 2026 15:23:43 -0800
-Subject: [PATCH 17/17] Add experimental jit on Apple arm64
+Subject: [PATCH 17/18] Add experimental jit on Apple arm64
 
 With `-f jit` (or more usefully in sqbe) assembles directly to memory
 and runs rather than emitting a .s or .o.
@@ -2132,5 +2132,5 @@ index 208e92f..afa6c68 100755
  	normalize "${tmp}_text.o" > "${tmp}_text.norm"
  	normalize "${tmp}_obj.o"  > "${tmp}_obj.norm"
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

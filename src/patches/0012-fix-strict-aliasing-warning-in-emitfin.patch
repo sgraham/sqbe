@@ -1,7 +1,7 @@
-From 1de1c0c3bf18a60884d43b5959c32e3a7e02a3f3 Mon Sep 17 00:00:00 2001
+From a9dbae653a16f8799621fdc9fc5071d4ef273746 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 30 Jun 2025 13:03:39 -0700
-Subject: [PATCH 12/17] fix strict aliasing warning in emitfin
+Subject: [PATCH 12/18] fix strict aliasing warning in emitfin
 
 ---
  emit.c | 15 ++++++++-------
@@ -47,5 +47,5 @@ index d02d4b4..f077429 100644
  			}
  		}
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

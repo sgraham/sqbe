@@ -1,7 +1,7 @@
-From 709a5a636512cc8e9a0b5a96377aa8a9c088b724 Mon Sep 17 00:00:00 2001
+From d750e850cde929dff07a1c496116b43d1948c6bd Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:10:17 -0800
-Subject: [PATCH 05/17] Rename `R` to `NULL_R`
+Subject: [PATCH 05/18] Rename `R` to `NULL_R`
 
 This is unfortunately necessary because windows.h has a struct bitfield
 named `R` that conflicts when included.
@@ -1501,7 +1501,7 @@ index 0aa5596..e5cc948 100644
  	else {
  		assert(req(b->jmp.arg, r));
 diff --git a/gvn.c b/gvn.c
-index 4513ae1..ee95e36 100644
+index f7eb858..18cd630 100644
 --- a/gvn.c
 +++ b/gvn.c
 @@ -124,9 +124,9 @@ dedupphi(Fn *fn, Blk *b)
@@ -1715,10 +1715,10 @@ index b270ec6..4afad11 100644
  				vgrow(&stk, ++n);
  				stk[n-1] = i->to.val;
 diff --git a/parse.c b/parse.c
-index 579fd0f..1c6988a 100644
+index 3d09cd2..e93763d 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -405,7 +405,7 @@ parseref(void)
+@@ -402,7 +402,7 @@ parseref(void)
  	memset(&c, 0, sizeof c);
  	switch (next()) {
  	default:
@@ -1727,7 +1727,7 @@ index 579fd0f..1c6988a 100644
  	case Ttmp:
  		return tmpref(G(tokval).str);
  	case Tint:
-@@ -510,30 +510,30 @@ parserefl(int arg)
+@@ -507,30 +507,30 @@ parserefl(int arg)
  			break;
  		}
  		r = parseref();
@@ -1766,7 +1766,7 @@ index 579fd0f..1c6988a 100644
  		GC(curi)++;
  	Next:
  		if (peek() == Trparen)
-@@ -573,7 +573,7 @@ closeblk(void)
+@@ -570,7 +570,7 @@ closeblk(void)
  static PState
  parseline(PState ps)
  {
@@ -1775,7 +1775,7 @@ index 579fd0f..1c6988a 100644
  	Blk *blk[NPred];
  	Phi *phi;
  	Ref r;
-@@ -597,7 +597,7 @@ parseline(PState ps)
+@@ -594,7 +594,7 @@ parseline(PState ps)
  		case Tcall:
  		case Ovastart:
  			/* operations without result */
@@ -1784,7 +1784,7 @@ index 579fd0f..1c6988a 100644
  			k = Kw;
  			op = t;
  			break;
-@@ -625,7 +625,7 @@ parseline(PState ps)
+@@ -622,7 +622,7 @@ parseline(PState ps)
  			G(curb)->jmp.type = Jret0;
  		else if (G(rcls) != K0) {
  			r = parseref();
@@ -1793,7 +1793,7 @@ index 579fd0f..1c6988a 100644
  				err("invalid return value");
  			G(curb)->jmp.arg = r;
  		}
-@@ -636,7 +636,7 @@ parseline(PState ps)
+@@ -633,7 +633,7 @@ parseline(PState ps)
  	case Tjnz:
  		G(curb)->jmp.type = Jjnz;
  		r = parseref();
@@ -1802,7 +1802,7 @@ index 579fd0f..1c6988a 100644
  			err("invalid argument for jnz jump");
  		G(curb)->jmp.arg = r;
  		expect(Tcomma);
-@@ -660,7 +660,7 @@ parseline(PState ps)
+@@ -657,7 +657,7 @@ parseline(PState ps)
  	case Odbgloc:
  		op = t;
  		k = Kw;
@@ -1811,7 +1811,7 @@ index 579fd0f..1c6988a 100644
  		expect(Tint);
  		arg[0] = INT(G(tokval).num);
  		if (arg[0].val != G(tokval).num)
-@@ -709,7 +709,7 @@ parseline(PState ps)
+@@ -706,7 +706,7 @@ parseline(PState ps)
  				blk[i] = findblk(G(tokval).str);
  			}
  			arg[i] = parseref();
@@ -1820,7 +1820,7 @@ index 579fd0f..1c6988a 100644
  				err("invalid instruction argument");
  			i++;
  			t = peek();
-@@ -1322,13 +1322,13 @@ printref(Ref r, Fn *fn, FILE *f)
+@@ -1319,13 +1319,13 @@ printref(Ref r, Fn *fn, FILE *f)
  			printcon(&m->offset, f);
  			i = 1;
  		}
@@ -1836,7 +1836,7 @@ index 579fd0f..1c6988a 100644
  			if (i)
  				fprintf(f, " + ");
  			fprintf(f, "%d * ", m->scale);
-@@ -1379,13 +1379,13 @@ printfn(Fn *fn, FILE *f)
+@@ -1376,13 +1376,13 @@ printfn(Fn *fn, FILE *f)
  		}
  		for (i=b->ins; i<&b->ins[b->nins]; i++) {
  			fprintf(f, "\t");
@@ -1852,7 +1852,7 @@ index 579fd0f..1c6988a 100644
  				switch (i->op) {
  				case Oarg:
  				case Oswap:
-@@ -1398,11 +1398,11 @@ printfn(Fn *fn, FILE *f)
+@@ -1395,11 +1395,11 @@ printfn(Fn *fn, FILE *f)
  				case Oxidiv:
  					fputc(ktoc[i->cls], f);
  				}
@@ -1866,7 +1866,7 @@ index 579fd0f..1c6988a 100644
  				fprintf(f, ", ");
  				printref(i->arg[1], fn, f);
  			}
-@@ -1420,7 +1420,7 @@ printfn(Fn *fn, FILE *f)
+@@ -1417,7 +1417,7 @@ printfn(Fn *fn, FILE *f)
  		case Jretd:
  		case Jretc:
  			fprintf(f, "\t%s", jtoa[b->jmp.type]);
@@ -2430,5 +2430,5 @@ index 5866be9..bc2cf21 100644
  		emit(Oadd, Kl, r1, rs, getcon(15, fn));
  		if (fn->tmp[rs.val].slot != -1)
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

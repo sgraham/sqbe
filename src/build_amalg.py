@@ -12,6 +12,7 @@ import sys
 SQBE_C_FILES = [
     "all.h",
     "amd64/all.h",
+    "amd64/emitpecoff.h",
     "arm64/all.h",
     "arm64/apple_shared.h",
     "arm64/emitjit.h",
@@ -41,6 +42,7 @@ SQBE_C_FILES = [
     "amd64/sysv.c",
     "amd64/targ.c",
     "amd64/winabi.c",
+    "amd64/emitpecoff.c",
     "arm64/abi.c",
     "arm64/apple_shared.c",
     "arm64/emit.c",
@@ -540,6 +542,9 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
             if file.endswith("emitmacho.h"):
                 contents = staticize_prototypes(contents)
 
+            if file.endswith("emitpecoff.h"):
+                contents = staticize_prototypes(contents)
+
             if file.endswith("apple_shared.h"):
                 contents = staticize_prototypes(contents)
 
@@ -636,31 +641,29 @@ def write_final_header(qbe_root, ops_h_contents, h_contents, instrs):
             contents = replace_noreturn(contents)
 
             out.write("/*** START FILE: %s ***/\n" % file)
+
+            quotes_skips = [
+                    "../all.h",
+                    "all.h",
+                    "amd64/emitpecoff.h",
+                    "apple_shared.h",
+                    "arm64/emitjit.h",
+                    "arm64/emitmacho.h",
+                    "config.h",
+                    "emitjit.h",
+                    "emitmacho.h",
+                    "emitpecoff.h",
+                    ]
+
             for line in contents.splitlines():
-                if line.startswith('#include "all.h"'):
-                    out.write("/* skipping all.h */\n")
+                skip = False
+                for qs in quotes_skips:
+                    if line.startswith('#include "' + qs + '"'):
+                        out.write('/* skipping %s */\n' % qs)
+                        skip = True
+                if skip:
                     continue
-                if line.startswith('#include "emitmacho.h"'):
-                    out.write("/* skipping emitmacho.h */\n")
-                    continue
-                if line.startswith('#include "apple_shared.h"'):
-                    out.write("/* skipping apple_shared.h */\n")
-                    continue
-                if line.startswith('#include "emitjit.h"'):
-                    out.write("/* skipping emitjit.h */\n")
-                    continue
-                if line.startswith('#include "arm64/emitmacho.h"'):
-                    out.write("/* skipping arm64/emitmacho.h */\n")
-                    continue
-                if line.startswith('#include "arm64/emitjit.h"'):
-                    out.write("/* skipping arm64/emitjit.h */\n")
-                    continue
-                if line.startswith('#include "../all.h"'):
-                    out.write("/* skipping ../all.h */\n")
-                    continue
-                if line.startswith('#include "config.h"'):
-                    out.write("/* skipping config.h */\n")
-                    continue
+
                 if line.startswith("#include <getopt.h>"):
                     out.write("/* skipping getopt.h */\n")
                     continue

@@ -1,7 +1,7 @@
-From 046b11aa101204b00b2e767c5fda8a2c2ae81a80 Mon Sep 17 00:00:00 2001
+From 3ddda640ba1ad08aca68a9ebfe394edecdf36d93 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 14:47:45 -0800
-Subject: [PATCH 06/17] Use qbe_free() instead of free() directly
+Subject: [PATCH 06/18] Use qbe_free() instead of free() directly
 
 Pair emalloc() with qbe_free() rather than free() directly. This is so
 that when emalloc() is overridden in a library context, free() can also
@@ -82,7 +82,7 @@ index 0d0d7ff..d02d4b4 100644
  }
  
 diff --git a/gvn.c b/gvn.c
-index ee95e36..8cd52b4 100644
+index 18cd630..be2994a 100644
 --- a/gvn.c
 +++ b/gvn.c
 @@ -452,7 +452,7 @@ rebuildcfg(Fn *fn)
@@ -117,10 +117,10 @@ index 4afad11..2b0640e 100644
  	/* kill dead stores */
  	for (s=sl; s<&sl[nsl]; s++)
 diff --git a/parse.c b/parse.c
-index 1c6988a..3f406fa 100644
+index e93763d..b0b1529 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -374,7 +374,7 @@ tmpref(char *v)
+@@ -371,7 +371,7 @@ tmpref(char *v)
  	int t, i;
  
  	if (G(tmphcap)/2 <= G(curf)->ntmp-Tmp0) {
@@ -205,5 +205,5 @@ index bc2cf21..e1e2dcb 100644
  }
  
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

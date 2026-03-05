@@ -1,7 +1,7 @@
-From 5aa344037fe5bc107173804aceec1f4275428526 Mon Sep 17 00:00:00 2001
+From 68465a6ee5d00d1705373faa091b67ebfdeab163 Mon Sep 17 00:00:00 2001
 From: Scott Graham <sgraham@gmail.com>
 Date: Thu, 9 Jan 2025 15:28:55 -0800
-Subject: [PATCH 02/17] fix -Wsometimes-uninitialized warning in non DEBUG
+Subject: [PATCH 02/18] fix -Wsometimes-uninitialized warning in non DEBUG
  builds
 
 ---
@@ -36,5 +36,5 @@ index ca62359..dace4c4 100644
  	if (op < NCmpI)
  		i.op = sign ? Ocsltl : Ocultl;
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

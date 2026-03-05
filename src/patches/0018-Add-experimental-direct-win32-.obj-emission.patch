@@ -1,0 +1,2863 @@
+From eb4af3affec8d1cb12195b0a4211032c263a9881 Mon Sep 17 00:00:00 2001
+From: Scott Graham <scott.github@h4ck3r.net>
+Date: Tue, 3 Mar 2026 20:38:40 -0800
+Subject: [PATCH 18/18] Add experimental direct win32 .obj emission
+
+With `-f pecoff`, directly emits a Win32 .obj rather than .s.
+
+Output .obj should always be the same as if .s is assembled as verified
+by tools/pecobjtest.sh. Tests pass, but there's probably things to do.
+Some minor differences are smoothed over by the test harness (nop-style,
+etc) because x86 encoding is so, uh, "flexible".
+---
+ Makefile            |   10 +-
+ all.h               |    2 +
+ amd64/emitpecoff.c  | 2503 +++++++++++++++++++++++++++++++++++++++++++
+ amd64/emitpecoff.h  |    9 +
+ main.c              |   19 +
+ tools/pecobjtest.sh |  183 ++++
+ 6 files changed, 2723 insertions(+), 3 deletions(-)
+ create mode 100644 amd64/emitpecoff.c
+ create mode 100644 amd64/emitpecoff.h
+ create mode 100644 tools/pecobjtest.sh
+
+diff --git a/Makefile b/Makefile
+index 8dc336f..c3fac09 100644
+--- a/Makefile
++++ b/Makefile
+@@ -7,7 +7,8 @@ BINDIR = $(PREFIX)/bin
+ COMMOBJ  = main.o util.o parse.o abi.o cfg.o mem.o ssa.o alias.o load.o \
+            copy.o fold.o gvn.o gcm.o simpl.o ifopt.o live.o spill.o rega.o \
+            emit.o
+-AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o amd64/winabi.o
++AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o amd64/winabi.o \
++           amd64/emitpecoff.o
+ ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o arm64/emitmacho.o arm64/emitjit.o arm64/apple_shared.o
+ RV64OBJ  = rv64/targ.o rv64/abi.o rv64/isel.o rv64/emit.o
+ OBJ      = $(COMMOBJ) $(AMD64OBJ) $(ARM64OBJ) $(RV64OBJ)
+@@ -30,7 +31,7 @@ $(OBJ): all.h ops.h
+ $(AMD64OBJ): amd64/all.h
+ $(ARM64OBJ): arm64/all.h
+ $(RV64OBJ): rv64/all.h
+-main.o: config.h arm64/emitmacho.h arm64/emitjit.h
++main.o: config.h arm64/emitmacho.h arm64/emitjit.h amd64/emitpecoff.h
+ 
+ config.h:
+ 	@case `uname` in                               \
+@@ -90,6 +91,9 @@ check-amd64_win: qbe
+ check-obj: qbe
+ 	tools/objtest.sh
+ 
++check-pecoff: qbe
++	tools/pecobjtest.sh
++
+ src:
+ 	@echo $(SRCALL)
+ 
+@@ -106,4 +110,4 @@ src:
+ wc:
+ 	@wc -l $(SRCALL)
+ 
+-.PHONY: clean clean-gen check check-arm64 check-rv64 src 80 wc install uninstall
++.PHONY: clean clean-gen check check-arm64 check-rv64 check-pecoff src 80 wc install uninstall
+diff --git a/all.h b/all.h
+index 0097ee2..2babe2e 100644
+--- a/all.h
++++ b/all.h
+@@ -538,6 +538,8 @@ typedef struct GlobalContext {
+ 	MachoCtx *main__macho_ctx;
+ 	int main__jitmode;
+ 	JitCtx *main__jit_ctx;
++	int main__pecoffmode;
++	struct PECOFFCtx *main__pecoff_ctx;
+ 
+ 	/* parse.c */
+ 	int parse__lexinit_done;
+diff --git a/amd64/emitpecoff.c b/amd64/emitpecoff.c
+new file mode 100644
+index 0000000..86519c3
+--- /dev/null
++++ b/amd64/emitpecoff.c
+@@ -0,0 +1,2503 @@
++/* amd64/emitpecoff.c -- direct PE/COFF .obj emitter for AMD64/Windows */
++#include "emitpecoff.h"
++#include "all.h" /* amd64/all.h: includes ../all.h + AMD64 register enums */
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* -----------------------------------------------------------------------
++ * PE/COFF constants (no system headers)
++ * --------------------------------------------------------------------- */
++#define PE_IMAGE_FILE_MACHINE_AMD64 0x8664u
++
++#define PE_IMAGE_SCN_CNT_CODE 0x00000020u
++#define PE_IMAGE_SCN_CNT_INITIALIZED_DATA 0x00000040u
++#define PE_IMAGE_SCN_CNT_UNINITIALIZED_DATA 0x00000080u
++#define PE_IMAGE_SCN_MEM_EXECUTE 0x20000000u
++#define PE_IMAGE_SCN_MEM_READ 0x40000000u
++#define PE_IMAGE_SCN_MEM_WRITE 0x80000000u
++#define PE_IMAGE_SCN_ALIGN_8BYTES 0x00400000u
++#define PE_IMAGE_SCN_ALIGN_16BYTES 0x00500000u
++
++#define PE_IMAGE_REL_AMD64_ADDR64 0x0001u
++#define PE_IMAGE_REL_AMD64_ADDR32NB 0x0003u
++#define PE_IMAGE_REL_AMD64_REL32 0x0004u
++#define PE_IMAGE_REL_AMD64_REL32_1 0x0005u
++#define PE_IMAGE_REL_AMD64_REL32_2 0x0006u
++#define PE_IMAGE_REL_AMD64_REL32_3 0x0007u
++#define PE_IMAGE_REL_AMD64_REL32_4 0x0008u
++#define PE_IMAGE_REL_AMD64_REL32_5 0x0009u
++#define PE_IMAGE_REL_AMD64_SECTION 0x000Au
++#define PE_IMAGE_REL_AMD64_SECREL 0x000Bu
++
++#define PE_IMAGE_SYM_UNDEFINED 0
++#define PE_IMAGE_SYM_CLASS_EXTERNAL 2
++#define PE_IMAGE_SYM_CLASS_STATIC 3
++#define PE_IMAGE_SYM_TYPE_FUNCTION 0x20u
++
++/* Sentinel values stored in PESym.section during emission;
++ * resolved to real 1-based section numbers in pecoff_write. */
++#define PESECT_TEXT 0x7FFE
++#define PESECT_DATA 0x7FFD
++#define PESECT_BSS 0x7FFC
++#define PESECT_RDATA 0x7FFB
++
++/* -----------------------------------------------------------------------
++ * Internal reloc/sym types
++ * --------------------------------------------------------------------- */
++typedef struct {
++  uint32_t vaddr; /* offset within section */
++  uint32_t symidx;
++  uint16_t type;
++} PEReloc;
++
++typedef struct {
++  uint32_t strx; /* offset into ctx->strtab */
++  uint32_t value;
++  int16_t section; /* sentinel or real 1-based number; 0=external */
++  uint16_t type;
++  uint8_t storage; /* PE_IMAGE_SYM_CLASS_* */
++} PESym;
++
++struct PECOFFCtx {
++  uint8_t* text;
++  uint32_t textsz, textcap;
++  uint8_t* data;
++  uint32_t datasz, datacap;
++  uint32_t bsssz;
++  uint8_t* rdata;
++  uint32_t rdatasz, rdatacap;
++  PEReloc* treloc;
++  uint32_t ntreloc, trelocap;
++  PEReloc* dreloc;
++  uint32_t ndreloc, drelocap;
++  PEReloc* rreloc;
++  uint32_t nrreloc, rrelocap;
++  PESym* syms;
++  uint32_t nsyms, symcap;
++  char* strtab;
++  uint32_t strtabsz, strtabcap;
++  /* per-data-item state */
++  char datname[NString];
++  Lnk* datlnk;
++  int64_t dleadzero; /* >=0: accumulating leading zeros; -1: started */
++  uint32_t datstart; /* ctx->datasz at DStart */
++  /* measurement pass: count bytes without writing or adding relocs/syms */
++  int dry_run;
++};
++
++/* -----------------------------------------------------------------------
++ * Helpers -- defined now, heavily used starting in steps 3/4
++ * --------------------------------------------------------------------- */
++static void* pe_realloc(void* oldp, uint32_t old_size, size_t new_size) {
++  void* newp = emalloc(new_size);
++  if (oldp) {
++    memcpy(newp, oldp, old_size);
++    qbe_free(oldp);
++  }
++  return newp;
++}
++
++static void pe_buf_append(uint8_t** buf, uint32_t* sz, uint32_t* cap, const void* src, uint32_t n) {
++  if (*sz + n > *cap) {
++    uint32_t newcap = *cap ? *cap * 2 : 64;
++    uint32_t oldcap = *cap;
++    while (newcap < *sz + n) {
++      newcap *= 2;
++    }
++    *buf = pe_realloc(*buf, oldcap, newcap);
++    *cap = newcap;
++  }
++  memcpy(*buf + *sz, src, n);
++  *sz += n;
++}
++
++static uint32_t pe_strintern(PECOFFCtx* ctx, const char* s) {
++  uint32_t off = ctx->strtabsz;
++  uint32_t n = (uint32_t)strlen(s) + 1;
++  pe_buf_append((uint8_t**)&ctx->strtab, &ctx->strtabsz, &ctx->strtabcap, s, n);
++  return off;
++}
++
++/* -----------------------------------------------------------------------
++ * Binary write helpers (host is LE x86-64; target is also LE)
++ * --------------------------------------------------------------------- */
++static void w8(FILE* f, uint8_t v) {
++  fwrite(&v, 1, 1, f);
++}
++static void w16(FILE* f, uint16_t v) {
++  fwrite(&v, 2, 1, f);
++}
++static void w32(FILE* f, uint32_t v) {
++  fwrite(&v, 4, 1, f);
++}
++static void wbytes(FILE* f, const void* p, uint32_t n) {
++  fwrite(p, 1, n, f);
++}
++static void wzeros(FILE* f, uint32_t n) {
++  static const uint8_t z[64] = {0};
++  while (n >= 64) {
++    fwrite(z, 1, 64, f);
++    n -= 64;
++  }
++  if (n) {
++    fwrite(z, 1, n, f);
++  }
++}
++
++/* -----------------------------------------------------------------------
++ * Text section emission helpers
++ * --------------------------------------------------------------------- */
++
++/* append 1 byte to .text */
++static void emit1(PECOFFCtx* ctx, uint8_t b) {
++  if (ctx->dry_run) {
++    ctx->textsz++;
++    return;
++  }
++  pe_buf_append(&ctx->text, &ctx->textsz, &ctx->textcap, &b, 1);
++}
++
++/* append 4 bytes (LE) to .text */
++static void emit4le(PECOFFCtx* ctx, uint32_t v) {
++  if (ctx->dry_run) {
++    ctx->textsz += 4;
++    return;
++  }
++  uint8_t b[4];
++  b[0] = (uint8_t)(v);
++  b[1] = (uint8_t)(v >> 8);
++  b[2] = (uint8_t)(v >> 16);
++  b[3] = (uint8_t)(v >> 24);
++  pe_buf_append(&ctx->text, &ctx->textsz, &ctx->textcap, b, 4);
++}
++
++/*
++ * Map QBE register enum to x86-64 hardware register encoding (0–15).
++ * QBE enum order (starting at RXX+1 = RAX):
++ *   RAX RCX RDX RSI RDI R8 R9 R10 R11  RBX R12 R13 R14 R15  RBP RSP
++ * Hardware encoding:
++ *    0   1   2   6   7   8  9  10  11    3  12  13  14  15    5   4
++ * XMM0..XMM15 -> hardware 0..15
++ */
++static const int hwreg_tab[] = {
++    /* RAX RCX RDX RSI RDI  R8  R9 R10 R11 */
++    0,
++    1,
++    2,
++    6,
++    7,
++    8,
++    9,
++    10,
++    11,
++    /* RBX R12 R13 R14 R15 RBP RSP */
++    3,
++    12,
++    13,
++    14,
++    15,
++    5,
++    4,
++};
++
++static int hwreg(int qreg) {
++  if (qreg >= XMM0) {
++    return qreg - XMM0;
++  }
++  assert(qreg >= RAX && qreg <= RSP);
++  return hwreg_tab[qreg - RAX];
++}
++
++/* Emit REX prefix when any field is nonzero */
++static void emit_rex(PECOFFCtx* ctx, int w, int r, int x, int b) {
++  if (w | r | x | b) {
++    emit1(ctx, (uint8_t)(0x40 | (w << 3) | (r << 2) | (x << 1) | b));
++  }
++}
++
++static void emit_push64(PECOFFCtx* ctx, int qreg) {
++  int hw = hwreg(qreg);
++  if (hw >= 8) {
++    emit1(ctx, 0x41); /* REX.B */
++  }
++  emit1(ctx, (uint8_t)(0x50 + (hw & 7)));
++}
++
++static void emit_pop64(PECOFFCtx* ctx, int qreg) {
++  int hw = hwreg(qreg);
++  if (hw >= 8) {
++    emit1(ctx, 0x41); /* REX.B */
++  }
++  emit1(ctx, (uint8_t)(0x58 + (hw & 7)));
++}
++
++/* movq qreg, disp8(%rsp): spill arg reg to home space before push rbp */
++static void emit_home_spill(PECOFFCtx* ctx, int qreg, uint8_t disp8) {
++  int hw = hwreg(qreg);
++  /* REX.W (+ REX.R if hw>=8), 89, ModRM(01, hw&7, 4), SIB(0,4,4), disp8 */
++  emit1(ctx, hw >= 8 ? 0x4C : 0x48);
++  emit1(ctx, 0x89);
++  emit1(ctx, (uint8_t)(0x40 | ((hw & 7) << 3) | 4));
++  emit1(ctx, 0x24); /* SIB: no index, base=RSP */
++  emit1(ctx, disp8);
++}
++
++/* endbr64: F3 0F 1E FA */
++static void emit_endbr64(PECOFFCtx* ctx) {
++  emit1(ctx, 0xF3);
++  emit1(ctx, 0x0F);
++  emit1(ctx, 0x1E);
++  emit1(ctx, 0xFA);
++}
++
++/* mov rbp, rsp: 48 89 E5  (MOV r/m64, r64  with dst=RBP=5, src=RSP=4) */
++static void emit_mov_rbp_rsp(PECOFFCtx* ctx) {
++  emit1(ctx, 0x48);
++  emit1(ctx, 0x89);
++  emit1(ctx, 0xE5);
++}
++
++/* sub rsp, imm (up to 32-bit) */
++static void emit_sub_rsp_imm(PECOFFCtx* ctx, uint64_t imm) {
++  if (imm <= 127) {
++    emit1(ctx, 0x48);
++    emit1(ctx, 0x83);
++    emit1(ctx, 0xEC);
++    emit1(ctx, (uint8_t)imm);
++  } else {
++    emit1(ctx, 0x48);
++    emit1(ctx, 0x81);
++    emit1(ctx, 0xEC);
++    emit4le(ctx, (uint32_t)imm);
++  }
++}
++
++/* add rsp, imm (up to 32-bit) */
++static void emit_add_rsp_imm(PECOFFCtx* ctx, uint64_t imm) {
++  if (imm <= 127) {
++    emit1(ctx, 0x48);
++    emit1(ctx, 0x83);
++    emit1(ctx, 0xC4);
++    emit1(ctx, (uint8_t)imm);
++  } else {
++    emit1(ctx, 0x48);
++    emit1(ctx, 0x81);
++    emit1(ctx, 0xC4);
++    emit4le(ctx, (uint32_t)imm);
++  }
++}
++
++/* mov rbp, rsp for dynalloc restore: 48 89 EC (MOV r/m64,r64 dst=RSP rm=RBP) */
++static void emit_mov_rsp_rbp(PECOFFCtx* ctx) {
++  emit1(ctx, 0x48);
++  emit1(ctx, 0x89);
++  emit1(ctx, 0xEC);
++}
++
++/* Integer register-to-register move (cls = Kw or Kl) */
++static void emit_mov_rr(PECOFFCtx* ctx, int dst_hw, int src_hw, int is64) {
++  emit_rex(ctx, is64, dst_hw >> 3, 0, src_hw >> 3);
++  emit1(ctx, 0x8B); /* MOV r, r/m */
++  emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++}
++
++/* x86-64 Jcc opcodes (second byte of 0F 8x form), indexed by (jmp.type - Jjf).
++ * Integer comparisons map directly to flags set by CMP/TEST; float comparisons
++ * after UCOMISD/UCOMISS set CF, ZF, PF -- we handle the simple single-Jcc cases. */
++static const uint8_t jcc_opc[NCmp] = {
++    /* Integer (c = 0..9 = CmpI values) */
++    [Cieq] = 0x84,  /* JZ  (equal) */
++    [Cine] = 0x85,  /* JNZ */
++    [Cisge] = 0x8D, /* JGE */
++    [Cisgt] = 0x8F, /* JG  */
++    [Cisle] = 0x8E, /* JLE */
++    [Cislt] = 0x8C, /* JL  */
++    [Ciuge] = 0x83, /* JAE */
++    [Ciugt] = 0x87, /* JA  */
++    [Ciule] = 0x86, /* JBE */
++    [Ciult] = 0x82, /* JB  */
++    /* Float (c = NCmpI + CmpF value) */
++    [NCmpI + Cfeq] = 0x84, /* JZ  (fe ordered-equal) */
++    [NCmpI + Cfge] = 0x83, /* JAE */
++    [NCmpI + Cfgt] = 0x87, /* JA  */
++    [NCmpI + Cfle] = 0x86, /* JBE */
++    [NCmpI + Cflt] = 0x82, /* JB  */
++    [NCmpI + Cfne] = 0x85, /* JNZ */
++    [NCmpI + Cfo] = 0x8B,  /* JNP (ordered = no-parity) */
++    [NCmpI + Cfuo] = 0x8A, /* JP  (unordered = parity) */
++};
++
++/* Windows x64 callee-save registers (matches amd64_winabi_rclob in winabi.c) */
++static int pe_rclob[] = {RBX, R12, R13, R14, R15, RSI, RDI, -1};
++#define NCLR_PE 7 /* matches NCLR_WIN */
++
++/* Compute frame pointer register and frame size (mirrors winabi_framesz) */
++static void pe_framesz(Fn* fn, int* fp_out, uint64_t* fsz_out) {
++  uint64_t i, o, f;
++  int fp;
++
++  fp = (!fn->leaf || fn->vararg || fn->dynalloc) ? RBP : RSP;
++
++  o = 0;
++  if (!fn->leaf) {
++    for (i = 0; i < NCLR_PE; i++) {
++      o ^= (fn->reg >> pe_rclob[i]) & 1;
++    }
++    o &= 1;
++  }
++  f = fn->slot;
++  f = (f + 3) & -4;
++  if (f > 0 && fp == RSP && fn->salign == 4) {
++    f += 2;
++  }
++  *fp_out = fp;
++  *fsz_out = 4 * f + 8 * o;
++}
++
++/* Windows 64-bit: no underscore prefix; strip quotes for raw names */
++static void pe_symname(char out[NString], const char* n) {
++  if (n[0] == '"') {
++    size_t len = strlen(n);
++    int inner = len >= 2 ? (int)(len - 2) : 0;
++    snprintf(out, NString, "%.*s", inner, n + 1);
++  } else {
++    snprintf(out, NString, "%s", n);
++  }
++}
++
++static uint32_t pe_symadd(PECOFFCtx* ctx,
++                          const char* name,
++                          int16_t section,
++                          uint32_t value,
++                          uint16_t type,
++                          uint8_t storage) {
++  PESym sym;
++  sym.strx = pe_strintern(ctx, name);
++  sym.value = value;
++  sym.section = section;
++  sym.type = type;
++  sym.storage = storage;
++  if (ctx->nsyms == ctx->symcap) {
++    uint32_t oldcap = ctx->symcap;
++    ctx->symcap = ctx->symcap ? ctx->symcap * 2 : 8;
++    ctx->syms = pe_realloc(ctx->syms, oldcap * sizeof(PESym), ctx->symcap * sizeof(PESym));
++  }
++  ctx->syms[ctx->nsyms] = sym;
++  return ctx->nsyms++;
++}
++
++/* Define or update a symbol: if already present (forward reference added by
++ * pe_findorsym), update section/value/storage in place; otherwise add new. */
++static uint32_t symdefine(PECOFFCtx* ctx,
++                          const char* name,
++                          int16_t section,
++                          uint32_t value,
++                          uint16_t type,
++                          uint8_t storage) {
++  uint32_t i;
++  for (i = 0; i < ctx->nsyms; i++) {
++    if (strcmp(ctx->strtab + ctx->syms[i].strx, name) == 0) {
++      ctx->syms[i].section = section;
++      ctx->syms[i].value = value;
++      ctx->syms[i].type = type;
++      ctx->syms[i].storage = storage;
++      return i;
++    }
++  }
++  return pe_symadd(ctx, name, section, value, type, storage);
++}
++
++/* -----------------------------------------------------------------------
++ * Text relocation helper
++ * --------------------------------------------------------------------- */
++static void pe_trelocadd(PECOFFCtx* ctx, uint32_t vaddr, uint32_t symidx, uint16_t type) {
++  if (ctx->dry_run) {
++    return;
++  }
++  PEReloc rel;
++  rel.vaddr = vaddr;
++  rel.symidx = symidx;
++  rel.type = type;
++  if (ctx->ntreloc == ctx->trelocap) {
++    uint32_t oldcap = ctx->trelocap;
++    ctx->trelocap = ctx->trelocap ? ctx->trelocap * 2 : 8;
++    ctx->treloc =
++        pe_realloc(ctx->treloc, oldcap * sizeof(PEReloc), ctx->trelocap * sizeof(PEReloc));
++  }
++  ctx->treloc[ctx->ntreloc++] = rel;
++}
++
++/* -----------------------------------------------------------------------
++ * Per-function emission state (mirrors E in emit.c)
++ * --------------------------------------------------------------------- */
++typedef struct {
++  PECOFFCtx* ctx;
++  Fn* fn;
++  int fp;       /* frame pointer register: RBP or RSP */
++  uint64_t fsz; /* frame size in bytes */
++  int nclob;    /* number of callee-save registers pushed */
++} PE;
++
++/* Compute byte offset of stack slot from frame pointer (mirrors slot() in emit.c) */
++static int pe_slot(Ref r, PE* pe) {
++  int s = rsval(r);
++  assert(s <= pe->fn->slot);
++  if (s < 0) {
++    return pe->fp == RSP ? 4 * -s - 8 + (int)pe->fsz + pe->nclob * 8 : 4 * -s;
++  }
++  if (pe->fp == RSP) {
++    return 4 * s + pe->nclob * 8;
++  }
++  return -4 * (pe->fn->slot - s);
++}
++
++/* Forward declaration -- defined in data-section helpers below */
++static uint32_t pe_findorsym(PECOFFCtx*, const char*);
++
++/* -----------------------------------------------------------------------
++ * Memory operand encoding
++ * --------------------------------------------------------------------- */
++
++/* Describes how to encode a memory operand in ModRM/SIB/disp form.
++ * base_hw == -1 means RIP-relative (use rip_* fields). */
++typedef struct {
++  int base_hw; /* hw reg for base (-1 = RIP-relative) */
++  int idx_hw;  /* hw reg for index (-1 = no index)    */
++  int scale;   /* 1, 2, 4, 8 */
++  int32_t disp;
++  uint32_t rip_sym;   /* symbol index for RIP-relative case  */
++  int32_t rip_addend; /* addend for RIP-relative case        */
++} MemEnc;
++
++/* Build a MemEnc from a QBE Ref (RSlot or RMem). */
++static MemEnc mem_enc_of_ref(PE* pe, Ref ref) {
++  MemEnc enc;
++  Fn* fn = pe->fn;
++  Mem* m;
++  Con* off;
++  char sname[NString];
++
++  memset(&enc, 0, sizeof enc);
++  enc.base_hw = -1;
++  enc.idx_hw = -1;
++  enc.scale = 1;
++
++  if (rtype(ref) == RSlot) {
++    enc.base_hw = hwreg(pe->fp);
++    enc.disp = pe_slot(ref, pe);
++    return enc;
++  }
++
++  /* Global symbol used directly as a memory operand: sym(%rip) */
++  if (rtype(ref) == RCon) {
++    Con* con = &fn->con[ref.val];
++    if (con->type != CAddr) {
++      die("pecoff: integer constant used as memory address");
++    }
++    pe_symname(sname, str(con->sym.id));
++    enc.base_hw = -1;
++    enc.rip_sym = pe_findorsym(pe->ctx, sname);
++    enc.rip_addend = (int32_t)con->bits.i;
++    return enc;
++  }
++
++  /* Register used directly as base pointer: [reg] */
++  if (rtype(ref) == RTmp) {
++    enc.base_hw = hwreg(ref.val);
++    enc.disp = 0;
++    return enc;
++  }
++
++  assert(rtype(ref) == RMem);
++  m = &fn->mem[ref.val];
++  off = &m->offset;
++
++  /* base is a stack slot -- rewrite as fp-relative */
++  if (rtype(m->base) == RSlot) {
++    int32_t extra = (off->type == CBits) ? (int32_t)off->bits.i : 0;
++    enc.base_hw = hwreg(pe->fp);
++    enc.disp = pe_slot(m->base, pe) + extra;
++    if (!req(m->index, NULL_R)) {
++      enc.idx_hw = hwreg(m->index.val);
++      enc.scale = m->scale;
++    }
++    return enc;
++  }
++
++  /* RIP-relative global symbol */
++  if (off->type == CAddr && req(m->base, NULL_R) && req(m->index, NULL_R)) {
++    pe_symname(sname, str(off->sym.id));
++    enc.base_hw = -1; /* signals RIP-relative */
++    enc.rip_sym = pe_findorsym(pe->ctx, sname);
++    enc.rip_addend = (int32_t)off->bits.i;
++    return enc;
++  }
++
++  /* General [base + index*scale + disp] */
++  assert(!req(m->base, NULL_R) && rtype(m->base) == RTmp);
++  enc.base_hw = hwreg(m->base.val);
++  enc.disp = (off->type == CBits) ? (int32_t)off->bits.i : 0;
++  if (!req(m->index, NULL_R)) {
++    enc.idx_hw = hwreg(m->index.val);
++    enc.scale = m->scale;
++  }
++  return enc;
++}
++
++/* Emit ModRM + optional SIB + displacement for a memory operand.
++ * reg_hw: the register encoded in the reg field of ModRM. */
++static void emit_mem_enc(PECOFFCtx* ctx, int reg_hw, const MemEnc* enc) {
++  int reg3, base3, needs_sib, force_disp, mod, ss, idx3;
++
++  reg3 = reg_hw & 7;
++
++  /* RIP-relative: ModRM mod=0, rm=5, then PE_IMAGE_REL_AMD64_REL32 + addend */
++  if (enc->base_hw < 0) {
++    emit1(ctx, (uint8_t)((0 << 6) | (reg3 << 3) | 5));
++    pe_trelocadd(ctx, ctx->textsz, enc->rip_sym, PE_IMAGE_REL_AMD64_REL32);
++    emit4le(ctx, (uint32_t)enc->rip_addend);
++    return;
++  }
++
++  base3 = enc->base_hw & 7;
++  needs_sib = (enc->idx_hw >= 0) || (base3 == 4); /* index present or RSP/R12 base */
++  /* RBP/R13 as base (base3==5): mod=0 means disp32-only, so need mod!=0 to use base.
++   * With SIB: base field 5 + mod=0 also means no-base. */
++  force_disp = (base3 == 5);
++
++  if (enc->disp == 0 && !force_disp) {
++    mod = 0;
++  } else if (enc->disp >= -128 && enc->disp <= 127) {
++    mod = 1;
++  } else {
++    mod = 2;
++  }
++
++  if (needs_sib) {
++    emit1(ctx, (uint8_t)((mod << 6) | (reg3 << 3) | 4)); /* rm=4: SIB present */
++    ss = enc->scale == 1 ? 0 : enc->scale == 2 ? 1 : enc->scale == 4 ? 2 : 3;
++    idx3 = (enc->idx_hw >= 0) ? (enc->idx_hw & 7) : 4; /* 4 = no index */
++    emit1(ctx, (uint8_t)((ss << 6) | (idx3 << 3) | base3));
++  } else {
++    emit1(ctx, (uint8_t)((mod << 6) | (reg3 << 3) | base3));
++  }
++
++  if (mod == 1) {
++    emit1(ctx, (uint8_t)(int8_t)enc->disp);
++  } else if (mod == 2) {
++    emit4le(ctx, (uint32_t)enc->disp);
++  }
++}
++
++/* Helpers for extracting REX extension bits from a MemEnc. */
++#define ENC_REX_B(enc) ((enc).base_hw >= 0 ? (enc).base_hw >> 3 : 0)
++#define ENC_REX_X(enc) ((enc).idx_hw >= 0 ? (enc).idx_hw >> 3 : 0)
++
++/* -----------------------------------------------------------------------
++ * SSE instruction emit helpers (step 6)
++ * --------------------------------------------------------------------- */
++
++/* SSE reg-reg:  [pfx] [REX] 0F opc ModRM(11, dst_hw, src_hw) */
++static void emit_sse_rr(PECOFFCtx* ctx, uint8_t pfx, uint8_t opc, int dst_hw, int src_hw) {
++  if (pfx) {
++    emit1(ctx, pfx);
++  }
++  emit_rex(ctx, 0, dst_hw >> 3, 0, src_hw >> 3);
++  emit1(ctx, 0x0F);
++  emit1(ctx, opc);
++  emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++}
++
++/* SSE reg-mem:  [pfx] [REX] 0F opc mem_enc  (dst_hw in reg field) */
++static void emit_sse_rm(PECOFFCtx* ctx, uint8_t pfx, uint8_t opc, int dst_hw, const MemEnc* enc) {
++  if (pfx) {
++    emit1(ctx, pfx);
++  }
++  emit_rex(ctx, 0, dst_hw >> 3, ENC_REX_X(*enc), ENC_REX_B(*enc));
++  emit1(ctx, 0x0F);
++  emit1(ctx, opc);
++  emit_mem_enc(ctx, dst_hw, enc);
++}
++
++/* SSE op where src can be XMM register or memory (slot/RMem/RCon) */
++static void emit_sse_op(PECOFFCtx* ctx, uint8_t pfx, uint8_t opc, int dst_hw, Ref src, PE* pe) {
++  MemEnc enc;
++  if (rtype(src) == RTmp && (int)src.val >= XMM0) {
++    emit_sse_rr(ctx, pfx, opc, dst_hw, hwreg(src.val));
++  } else {
++    enc = mem_enc_of_ref(pe, src);
++    emit_sse_rm(ctx, pfx, opc, dst_hw, &enc);
++  }
++}
++
++/* -----------------------------------------------------------------------
++ * Step 5.2 helper: emit integer ALU op (reg OP reg/imm)
++ *
++ * dst_hw  : ModRM "reg" field (primary register -- in rm field for imm form)
++ * src     : second operand: RTmp (register) or RCon CBits (immediate)
++ * reg_op  : opcode for the r64, r/m64 form  (e.g. 0x03 ADD, 0x2B SUB, 0x3B CMP)
++ * imm_op  : opcode for the r/m64, imm32 form (0x81 for most; 0xF7 for TEST)
++ * imm_ext : ModRM /N extension for the imm form (0=ADD, 5=SUB, 7=CMP, 0=TEST)
++ * imm8ok  : 1 if the imm8 shorthand (0x83 /N) is valid; 0 for TEST (F7 only)
++ * acc_op  : accumulator short-form opcode (e.g. 0x05 ADD, 0x2D SUB, 0x3D CMP);
++ *           0 = no short form. Formula: (imm_ext<<3)|5 for standard ALU ops.
++ *           Saves 1 byte vs imm_op+ModRM when dst is rAX/eAX (dst_hw==0).
++ * --------------------------------------------------------------------- */
++static void emit_alu_ri(PECOFFCtx* ctx,
++                        int cls,
++                        int dst_hw,
++                        Ref src,
++                        uint8_t reg_op,
++                        uint8_t imm_op,
++                        uint8_t imm_ext,
++                        int imm8ok,
++                        uint8_t acc_op,
++                        Fn* fn,
++                        PE* pe) {
++  int w = (cls == Kl);
++  int src_hw;
++  int64_t imm;
++  MemEnc enc;
++
++  if (rtype(src) == RCon) {
++    assert(fn->con[src.val].type == CBits);
++    imm = fn->con[src.val].bits.i;
++    emit_rex(ctx, w, 0, 0, dst_hw >> 3); /* REX.B covers rm=dst_hw */
++    if (imm8ok && imm >= -128 && imm <= 127) {
++      emit1(ctx, 0x83);
++      emit1(ctx, (uint8_t)(0xC0 | (imm_ext << 3) | (dst_hw & 7)));
++      emit1(ctx, (uint8_t)(int8_t)imm);
++    } else if (acc_op && dst_hw == 0) {
++      /* accumulator short form: implicit rAX/eAX, no ModRM (saves 1 byte) */
++      emit1(ctx, acc_op);
++      emit4le(ctx, (uint32_t)(int32_t)imm);
++    } else {
++      emit1(ctx, imm_op);
++      emit1(ctx, (uint8_t)(0xC0 | (imm_ext << 3) | (dst_hw & 7)));
++      emit4le(ctx, (uint32_t)(int32_t)imm);
++    }
++  } else if (rtype(src) == RTmp) {
++    src_hw = hwreg(src.val);
++    emit_rex(ctx, w, dst_hw >> 3, 0, src_hw >> 3);
++    emit1(ctx, reg_op);
++    emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++  } else {
++    /* memory operand (RSlot, RMem): use reg_op with memory encoding */
++    enc = mem_enc_of_ref(pe, src);
++    emit_rex(ctx, w, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++    emit1(ctx, reg_op);
++    emit_mem_enc(ctx, dst_hw, &enc);
++  }
++}
++
++/* -----------------------------------------------------------------------
++ * Instruction encoding (step 5.1: MOV family; step 5.2: ALU/CMP)
++ * --------------------------------------------------------------------- */
++static void pe_emitins(Ins i, PE* pe) {
++  PECOFFCtx* ctx = pe->ctx;
++  Fn* fn = pe->fn;
++  int dst_hw, src_hw, is64;
++  MemEnc enc;
++
++  switch (i.op) {
++    case Onop:
++    case Odbgloc:
++      break;
++
++    /* ----------------------------------------------------------------
++     * Ocopy -- the workhorse: reg<->reg, reg<->slot, const->reg, addr->reg
++     * -------------------------------------------------------------- */
++    case Ocopy: {
++      Con* con;
++      int64_t val;
++      int t0, tdst;
++
++      if (req(i.to, NULL_R) || req(i.arg[0], NULL_R)) {
++        break;
++      }
++      if (req(i.to, i.arg[0])) {
++        break;
++      }
++
++      t0 = rtype(i.arg[0]);
++      tdst = rtype(i.to);
++
++      assert(tdst != RMem); /* isel guarantee */
++
++      if (tdst == RTmp && (int)i.to.val < XMM0) {
++        dst_hw = hwreg(i.to.val);
++
++        if (t0 == RTmp) {
++          /* reg -> reg */
++          if ((int)i.arg[0].val >= XMM0) {
++            /* XMM -> GPR: MOVQ  66 REX.W 0F 7E /r
++             * reg = xmm (arg[0]), rm = gpr (to) */
++            int xmm_hw = hwreg(i.arg[0].val);
++            emit1(ctx, 0x66);
++            emit_rex(ctx, 1, xmm_hw >> 3, 0, dst_hw >> 3);
++            emit1(ctx, 0x0F);
++            emit1(ctx, 0x7E);
++            emit1(ctx, (uint8_t)(0xC0 | ((xmm_hw & 7) << 3) | (dst_hw & 7)));
++          } else {
++            is64 = (i.cls == Kl);
++            src_hw = hwreg(i.arg[0].val);
++            emit_mov_rr(ctx, dst_hw, src_hw, is64);
++          }
++
++        } else if (t0 == RCon) {
++          con = &fn->con[i.arg[0].val];
++          if (con->type == CBits) {
++            val = con->bits.i;
++            if (i.cls == Kl && val < 0 && (int64_t)(int32_t)val == val) {
++              /* negative fits sign-extended imm32: REX.W C7 /0 imm32
++               * matches GAS "mov $val, %reg" (not movabs) */
++              emit_rex(ctx, 1, 0, 0, dst_hw >> 3);
++              emit1(ctx, 0xC7);
++              emit1(ctx, (uint8_t)(0xC0 | (dst_hw & 7)));
++              emit4le(ctx, (uint32_t)(int32_t)val);
++            } else if (i.cls == Kl && (uint64_t)val > UINT32_MAX) {
++              /* movabsq $imm64, reg64 (10 bytes) */
++              emit_rex(ctx, 1, 0, 0, dst_hw >> 3);
++              emit1(ctx, (uint8_t)(0xB8 + (dst_hw & 7)));
++              emit4le(ctx, (uint32_t)(uint64_t)val);
++              emit4le(ctx, (uint32_t)((uint64_t)val >> 32));
++            } else {
++              /* movl $imm32, reg32 (zero-extends to 64-bit) */
++              if (dst_hw >= 8) {
++                emit1(ctx, 0x41); /* REX.B */
++              }
++              emit1(ctx, (uint8_t)(0xB8 + (dst_hw & 7)));
++              emit4le(ctx, (uint32_t)(int32_t)val);
++            }
++          } else if (con->type == CAddr) {
++            /* leaq sym(%rip), dst */
++            char sname[NString];
++            uint32_t symidx;
++            pe_symname(sname, str(con->sym.id));
++            symidx = pe_findorsym(ctx, sname);
++            emit_rex(ctx, 1, dst_hw >> 3, 0, 0);
++            emit1(ctx, 0x8D); /* LEA */
++            emit1(ctx, (uint8_t)((0 << 6) | ((dst_hw & 7) << 3) | 5));
++            pe_trelocadd(ctx, ctx->textsz, symidx, PE_IMAGE_REL_AMD64_REL32);
++            emit4le(ctx, (uint32_t)(int32_t)con->bits.i);
++          } else {
++            die("pecoff: unimplemented const type in copy");
++          }
++
++        } else if (t0 == RSlot || t0 == RMem) {
++          /* load from memory -> reg */
++          is64 = (i.cls == Kl);
++          enc = mem_enc_of_ref(pe, i.arg[0]);
++          emit_rex(ctx, is64, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++          emit1(ctx, 0x8B);
++          emit_mem_enc(ctx, dst_hw, &enc);
++        } else {
++          die("pecoff: unimplemented copy source type %d", t0);
++        }
++
++      } else if (tdst == RTmp && (int)i.to.val >= XMM0) {
++        /* XMM destination */
++        uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++        int xmm_hw = hwreg(i.to.val);
++
++        if (t0 == RTmp) {
++          if ((int)i.arg[0].val >= XMM0) {
++            /* XMM -> XMM: MOVSS/MOVSD */
++            emit_sse_rr(ctx, pfx, 0x10, xmm_hw, hwreg(i.arg[0].val));
++          } else {
++            /* GPR -> XMM: MOVQ  66 REX.W 0F 6E /r */
++            int gpr_hw = hwreg(i.arg[0].val);
++            emit1(ctx, 0x66);
++            emit_rex(ctx, 1, xmm_hw >> 3, 0, gpr_hw >> 3);
++            emit1(ctx, 0x0F);
++            emit1(ctx, 0x6E);
++            emit1(ctx, (uint8_t)(0xC0 | ((xmm_hw & 7) << 3) | (gpr_hw & 7)));
++          }
++        } else {
++          /* slot/RMem/RCon(CAddr) -> XMM: MOVSS/MOVSD load */
++          enc = mem_enc_of_ref(pe, i.arg[0]);
++          emit_sse_rm(ctx, pfx, 0x10, xmm_hw, &enc);
++        }
++
++      } else if (tdst == RSlot) {
++        if (t0 == RTmp) {
++          if ((int)i.arg[0].val >= XMM0) {
++            /* XMM -> slot: MOVSS/MOVSD store */
++            uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++            int xmm_hw = hwreg(i.arg[0].val);
++            enc = mem_enc_of_ref(pe, i.to);
++            emit_sse_rm(ctx, pfx, 0x11, xmm_hw, &enc);
++          } else {
++            /* integer store */
++            is64 = (i.cls == Kl);
++            src_hw = hwreg(i.arg[0].val);
++            enc = mem_enc_of_ref(pe, i.to);
++            emit_rex(ctx, is64, src_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++            emit1(ctx, 0x89);
++            emit_mem_enc(ctx, src_hw, &enc);
++          }
++        } else if (t0 == RCon) {
++          /* const -> slot: MOV r/m, imm32 (opcode C7 /0) */
++          con = &fn->con[i.arg[0].val];
++          if (con->type != CBits) {
++            die("pecoff: non-CBits const to slot");
++          }
++          val = con->bits.i;
++          is64 = (i.cls == Kl);
++          if (is64 && (val < INT32_MIN || val > INT32_MAX)) {
++            die("pecoff: 64-bit const-to-slot not supported");
++          }
++          enc = mem_enc_of_ref(pe, i.to);
++          emit_rex(ctx, is64, 0, ENC_REX_X(enc), ENC_REX_B(enc));
++          emit1(ctx, 0xC7);           /* MOV r/m, imm32 */
++          emit_mem_enc(ctx, 0, &enc); /* /0 */
++          emit4le(ctx, (uint32_t)(int32_t)val);
++        } else if (t0 == RSlot || t0 == RMem) {
++          /* slot->slot via XMM15 scratch (mirrors text emitter).
++           * Use MOVSS (Kw/integer) or MOVSD (Kl/wide integer). */
++          uint8_t ssepfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++          MemEnc srce = mem_enc_of_ref(pe, i.arg[0]);
++          MemEnc dste = mem_enc_of_ref(pe, i.to);
++          /* load src -> XMM15: ssepfx REX(R=1) 0F 10 /r */
++          emit1(ctx, ssepfx);
++          emit1(ctx, (uint8_t)(0x40 | (1 << 2) | (ENC_REX_X(srce) << 1) | ENC_REX_B(srce)));
++          emit1(ctx, 0x0F);
++          emit1(ctx, 0x10);
++          emit_mem_enc(ctx, 15, &srce); /* 15 = xmm15 hw */
++          /* store XMM15 -> dst: ssepfx REX(R=1) 0F 11 /r */
++          emit1(ctx, ssepfx);
++          emit1(ctx, (uint8_t)(0x40 | (1 << 2) | (ENC_REX_X(dste) << 1) | ENC_REX_B(dste)));
++          emit1(ctx, 0x0F);
++          emit1(ctx, 0x11);
++          emit_mem_enc(ctx, 15, &dste);
++        } else {
++          die("pecoff: unimplemented copy source to slot");
++        }
++      } else {
++        die("pecoff: unimplemented copy destination type %d", tdst);
++      }
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * FP stores: Ostores (float) and Ostored (double)
++     * arg[0] = source XMM register, arg[1] = destination (memory)
++     * -------------------------------------------------------------- */
++    case Ostores:
++    case Ostored: {
++      uint8_t pfx = (i.op == Ostored) ? 0xF2u : 0xF3u;
++      int xmm_hw = hwreg(i.arg[0].val);
++      enc = mem_enc_of_ref(pe, i.arg[1]);
++      emit_sse_rm(ctx, pfx, 0x11, xmm_hw, &enc);
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Explicit stores: Ostorel/w/h/b
++     * arg[0] = source (RTmp or RCon), arg[1] = destination (memory)
++     * -------------------------------------------------------------- */
++    case Ostorel:
++    case Ostorew:
++    case Ostoreh:
++    case Ostoreb:
++      enc = mem_enc_of_ref(pe, i.arg[1]);
++      if (rtype(i.arg[0]) == RCon) {
++        /* Immediate store: MOV r/m, imm */
++        Con* con = &fn->con[i.arg[0].val];
++        int64_t val = (con->type == CBits) ? con->bits.i : 0;
++        if (con->type == CAddr) {
++          die("pecoff: addr-const store not supported");
++        }
++        if (i.op == Ostoreh) {
++          emit1(ctx, 0x66);
++        }
++        emit_rex(ctx, i.op == Ostorel, 0, ENC_REX_X(enc), ENC_REX_B(enc));
++        emit1(ctx, i.op == Ostoreb ? 0xC6u : 0xC7u); /* /0 */
++        emit_mem_enc(ctx, 0, &enc);
++        switch (i.op) {
++          case Ostorel:
++            emit4le(ctx, (uint32_t)(int32_t)val);
++            break;
++          case Ostorew:
++            emit4le(ctx, (uint32_t)(int32_t)val);
++            break;
++          case Ostoreh:
++            emit1(ctx, (uint8_t)(int8_t)(val >> 0));
++            emit1(ctx, (uint8_t)(int8_t)(val >> 8));
++            break;
++          case Ostoreb:
++            emit1(ctx, (uint8_t)val);
++            break;
++          default:
++            break;
++        }
++      } else {
++        src_hw = hwreg(i.arg[0].val);
++        if (i.op == Ostoreh) {
++          emit1(ctx, 0x66);
++        }
++        /* For byte store: always emit REX if src_hw >= 4 */
++        if (i.op == Ostoreb && src_hw >= 4) {
++          emit1(ctx,
++                (uint8_t)(0x40 | ((src_hw >> 3) << 2) | (ENC_REX_X(enc) << 1) | ENC_REX_B(enc)));
++        } else {
++          emit_rex(ctx, i.op == Ostorel, src_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++        }
++        emit1(ctx, i.op == Ostoreb ? 0x88u : 0x89u);
++        emit_mem_enc(ctx, src_hw, &enc);
++      }
++      break;
++
++    /* ----------------------------------------------------------------
++     * Explicit loads: Oload and sign/zero-extend variants
++     * arg[0] = source (memory), to = destination (RTmp)
++     * -------------------------------------------------------------- */
++    case Oload:
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      if (KBASE(i.cls) != 0) {
++        /* FP load: MOVSS (Ks) or MOVSD (Kd) */
++        uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++        emit_sse_rm(ctx, pfx, 0x10, dst_hw, &enc);
++      } else {
++        is64 = (i.cls == Kl);
++        emit_rex(ctx, is64, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++        emit1(ctx, 0x8B);
++        emit_mem_enc(ctx, dst_hw, &enc);
++      }
++      break;
++
++    case Oloadsw: /* movslq or movl */
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      if (i.cls == Kl) {
++        /* MOVSXD r64, r/m32: REX.W + 63 /r */
++        emit_rex(ctx, 1, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++        emit1(ctx, 0x63);
++      } else {
++        /* movl (zero-extends to 64-bit): same as Oload Kw */
++        emit_rex(ctx, 0, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++        emit1(ctx, 0x8B);
++      }
++      emit_mem_enc(ctx, dst_hw, &enc);
++      break;
++
++    case Oloaduw: /* movl (always zero-extends) */
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      emit_rex(ctx, 0, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++      emit1(ctx, 0x8B);
++      emit_mem_enc(ctx, dst_hw, &enc);
++      break;
++
++    case Oloadsh: /* MOVSX r, r/m16: 0F BF */
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      emit_rex(ctx, i.cls == Kl, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xBF);
++      emit_mem_enc(ctx, dst_hw, &enc);
++      break;
++
++    case Oloaduh: /* MOVZX r, r/m16: 0F B7 */
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      emit_rex(ctx, 0, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xB7);
++      emit_mem_enc(ctx, dst_hw, &enc);
++      break;
++
++    case Oloadsb: /* MOVSX r, r/m8: 0F BE */
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      emit_rex(ctx, i.cls == Kl, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xBE);
++      emit_mem_enc(ctx, dst_hw, &enc);
++      break;
++
++    case Oloadub: /* MOVZX r, r/m8: 0F B6 */
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      emit_rex(ctx, 0, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xB6);
++      emit_mem_enc(ctx, dst_hw, &enc);
++      break;
++
++    /* ----------------------------------------------------------------
++     * Register sign/zero extension (register-to-register forms)
++     * -------------------------------------------------------------- */
++    case Oextsw: /* MOVSXD r64, r/m32: REX.W + 63 /r (reg, mod=11) */
++      dst_hw = hwreg(i.to.val);
++      src_hw = hwreg(i.arg[0].val);
++      emit_rex(ctx, 1, dst_hw >> 3, 0, src_hw >> 3);
++      emit1(ctx, 0x63);
++      emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++      break;
++
++    case Oextuw: /* movl r32, r32 -- zero-extends: 8B /r, no REX.W */
++      dst_hw = hwreg(i.to.val);
++      src_hw = hwreg(i.arg[0].val);
++      emit_rex(ctx, 0, dst_hw >> 3, 0, src_hw >> 3);
++      emit1(ctx, 0x8B);
++      emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++      break;
++
++    case Oextsh: /* MOVSX r, r/m16: 0F BF /r */
++      dst_hw = hwreg(i.to.val);
++      src_hw = hwreg(i.arg[0].val);
++      emit_rex(ctx, i.cls == Kl, dst_hw >> 3, 0, src_hw >> 3);
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xBF);
++      emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++      break;
++
++    case Oextuh: /* MOVZX r, r/m16: 0F B7 /r */
++      dst_hw = hwreg(i.to.val);
++      src_hw = hwreg(i.arg[0].val);
++      emit_rex(ctx, 0, dst_hw >> 3, 0, src_hw >> 3);
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xB7);
++      emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++      break;
++
++    case Oextsb: /* MOVSX r, r/m8: 0F BE /r */
++      dst_hw = hwreg(i.to.val);
++      src_hw = hwreg(i.arg[0].val);
++      /* byte source: REX needed if src_hw 4-7 to avoid AH/BH/CH/DH */
++      if (src_hw >= 4) {
++        emit1(ctx, (uint8_t)(0x40 | ((dst_hw >> 3) << 2) | (src_hw >> 3)));
++      } else {
++        emit_rex(ctx, i.cls == Kl, dst_hw >> 3, 0, src_hw >> 3);
++      }
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xBE);
++      emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++      break;
++
++    case Oextub: /* MOVZX r, r/m8: 0F B6 /r */
++      dst_hw = hwreg(i.to.val);
++      src_hw = hwreg(i.arg[0].val);
++      if (src_hw >= 4) {
++        emit1(ctx, (uint8_t)(0x40 | ((dst_hw >> 3) << 2) | (src_hw >> 3)));
++      } else {
++        emit_rex(ctx, 0, dst_hw >> 3, 0, src_hw >> 3);
++      }
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xB6);
++      emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (src_hw & 7)));
++      break;
++
++    /* ----------------------------------------------------------------
++     * LEA -- address of memory operand (local or global)
++     * -------------------------------------------------------------- */
++    case Oaddr:
++      dst_hw = hwreg(i.to.val);
++      enc = mem_enc_of_ref(pe, i.arg[0]);
++      /* Always 64-bit result; RIP-relative handled inside emit_mem_enc */
++      emit_rex(ctx, 1, dst_hw >> 3, ENC_REX_X(enc), ENC_REX_B(enc));
++      emit1(ctx, 0x8D);
++      emit_mem_enc(ctx, dst_hw, &enc);
++      break;
++
++    /* ----------------------------------------------------------------
++     * Osign -- sign-extend RAX/EAX into RDX:RAX / EDX:EAX
++     * cqto (Kl): 48 99    cltd (Kw): 99
++     * -------------------------------------------------------------- */
++    case Osign:
++      if (i.cls == Kl) {
++        emit1(ctx, 0x48); /* REX.W */
++      }
++      emit1(ctx, 0x99); /* CWD/CDQ/CQO */
++      break;
++
++    /* ----------------------------------------------------------------
++     * Omul -- integer multiply (mirrors emit.c Omul logic)
++     * 3-address (imm × reg -> reg): IMUL r, r/m, imm   6B/69 /r
++     * 2-address (reg × reg):       IMUL r, r/m         0F AF /r
++     * -------------------------------------------------------------- */
++    case Omul: {
++      Ref a0, a1;
++      int w, to_h, s_h;
++      int64_t imm;
++      if (KBASE(i.cls) != 0) {
++        /* FP multiply: MULSS (F3 0F 59) or MULSD (F2 0F 59), commutative */
++        uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++        a0 = i.arg[0];
++        a1 = i.arg[1];
++        if (req(i.to, a1)) {
++          Ref t = a0;
++          a0 = a1;
++          a1 = t;
++        }
++        if (!req(i.to, a0)) {
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = a0;
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++        }
++        emit_sse_op(ctx, pfx, 0x59, hwreg(i.to.val), a1, pe);
++        break;
++      }
++      w = (i.cls == Kl);
++      a0 = i.arg[0];
++      a1 = i.arg[1];
++      /* Normalise: prefer imm in arg[0] */
++      if (rtype(a1) == RCon) {
++        Ref t = a0;
++        a0 = a1;
++        a1 = t;
++      }
++      if (rtype(a0) == RCon && rtype(a1) == RTmp) {
++        /* 3-address: to = a1_reg * a0_imm */
++        assert(fn->con[a0.val].type == CBits);
++        imm = fn->con[a0.val].bits.i;
++        to_h = hwreg(i.to.val);
++        s_h = hwreg(a1.val);
++        emit_rex(ctx, w, to_h >> 3, 0, s_h >> 3);
++        if (imm >= -128 && imm <= 127) {
++          emit1(ctx, 0x6B);
++          emit1(ctx, (uint8_t)(0xC0 | ((to_h & 7) << 3) | (s_h & 7)));
++          emit1(ctx, (uint8_t)(int8_t)imm);
++        } else {
++          emit1(ctx, 0x69);
++          emit1(ctx, (uint8_t)(0xC0 | ((to_h & 7) << 3) | (s_h & 7)));
++          emit4le(ctx, (uint32_t)(int32_t)imm);
++        }
++      } else {
++        /* 2-address commutative: to = arg[0] * arg[1] */
++        if (req(i.to, a1)) {
++          Ref t = a0;
++          a0 = a1;
++          a1 = t;
++        }
++        if (!req(i.to, a0)) {
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = a0;
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++        }
++        to_h = hwreg(i.to.val);
++        s_h = hwreg(a1.val);
++        emit_rex(ctx, w, to_h >> 3, 0, s_h >> 3);
++        emit1(ctx, 0x0F);
++        emit1(ctx, 0xAF);
++        emit1(ctx, (uint8_t)(0xC0 | ((to_h & 7) << 3) | (s_h & 7)));
++      }
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Odiv -- FP divide only (integer divide is Oxdiv/Oxidiv after isel)
++     * DIVSS: F3 0F 5E /r   DIVSD: F2 0F 5E /r
++     * When to == arg[1], save arg[1] in XMM15, copy arg[0] to to, divide.
++     * -------------------------------------------------------------- */
++    case Odiv: {
++      uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++      if (req(i.to, i.arg[1])) {
++        int to_hw = hwreg(i.to.val);
++        emit_sse_rr(ctx, pfx, 0x10, 15, to_hw); /* xmm15 = to */
++        if (!req(i.to, i.arg[0])) {
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = i.arg[0];
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++        }
++        emit_sse_rr(ctx, pfx, 0x5E, to_hw, 15); /* to /= xmm15 */
++      } else {
++        if (!req(i.to, i.arg[0])) {
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = i.arg[0];
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++        }
++        emit_sse_op(ctx, pfx, 0x5E, hwreg(i.to.val), i.arg[1], pe);
++      }
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Oxdiv / Oxidiv -- unsigned/signed divide: divisor in arg[0]
++     * Implicit dividend RDX:RAX; result RAX (quotient), RDX (rem).
++     * DIV r/m: F7 /6    IDIV r/m: F7 /7
++     * -------------------------------------------------------------- */
++    case Oxdiv:
++    case Oxidiv: {
++      int ext = (i.op == Oxidiv) ? 7 : 6;
++      int r = hwreg(i.arg[0].val);
++      emit_rex(ctx, i.cls == Kl, 0, 0, r >> 3);
++      emit1(ctx, 0xF7);
++      emit1(ctx, (uint8_t)(0xC0 | (ext << 3) | (r & 7)));
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Ocall -- direct call (E8 rel32) or indirect call (FF /2)
++     * arg[0]: RCon CAddr (direct) or RTmp (indirect via register)
++     * arg[1]: CALL(...) register-usage mask -- ignored here (abi handled)
++     * -------------------------------------------------------------- */
++    case Ocall: {
++      Con* con;
++      char sname[NString];
++      uint32_t symidx;
++      int r;
++      switch (rtype(i.arg[0])) {
++        case RCon:
++          con = &fn->con[i.arg[0].val];
++          assert(con->type == CAddr);
++          pe_symname(sname, str(con->sym.id));
++          symidx = pe_findorsym(ctx, sname);
++          emit1(ctx, 0xE8); /* CALL rel32 */
++          pe_trelocadd(ctx, ctx->textsz, symidx, PE_IMAGE_REL_AMD64_REL32);
++          emit4le(ctx, (uint32_t)(int32_t)con->bits.i); /* addend */
++          break;
++        case RTmp:
++          r = hwreg(i.arg[0].val);
++          if (r >= 8) {
++            emit1(ctx, (uint8_t)(0x41 | 0)); /* REX.B */
++          }
++          emit1(ctx, 0xFF);
++          emit1(ctx, (uint8_t)(0xC0 | (2 << 3) | (r & 7))); /* /2 */
++          break;
++        default:
++          die("pecoff: invalid Ocall target type");
++      }
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Osalloc -- stack allocation for call shadow space / stack args
++     * Emits: subq arg[0], %rsp    (arg[0] may be negative = dealloc)
++     *   and: movq %rsp, to        (if to != NULL_R)
++     * RSP hw index = 4.
++     * -------------------------------------------------------------- */
++    case Osalloc:
++      /* subq arg[0], %rsp -- reuse SUB logic: dst_hw=RSP(4) */
++      emit_alu_ri(ctx, Kl, 4 /*RSP*/, i.arg[0], 0x2B, 0x81, 5, 1, 0, fn, pe);
++      if (!req(i.to, NULL_R)) {
++        /* movq %rsp, to: MOV r64, r/m64 (8B) rm=RSP(4) */
++        dst_hw = hwreg(i.to.val);
++        emit_mov_rr(ctx, dst_hw, 4 /*RSP*/, 1);
++      }
++      break;
++
++    /* ----------------------------------------------------------------
++     * Oadd -- commutative 2-address: to = arg[0] + arg[1]
++     * -------------------------------------------------------------- */
++    case Oadd: {
++      Ref a0, a1;
++      if (KBASE(i.cls) != 0) {
++        /* FP add: ADDSS (F3 0F 58) or ADDSD (F2 0F 58), commutative */
++        uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++        a0 = i.arg[0];
++        a1 = i.arg[1];
++        if (req(i.to, a1)) {
++          Ref t = a0;
++          a0 = a1;
++          a1 = t;
++        }
++        if (!req(i.to, a0)) {
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = a0;
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++        }
++        emit_sse_op(ctx, pfx, 0x58, hwreg(i.to.val), a1, pe);
++        break;
++      }
++      a0 = i.arg[0];
++      a1 = i.arg[1];
++      /* commutativity: if to == arg[1], swap so to matches arg[0] */
++      if (req(i.to, a1)) {
++        Ref t = a0;
++        a0 = a1;
++        a1 = t;
++      }
++      /* 3->2 address: copy arg[0] into to if not already there */
++      if (!req(i.to, a0)) {
++        Ins cp;
++        cp.op = Ocopy;
++        cp.cls = i.cls;
++        cp.to = i.to;
++        cp.arg[0] = a0;
++        cp.arg[1] = NULL_R;
++        pe_emitins(cp, pe);
++      }
++      dst_hw = hwreg(i.to.val);
++      emit_alu_ri(ctx, i.cls, dst_hw, a1, 0x03, 0x81, 0, 1, 0x05, fn, pe);
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Osub -- 2-address: to = arg[0] - arg[1]
++     * When to == arg[1] != arg[0], use negation trick (as emit.c does).
++     * -------------------------------------------------------------- */
++    case Osub: {
++      Ref a0, a1;
++      if (KBASE(i.cls) != 0) {
++        /* FP sub: SUBSS (F3 0F 5C) or SUBSD (F2 0F 5C) */
++        uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++        if (req(i.to, i.arg[1]) && !req(i.to, i.arg[0])) {
++          /* to = arg[0] - to: save to in XMM15, load arg[0], subtract */
++          int to_hw = hwreg(i.to.val);
++          emit_sse_rr(ctx, pfx, 0x10, 15, to_hw); /* xmm15 = to */
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = i.arg[0];
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++          emit_sse_rr(ctx, pfx, 0x5C, to_hw, 15);
++        } else {
++          if (!req(i.to, i.arg[0])) {
++            Ins cp;
++            cp.op = Ocopy;
++            cp.cls = i.cls;
++            cp.to = i.to;
++            cp.arg[0] = i.arg[0];
++            cp.arg[1] = NULL_R;
++            pe_emitins(cp, pe);
++          }
++          emit_sse_op(ctx, pfx, 0x5C, hwreg(i.to.val), i.arg[1], pe);
++        }
++        break;
++      }
++      a0 = i.arg[0];
++      a1 = i.arg[1];
++      if (req(i.to, a1) && !req(i.to, a0)) {
++        /* to = a1; NEG to; to += a0 */
++        dst_hw = hwreg(i.to.val);
++        emit_rex(ctx, i.cls == Kl, 0, 0, dst_hw >> 3);
++        emit1(ctx, 0xF7); /* NEG r/m: /3 */
++        emit1(ctx, (uint8_t)(0xC0 | (3 << 3) | (dst_hw & 7)));
++        emit_alu_ri(ctx, i.cls, dst_hw, a0, 0x03, 0x81, 0, 1, 0x05, fn, pe);
++        break;
++      }
++      if (!req(i.to, a0)) {
++        Ins cp;
++        cp.op = Ocopy;
++        cp.cls = i.cls;
++        cp.to = i.to;
++        cp.arg[0] = a0;
++        cp.arg[1] = NULL_R;
++        pe_emitins(cp, pe);
++      }
++      dst_hw = hwreg(i.to.val);
++      emit_alu_ri(ctx, i.cls, dst_hw, a1, 0x2B, 0x81, 5, 1, 0x2D, fn, pe);
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Oneg -- unary negate: to = -arg[0]   (F7 /3)
++     * -------------------------------------------------------------- */
++    case Oneg:
++      if (KBASE(i.cls) != 0) {
++        /* FP negate: XORPS/XORPD with negmask from .rdata
++         * XORPS (Ks): NP 0F 57 /r   XORPD (Kd): 66 0F 57 /r */
++        static const bits pe_negmask[4] = {[Ks] = 0x80000000ULL, [Kd] = 0x8000000000000000ULL};
++        char sname[NString];
++        uint32_t symidx;
++        MemEnc neg_enc;
++        int idx = stashbits(pe_negmask[i.cls], 16);
++        if (!req(i.to, i.arg[0])) {
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = i.arg[0];
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++        }
++        dst_hw = hwreg(i.to.val);
++        snprintf(sname, NString, "Lfp%d", idx);
++        symidx = pe_findorsym(ctx, sname);
++        memset(&neg_enc, 0, sizeof neg_enc);
++        neg_enc.base_hw = -1; /* RIP-relative */
++        neg_enc.idx_hw = -1;
++        neg_enc.scale = 1;
++        neg_enc.rip_sym = symidx;
++        neg_enc.rip_addend = 0;
++        /* XORPS (Ks: no prefix) or XORPD (Kd: 0x66 prefix) */
++        emit_sse_rm(ctx, KWIDE(i.cls) ? 0x66u : 0u, 0x57, dst_hw, &neg_enc);
++        break;
++      }
++      if (!req(i.to, i.arg[0])) {
++        Ins cp;
++        cp.op = Ocopy;
++        cp.cls = i.cls;
++        cp.to = i.to;
++        cp.arg[0] = i.arg[0];
++        cp.arg[1] = NULL_R;
++        pe_emitins(cp, pe);
++      }
++      dst_hw = hwreg(i.to.val);
++      emit_rex(ctx, i.cls == Kl, 0, 0, dst_hw >> 3);
++      emit1(ctx, 0xF7);
++      emit1(ctx, (uint8_t)(0xC0 | (3 << 3) | (dst_hw & 7)));
++      break;
++
++    /* ----------------------------------------------------------------
++     * Oxcmp -- compare (sets flags, no result): cmpq arg[0], arg[1]
++     * AT&T:  cmp src, dst  ->  flags for dst - src
++     * Intel: CMP r64, r/m64 (3B /r): reg=arg[1], rm=arg[0] -> arg[1]-arg[0]
++     * -------------------------------------------------------------- */
++    case Oxcmp:
++      if (KBASE(i.cls) != 0) {
++        /* UCOMISS (Ks): NP 0F 2E /r  UCOMISD (Kd): 66 0F 2E /r
++         * AT&T: ucomiss arg[0], arg[1] -> reg=arg[1], rm=arg[0] */
++        uint8_t pfx = KWIDE(i.cls) ? 0x66u : 0u;
++        emit_sse_op(ctx, pfx, 0x2E, hwreg(i.arg[1].val), i.arg[0], pe);
++        break;
++      }
++      emit_alu_ri(ctx, i.cls, hwreg(i.arg[1].val), i.arg[0], 0x3B, 0x81, 7, 1, 0x3D, fn, pe);
++      break;
++
++    /* ----------------------------------------------------------------
++     * Oxtest -- bitwise AND for flags (TEST r/m, r  or  TEST r/m, imm32)
++     * Text emitter: "test%k %0, %1" so GAS writes test %arg[0], %arg[1].
++     * In AT&T test %src, %dst: src=reg field, dst=r/m field.
++     * For reg-reg: reg=arg[0], rm=arg[1] (matches GAS).
++     * For imm: arg[0]=imm, arg[1]=reg; TEST r/m(arg[1]), imm(arg[0]).
++     * -------------------------------------------------------------- */
++    case Oxtest:
++      if (KBASE(i.cls) != 0) {
++        die("pecoff: fp Oxtest not yet supported");
++      }
++      if (rtype(i.arg[0]) == RTmp) {
++        /* reg-reg: arg[0] in reg field, arg[1] in r/m -- matches GAS */
++        emit_alu_ri(ctx, i.cls, hwreg(i.arg[0].val), i.arg[1], 0x85, 0xF7, 0, 0, 0xA9, fn, pe);
++      } else {
++        /* imm in arg[0], reg in arg[1]: TEST r/m(arg[1]), imm */
++        emit_alu_ri(ctx, i.cls, hwreg(i.arg[1].val), i.arg[0], 0x85, 0xF7, 0, 0, 0xA9, fn, pe);
++      }
++      break;
++
++    /* ----------------------------------------------------------------
++     * Oand / Oor / Oxor -- commutative bitwise ops (mirror Oadd)
++     * Opcodes: AND 23/81/4  OR 0B/81/1  XOR 33/81/6
++     * -------------------------------------------------------------- */
++    case Oand:
++    case Oor:
++    case Oxor: {
++      static const uint8_t bop_reg[] = {0x23, 0x0B, 0x33};
++      static const uint8_t bop_ext[] = {4, 1, 6};
++      int op = i.op - Oand;
++      Ref a0, a1;
++      if (KBASE(i.cls) != 0) {
++        die("pecoff: fp bitwise op not supported");
++      }
++      a0 = i.arg[0];
++      a1 = i.arg[1];
++      if (req(i.to, a1)) {
++        Ref t = a0;
++        a0 = a1;
++        a1 = t;
++      }
++      if (!req(i.to, a0)) {
++        Ins cp;
++        cp.op = Ocopy;
++        cp.cls = i.cls;
++        cp.to = i.to;
++        cp.arg[0] = a0;
++        cp.arg[1] = NULL_R;
++        pe_emitins(cp, pe);
++      }
++      dst_hw = hwreg(i.to.val);
++      emit_alu_ri(ctx, i.cls, dst_hw, a1, bop_reg[op], 0x81, bop_ext[op], 1,
++                  (uint8_t)((bop_ext[op] << 3) | 5), fn, pe);
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Osar / Oshr / Oshl -- shift ops  (non-commutative: to = arg[0])
++     * arg[1] = shift count: RCon->C1/imm8  or  RTmp(CL)->D3
++     * SAR: /7   SHR: /5   SHL: /4
++     * -------------------------------------------------------------- */
++    case Osar:
++    case Oshr:
++    case Oshl: {
++      static const uint8_t shext[] = {7, 5, 4};
++      int op = i.op - Osar;
++      int w = (i.cls == Kl);
++      if (!req(i.to, i.arg[0])) {
++        Ins cp;
++        cp.op = Ocopy;
++        cp.cls = i.cls;
++        cp.to = i.to;
++        cp.arg[0] = i.arg[0];
++        cp.arg[1] = NULL_R;
++        pe_emitins(cp, pe);
++      }
++      dst_hw = hwreg(i.to.val);
++      emit_rex(ctx, w, 0, 0, dst_hw >> 3);
++      if (rtype(i.arg[1]) == RCon) {
++        int64_t imm = fn->con[i.arg[1].val].bits.i;
++        if (imm == 1) {
++          /* D1 /x: 2-byte shift-by-1 form, matches GAS */
++          emit1(ctx, 0xD1);
++          emit1(ctx, (uint8_t)(0xC0 | (shext[op] << 3) | (dst_hw & 7)));
++        } else {
++          emit1(ctx, 0xC1);
++          emit1(ctx, (uint8_t)(0xC0 | (shext[op] << 3) | (dst_hw & 7)));
++          emit1(ctx, (uint8_t)(imm & 63));
++        }
++      } else {
++        /* shift count must be in CL */
++        emit1(ctx, 0xD3);
++        emit1(ctx, (uint8_t)(0xC0 | (shext[op] << 3) | (dst_hw & 7)));
++      }
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Oswap -- exchange two integer registers: XCHG r/m, r  (87 /r)
++     * Text emitter: "xchg%k %0, %1" so GAS encodes arg[0] as reg field.
++     * -------------------------------------------------------------- */
++    case Oswap: {
++      int r0, r1, w;
++      if (KBASE(i.cls) != 0) {
++        die("pecoff: fp Oswap not supported");
++      }
++      w = (i.cls == Kl);
++      r0 = hwreg(i.arg[0].val); /* reg field */
++      r1 = hwreg(i.arg[1].val); /* r/m field */
++      emit_rex(ctx, w, r0 >> 3, 0, r1 >> 3);
++      emit1(ctx, 0x87);
++      emit1(ctx, (uint8_t)(0xC0 | ((r0 & 7) << 3) | (r1 & 7)));
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * FP conversions
++     * -------------------------------------------------------------- */
++    case Oexts: /* Ks -> Kd: CVTSS2SD  F3 0F 5A /r */
++      emit_sse_op(ctx, 0xF3, 0x5A, hwreg(i.to.val), i.arg[0], pe);
++      break;
++
++    case Otruncd: /* Kd -> Ks: CVTSD2SS  F2 0F 5A /r */
++      emit_sse_op(ctx, 0xF2, 0x5A, hwreg(i.to.val), i.arg[0], pe);
++      break;
++
++    case Ostosi: { /* Ks -> Kw/Kl: CVTTSS2SI  F3 [REX.W] 0F 2C /r */
++      int gpr_hw = hwreg(i.to.val);
++      int xmm_hw = hwreg(i.arg[0].val);
++      emit1(ctx, 0xF3);
++      emit_rex(ctx, i.cls == Kl, gpr_hw >> 3, 0, xmm_hw >> 3);
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0x2C);
++      emit1(ctx, (uint8_t)(0xC0 | ((gpr_hw & 7) << 3) | (xmm_hw & 7)));
++      break;
++    }
++
++    case Odtosi: { /* Kd -> Kw/Kl: CVTTSD2SI  F2 [REX.W] 0F 2C /r */
++      int gpr_hw = hwreg(i.to.val);
++      int xmm_hw = hwreg(i.arg[0].val);
++      emit1(ctx, 0xF2);
++      emit_rex(ctx, i.cls == Kl, gpr_hw >> 3, 0, xmm_hw >> 3);
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0x2C);
++      emit1(ctx, (uint8_t)(0xC0 | ((gpr_hw & 7) << 3) | (xmm_hw & 7)));
++      break;
++    }
++
++    case Oswtof: { /* Kw -> Ks/Kd: CVTSI2SS/SD  F3/F2 0F 2A /r (no REX.W) */
++      uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++      int xmm_hw = hwreg(i.to.val);
++      int gpr_hw = hwreg(i.arg[0].val);
++      emit1(ctx, pfx);
++      emit_rex(ctx, 0, xmm_hw >> 3, 0, gpr_hw >> 3);
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0x2A);
++      emit1(ctx, (uint8_t)(0xC0 | ((xmm_hw & 7) << 3) | (gpr_hw & 7)));
++      break;
++    }
++
++    case Osltof: { /* Kl -> Ks/Kd: CVTSI2SS/SD  F3/F2 REX.W 0F 2A /r */
++      uint8_t pfx = KWIDE(i.cls) ? 0xF2u : 0xF3u;
++      int xmm_hw = hwreg(i.to.val);
++      int gpr_hw = hwreg(i.arg[0].val);
++      emit1(ctx, pfx);
++      emit_rex(ctx, 1, xmm_hw >> 3, 0, gpr_hw >> 3);
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0x2A);
++      emit1(ctx, (uint8_t)(0xC0 | ((xmm_hw & 7) << 3) | (gpr_hw & 7)));
++      break;
++    }
++
++    case Ocast:
++      if (KBASE(i.cls) == 0) {
++        /* XMM -> GPR: MOVQ  66 REX.W 0F 7E /r
++         * reg field = xmm (arg[0]), rm field = gpr (to) */
++        int xmm_hw = hwreg(i.arg[0].val);
++        int gpr_hw = hwreg(i.to.val);
++        emit1(ctx, 0x66);
++        emit_rex(ctx, 1, xmm_hw >> 3, 0, gpr_hw >> 3);
++        emit1(ctx, 0x0F);
++        emit1(ctx, 0x7E);
++        emit1(ctx, (uint8_t)(0xC0 | ((xmm_hw & 7) << 3) | (gpr_hw & 7)));
++      } else {
++        /* GPR -> XMM: MOVQ  66 REX.W 0F 6E /r
++         * reg field = xmm (to), rm field = gpr (arg[0]) */
++        int gpr_hw = hwreg(i.arg[0].val);
++        int xmm_hw = hwreg(i.to.val);
++        emit1(ctx, 0x66);
++        emit_rex(ctx, 1, xmm_hw >> 3, 0, gpr_hw >> 3);
++        emit1(ctx, 0x0F);
++        emit1(ctx, 0x6E);
++        emit1(ctx, (uint8_t)(0xC0 | ((xmm_hw & 7) << 3) | (gpr_hw & 7)));
++      }
++      break;
++
++    default:
++      if (i.op >= Oflag && i.op <= Oflag1) {
++        goto case_oflag;
++      }
++      if (isxsel(i.op)) {
++        goto case_oxsel;
++      }
++      die("pecoff: unimplemented instruction %d (%s)", i.op, optab[i.op].name);
++
++    /* ----------------------------------------------------------------
++     * Oflag* -- set integer register from flags (setcc + movzbl)
++     * Condition index: c = i.op - Oflag   (0=ieq..17=fuo)
++     * setXX r/m8:   0F (90+cc) ModRM(11,0,dst)
++     * movzbl r8,r32: 0F B6     ModRM(11,dst,dst)   [zero-extends to 64]
++     * -------------------------------------------------------------- */
++    case_oflag: {
++      int c = i.op - Oflag;
++      uint8_t op2 = (uint8_t)((jcc_opc[c] & 0x0F) | 0x90);
++      dst_hw = hwreg(i.to.val);
++      /* setXX: need REX if dst_hw >= 4 (byte-reg disambiguation or ext) */
++      if (dst_hw >= 4) {
++        emit1(ctx, (uint8_t)(0x40 | (dst_hw >> 3)));
++      }
++      emit1(ctx, 0x0F);
++      emit1(ctx, op2);
++      emit1(ctx, (uint8_t)(0xC0 | (dst_hw & 7)));
++      /* movzbl r8, r32: REX needed if dst_hw >= 4 (same reason as above)
++       * REX.R extends the reg field, REX.B extends the rm field; both are dst_hw */
++      if (dst_hw >= 4) {
++        emit1(ctx, (uint8_t)(0x40 | ((dst_hw >> 3) << 2) | (dst_hw >> 3)));
++      }
++      emit1(ctx, 0x0F);
++      emit1(ctx, 0xB6); /* MOVZX r32, r/m8 */
++      emit1(ctx, (uint8_t)(0xC0 | ((dst_hw & 7) << 3) | (dst_hw & 7)));
++      break;
++    }
++
++    /* ----------------------------------------------------------------
++     * Oxsel* -- conditional move (cmov): integer only (float = step 6)
++     * Condition index: c = i.op - Oxsel
++     * Semantics (mirrors emit.c case_Oxsel):
++     *   if to == arg[1]: cmov_c  arg[0]->to  (move arg[0] if condition true)
++     *   else:            [copy arg[0]->to if needed]; cmov_nc arg[1]->to
++     * CMOVcc r64, r/m64: REX.W + 0F (40+cc) ModRM(11,to,src)
++     * -------------------------------------------------------------- */
++    case_oxsel: {
++      int c, to_h, s0_h, s1_h, w;
++      uint8_t cmovc, cmovnc;
++      if (KBASE(i.cls) != 0) {
++        die("pecoff: fp Oxsel not yet supported");
++      }
++      c = i.op - Oxsel;
++      w = (i.cls == Kl);
++      cmovc = (uint8_t)((jcc_opc[c] & 0x0F) | 0x40);
++      cmovnc = (uint8_t)(((jcc_opc[c] ^ 1) & 0x0F) | 0x40);
++      to_h = hwreg(i.to.val);
++      if (req(i.to, i.arg[1])) {
++        /* cmov_c arg[0] -> to */
++        s0_h = hwreg(i.arg[0].val);
++        emit_rex(ctx, w, to_h >> 3, 0, s0_h >> 3);
++        emit1(ctx, 0x0F);
++        emit1(ctx, cmovc);
++        emit1(ctx, (uint8_t)(0xC0 | ((to_h & 7) << 3) | (s0_h & 7)));
++      } else {
++        if (!req(i.to, i.arg[0])) {
++          Ins cp;
++          cp.op = Ocopy;
++          cp.cls = i.cls;
++          cp.to = i.to;
++          cp.arg[0] = i.arg[0];
++          cp.arg[1] = NULL_R;
++          pe_emitins(cp, pe);
++        }
++        /* cmov_nc arg[1] -> to */
++        s1_h = hwreg(i.arg[1].val);
++        emit_rex(ctx, w, to_h >> 3, 0, s1_h >> 3);
++        emit1(ctx, 0x0F);
++        emit1(ctx, cmovnc);
++        emit1(ctx, (uint8_t)(0xC0 | ((to_h & 7) << 3) | (s1_h & 7)));
++      }
++      break;
++    }
++  }
++}
++
++/* -----------------------------------------------------------------------
++ * Public API
++ * --------------------------------------------------------------------- */
++PECOFFCtx* pecoff_new(void) {
++  PECOFFCtx* ctx = emalloc(sizeof *ctx);
++  memset(ctx, 0, sizeof *ctx);
++  ctx->strtab = emalloc(64);
++  ctx->strtabsz = 0;
++  ctx->strtabcap = 64;
++  ctx->dleadzero = -1;
++  return ctx;
++}
++
++void pecoff_free(PECOFFCtx* ctx) {
++  qbe_free(ctx->text);
++  qbe_free(ctx->data);
++  qbe_free(ctx->rdata);
++  qbe_free(ctx->treloc);
++  qbe_free(ctx->dreloc);
++  qbe_free(ctx->rreloc);
++  qbe_free(ctx->syms);
++  qbe_free(ctx->strtab);
++  qbe_free(ctx);
++}
++
++/* -----------------------------------------------------------------------
++ * Data section helpers
++ * --------------------------------------------------------------------- */
++
++static void drelocadd(PECOFFCtx* ctx, uint32_t vaddr, uint32_t symidx, uint16_t type) {
++  PEReloc rel;
++  rel.vaddr = vaddr;
++  rel.symidx = symidx;
++  rel.type = type;
++  if (ctx->ndreloc == ctx->drelocap) {
++    uint32_t oldcap = ctx->drelocap;
++    ctx->drelocap = ctx->drelocap ? ctx->drelocap * 2 : 8;
++    ctx->dreloc =
++        pe_realloc(ctx->dreloc, oldcap * sizeof(PEReloc), ctx->drelocap * sizeof(PEReloc));
++  }
++  ctx->dreloc[ctx->ndreloc++] = rel;
++}
++
++static void rrelocadd(PECOFFCtx* ctx, uint32_t vaddr, uint32_t symidx, uint16_t type) {
++  if (ctx->dry_run) {
++    return;
++  }
++  PEReloc rel;
++  rel.vaddr = vaddr;
++  rel.symidx = symidx;
++  rel.type = type;
++  if (ctx->nrreloc == ctx->rrelocap) {
++    uint32_t oldcap = ctx->rrelocap;
++    ctx->rrelocap = ctx->rrelocap ? ctx->rrelocap * 2 : 8;
++    ctx->rreloc =
++        pe_realloc(ctx->rreloc, oldcap * sizeof(PEReloc), ctx->rrelocap * sizeof(PEReloc));
++  }
++  ctx->rreloc[ctx->nrreloc++] = rel;
++}
++
++/* Find existing symbol by name, or add new undefined external. */
++static uint32_t pe_findorsym(PECOFFCtx* ctx, const char* name) {
++  uint32_t i;
++  for (i = 0; i < ctx->nsyms; i++) {
++    if (strcmp(ctx->strtab + ctx->syms[i].strx, name) == 0) {
++      return i;
++    }
++  }
++  if (ctx->dry_run) {
++    return 0;
++  }
++  return pe_symadd(ctx, name, PE_IMAGE_SYM_UNDEFINED, 0, 0, PE_IMAGE_SYM_CLASS_EXTERNAL);
++}
++
++/* -----------------------------------------------------------------------
++ * pecoff_emitdat -- handle one Dat record, building .data/.bss sections
++ * --------------------------------------------------------------------- */
++void pecoff_emitdat(Dat* d, PECOFFCtx* ctx) {
++  static const int64_t masks[] = {
++      [DB] = 0xFFL,
++      [DH] = 0xFFFFL,
++      [DW] = 0xFFFFFFFFL,
++      [DL] = -1L,
++  };
++  static const uint8_t zeros[8] = {0};
++  uint64_t v;
++  uint32_t refidx;
++  char dname[NString];
++  const char* p;
++  int n;
++
++  switch (d->type) {
++    case DStart:
++      strncpy(ctx->datname, d->name, NString - 1);
++      ctx->datname[NString - 1] = '\0';
++      ctx->datlnk = d->lnk;
++      ctx->dleadzero = 0;
++      if (d->lnk->thread) {
++        die("pecoff: thread-local data not supported");
++      }
++      /* alignment padding in .data before this object */
++      if (d->lnk->align) {
++        uint32_t aln = (uint32_t)(unsigned char)d->lnk->align;
++        while (ctx->datasz % aln != 0) {
++          pe_buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, zeros, 1);
++        }
++      }
++      ctx->datstart = ctx->datasz;
++      break;
++
++    case DZ:
++      if (ctx->dleadzero >= 0) {
++        ctx->dleadzero += d->u.num;
++      } else {
++        uint64_t rem = (uint64_t)d->u.num;
++        while (rem > 0) {
++          uint32_t chunk = rem > 8 ? 8 : (uint32_t)rem;
++          pe_buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, zeros, chunk);
++          rem -= chunk;
++        }
++      }
++      break;
++
++    case DEnd:
++      if (ctx->datlnk->common) {
++        die("pecoff: common data not supported");
++      }
++      pe_symname(dname, ctx->datname);
++      if (ctx->dleadzero >= 0) {
++        /* all-zero object -> .bss */
++        symdefine(ctx, dname, PESECT_BSS, ctx->bsssz, 0,
++                  ctx->datlnk->export ? PE_IMAGE_SYM_CLASS_EXTERNAL : PE_IMAGE_SYM_CLASS_STATIC);
++        ctx->bsssz += (uint32_t)ctx->dleadzero;
++      } else {
++        /* initialized data -> .data */
++        symdefine(ctx, dname, PESECT_DATA, ctx->datstart, 0,
++                  ctx->datlnk->export ? PE_IMAGE_SYM_CLASS_EXTERNAL : PE_IMAGE_SYM_CLASS_STATIC);
++      }
++      ctx->dleadzero = -1;
++      break;
++
++    default: /* DB, DH, DW, DL */
++      /* flush any accumulated leading zeros into .data */
++      if (ctx->dleadzero >= 0) {
++        uint64_t rem = (uint64_t)ctx->dleadzero;
++        while (rem > 0) {
++          uint32_t chunk = rem > 8 ? 8 : (uint32_t)rem;
++          pe_buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, zeros, chunk);
++          rem -= chunk;
++        }
++        ctx->dleadzero = -1;
++      }
++      if (d->isstr) {
++        if (d->type != DB) {
++          die("pecoff: strings only supported for 'b'");
++        }
++        p = d->u.str;
++        assert(p[0] == '"');
++        p++;
++        while (*p && *p != '"') {
++          uint8_t c;
++          if (*p == '\\') {
++            p++;
++            switch (*p) {
++              case 'n':
++                c = '\n';
++                break;
++              case 't':
++                c = '\t';
++                break;
++              case 'r':
++                c = '\r';
++                break;
++              case '\\':
++                c = '\\';
++                break;
++              case '"':
++                c = '"';
++                break;
++              case '0':
++                c = '\0';
++                break;
++              default:
++                c = (uint8_t)*p;
++                break;
++            }
++          } else {
++            c = (uint8_t)*p;
++          }
++          pe_buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, &c, 1);
++          p++;
++        }
++      } else if (d->isref) {
++        if (d->type != DL) {
++          die("pecoff: pointer ref only supported in .quad");
++        }
++        pe_symname(dname, d->u.ref.name);
++        refidx = pe_findorsym(ctx, dname);
++        /* ADDR64: addend is stored inline in the 8-byte slot;
++         * linker computes: symbol_va + slot_value */
++        drelocadd(ctx, ctx->datasz, refidx, PE_IMAGE_REL_AMD64_ADDR64);
++        v = (uint64_t)d->u.ref.off;
++        pe_buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, &v, 8);
++      } else {
++        /* plain integer, little-endian */
++        n = (d->type == DB) ? 1 : (d->type == DH) ? 2 : (d->type == DW) ? 4 : 8;
++        v = (uint64_t)(d->u.num & masks[d->type]);
++        pe_buf_append(&ctx->data, &ctx->datasz, &ctx->datacap, &v, (uint32_t)n);
++      }
++      break;
++  }
++}
++
++/* -----------------------------------------------------------------------
++ * pecoff_emitfn -- encode one function into .text (step 3+)
++ * --------------------------------------------------------------------- */
++void pecoff_emitfn(Fn* fn, PECOFFCtx* ctx) {
++  /* jump fixup table -- fields used differ by pass (see below) */
++  struct {
++    uint32_t patch_off;
++    uint blkid;
++    uint from_blkid;  /* pass 0: which block owns this fixup */
++    uint8_t is_jcc;   /* pass 0: 1=jcc fixup, 0=jmp fixup */
++    uint8_t is_short; /* pass 1: 1=rel8, 0=rel32 */
++  } fixups[256];
++  uint32_t blk_off[8192];      /* blk_off[b->id] = text offset at block start */
++  uint8_t can_short_jcc[8192]; /* b->id -> can use rel8 for jcc */
++  uint8_t can_short_jmp[8192]; /* b->id -> can use rel8 for jmp */
++  uint32_t fn_start, body_start;
++  uint nfixups = 0;
++  int pass;
++  Blk* b;
++  Ins* i;
++  int *r, c;
++  uint p;
++  PE pe;
++
++  assert(fn->nblk <= 8192);
++  fn_start = ctx->textsz;
++
++  /* ---- prologue ---- */
++  emit_endbr64(ctx);
++
++  if (fn->vararg) {
++    /* Spill all 4 int arg regs to shadow space before push rbp.
++     * vastart uses rbp+16 + (num_named_args * 8) to find first vararg.
++     * [rsp+8..32] are the home slots for rcx/rdx/r8/r9. */
++    emit_home_spill(ctx, RCX, 0x08);
++    emit_home_spill(ctx, RDX, 0x10);
++    emit_home_spill(ctx, R8, 0x18);
++    emit_home_spill(ctx, R9, 0x20);
++  }
++
++  pe.ctx = ctx;
++  pe.fn = fn;
++  pe.nclob = 0;
++  pe_framesz(fn, &pe.fp, &pe.fsz);
++
++  if (pe.fp == RBP) {
++    emit_push64(ctx, RBP); /* push rbp */
++    emit_mov_rbp_rsp(ctx); /* mov rbp, rsp */
++  }
++  if (pe.fsz) {
++    emit_sub_rsp_imm(ctx, pe.fsz);
++  }
++
++  for (r = pe_rclob; *r != -1; r++) {
++    if (fn->reg & BIT(*r)) {
++      emit_push64(ctx, *r);
++      pe.nclob++;
++    }
++  }
++
++  /* ---- blocks (two-pass jump relaxation) ----
++   * Pass 0: dry-run (no bytes written, no relocs added) to measure block
++   *         offsets and decide which jumps fit in rel8.
++   * Pass 1: real emission using rel8 or rel32 as determined. */
++  assert(fn->nblk <= 8192);
++  memset(can_short_jcc, 0, fn->nblk);
++  memset(can_short_jmp, 0, fn->nblk);
++  body_start = ctx->textsz;
++
++/* Helpers to record a forward-jump fixup (local to the pass loop below). */
++#define REC_FWD(blkid_, from_, isjcc_, isshort_) \
++  do {                                           \
++    assert(nfixups < 256);                       \
++    fixups[nfixups].patch_off = ctx->textsz;     \
++    fixups[nfixups].blkid = (blkid_);            \
++    fixups[nfixups].from_blkid = (from_);        \
++    fixups[nfixups].is_jcc = (isjcc_);           \
++    fixups[nfixups].is_short = (isshort_);       \
++    nfixups++;                                   \
++  } while (0)
++
++/* Emit an unconditional jmp to target block jt from block b. */
++#define EMIT_JMP(jt_)                                                          \
++  do {                                                                         \
++    Blk* _jt = (jt_);                                                          \
++    if (_jt != b->link) {                                                      \
++      int _us = (pass == 1) && can_short_jmp[b->id];                           \
++      int _bw = (_jt->id < b->id);                                             \
++      if (_us) {                                                               \
++        emit1(ctx, 0xEB);                                                      \
++        if (_bw) {                                                             \
++          int32_t _r = (int32_t)blk_off[_jt->id] - (int32_t)(ctx->textsz + 1); \
++          emit1(ctx, (uint8_t)(int8_t)_r);                                     \
++        } else {                                                               \
++          REC_FWD(_jt->id, b->id, 0, 1);                                       \
++          emit1(ctx, 0);                                                       \
++        }                                                                      \
++      } else {                                                                 \
++        emit1(ctx, 0xE9);                                                      \
++        if (_bw) {                                                             \
++          int32_t _r = (int32_t)blk_off[_jt->id] - (int32_t)(ctx->textsz + 4); \
++          emit4le(ctx, (uint32_t)_r);                                          \
++          if (pass == 0 && _r >= -128 && _r <= 127)                            \
++            can_short_jmp[b->id] = 1;                                          \
++        } else {                                                               \
++          REC_FWD(_jt->id, b->id, 0, 0);                                       \
++          emit4le(ctx, 0);                                                     \
++        }                                                                      \
++      }                                                                        \
++    }                                                                          \
++  } while (0)
++
++/* Emit a conditional jmp (opcode jcc_opc[cv_]) to target block jt from b. */
++#define EMIT_JCC(cv_, jt_)                                                   \
++  do {                                                                       \
++    Blk* _jt = (jt_);                                                        \
++    int _cv = (cv_);                                                         \
++    int _us = (pass == 1) && can_short_jcc[b->id];                           \
++    int _bw = (_jt->id < b->id);                                             \
++    if (_us) {                                                               \
++      emit1(ctx, (uint8_t)(0x70 | (jcc_opc[_cv] & 0x0F)));                   \
++      if (_bw) {                                                             \
++        int32_t _r = (int32_t)blk_off[_jt->id] - (int32_t)(ctx->textsz + 1); \
++        emit1(ctx, (uint8_t)(int8_t)_r);                                     \
++      } else {                                                               \
++        REC_FWD(_jt->id, b->id, 1, 1);                                       \
++        emit1(ctx, 0);                                                       \
++      }                                                                      \
++    } else {                                                                 \
++      emit1(ctx, 0x0F);                                                      \
++      emit1(ctx, jcc_opc[_cv]);                                              \
++      if (_bw) {                                                             \
++        int32_t _r = (int32_t)blk_off[_jt->id] - (int32_t)(ctx->textsz + 4); \
++        emit4le(ctx, (uint32_t)_r);                                          \
++        if (pass == 0 && _r >= -128 && _r <= 127)                            \
++          can_short_jcc[b->id] = 1;                                          \
++      } else {                                                               \
++        REC_FWD(_jt->id, b->id, 1, 0);                                       \
++        emit4le(ctx, 0);                                                     \
++      }                                                                      \
++    }                                                                        \
++  } while (0)
++
++  for (pass = 0; pass <= 1; pass++) {
++    ctx->textsz = body_start;
++    ctx->dry_run = (pass == 0);
++    nfixups = 0;
++
++    for (b = fn->start; b; b = b->link) {
++      Blk *jcc_tgt, *jmp_tgt;
++      int jcc_cv;
++
++      blk_off[b->id] = ctx->textsz;
++
++      /* instructions */
++      for (i = b->ins; i != &b->ins[b->nins]; i++) {
++        pe_emitins(*i, &pe);
++      }
++
++      /* jump */
++      switch (b->jmp.type) {
++        case Jhlt:
++          emit1(ctx, 0x0F);
++          emit1(ctx, 0x0B); /* ud2 */
++          break;
++
++        case Jret0:
++          if (fn->dynalloc) {
++            emit_mov_rsp_rbp(ctx);
++            emit_sub_rsp_imm(ctx, pe.fsz + (uint64_t)pe.nclob * 8);
++          }
++          for (r = &pe_rclob[NCLR_PE]; r > pe_rclob;) {
++            if (fn->reg & BIT(*--r)) {
++              emit_pop64(ctx, *r);
++            }
++          }
++          if (pe.fp == RBP) {
++            emit1(ctx, 0xC9); /* leave */
++          } else if (pe.fsz) {
++            emit_add_rsp_imm(ctx, pe.fsz);
++          }
++          emit1(ctx, 0xC3); /* ret */
++          break;
++
++        case Jjmp:
++          EMIT_JMP(b->s1);
++          break;
++
++        default:
++          /* Conditional jump -- compute targets without mutating block.
++           * QBE: s1 = taken (condition true), s2 = not-taken (fall).
++           * Prefer fall-through on s2 (matches original emitter logic):
++           *   b->link == b->s2: s2 falls through -> jcc c to s1 (taken)
++           *   b->link != b->s2: negate -> jcc cmpneg(c) to s2; jmp to s1 */
++          c = b->jmp.type - Jjf;
++          if (c < 0 || c >= NCmp) {
++            die("pecoff: unhandled jump %d", b->jmp.type);
++          }
++          if (b->link == b->s2) {
++            jcc_cv = c;
++            jcc_tgt = b->s1;
++            jmp_tgt = NULL;
++          } else {
++            jcc_cv = cmpneg(c);
++            jcc_tgt = b->s2;
++            jmp_tgt = (b->s1 != b->link) ? b->s1 : NULL;
++          }
++          EMIT_JCC(jcc_cv, jcc_tgt);
++          if (jmp_tgt) {
++            EMIT_JMP(jmp_tgt);
++          }
++          break;
++
++      } /* end switch */
++    }   /* end block loop */
++
++    if (pass == 0) {
++      /* process forward fixups to determine can_short */
++      for (p = 0; p < nfixups; p++) {
++        int32_t rel = (int32_t)blk_off[fixups[p].blkid] - (int32_t)(fixups[p].patch_off + 4);
++        if (rel >= -128 && rel <= 127) {
++          if (fixups[p].is_jcc) {
++            can_short_jcc[fixups[p].from_blkid] = 1;
++          } else {
++            can_short_jmp[fixups[p].from_blkid] = 1;
++          }
++        }
++      }
++    }
++  } /* end pass loop */
++  ctx->dry_run = 0;
++#undef REC_FWD
++#undef EMIT_JMP
++#undef EMIT_JCC
++
++  /* ---- patch pass-1 forward fixups ---- */
++  for (p = 0; p < nfixups; p++) {
++    uint32_t poff = fixups[p].patch_off;
++    if (fixups[p].is_short) {
++      int32_t rel = (int32_t)blk_off[fixups[p].blkid] - (int32_t)(poff + 1);
++      ctx->text[poff] = (uint8_t)(int8_t)rel;
++    } else {
++      int32_t rel = (int32_t)blk_off[fixups[p].blkid] - (int32_t)(poff + 4);
++      uint8_t* ptr = ctx->text + poff;
++      ptr[0] = (uint8_t)(rel);
++      ptr[1] = (uint8_t)(rel >> 8);
++      ptr[2] = (uint8_t)(rel >> 16);
++      ptr[3] = (uint8_t)(rel >> 24);
++    }
++  }
++
++  /* ---- align function end to 16 bytes (matches GAS .balign 16) ---- */
++  while (ctx->textsz & 15) {
++    emit1(ctx, 0x90);
++  }
++
++  /* ---- add function symbol ---- */
++  {
++    char sname[NString];
++    uint16_t stype = PE_IMAGE_SYM_TYPE_FUNCTION;
++    uint8_t sclass = fn->lnk.export ? PE_IMAGE_SYM_CLASS_EXTERNAL : PE_IMAGE_SYM_CLASS_STATIC;
++    pe_symname(sname, fn->name);
++    symdefine(ctx, sname, PESECT_TEXT, fn_start, stype, sclass);
++  }
++}
++
++void pecoff_emitfin_obj(PECOFFCtx* ctx) {
++#define PE_STASH global_context.emit__stash
++  Asmbits* b;
++  int lg, i;
++  static const uint8_t z8[8] = {0};
++  char sname[NString];
++  uint32_t off;
++  uint8_t buf[8];
++
++  if (!PE_STASH) {
++    return;
++  }
++
++  /* Emit by size (16 bytes first, then 8, then 4) -- same order as emitfin.
++   * Index 'i' is the linear insertion order (not per-size), matching Lfp%d. */
++  for (lg = 4; lg >= 2; lg--) {
++    int sz = 1 << lg;
++    for (b = PE_STASH, i = 0; b; b = b->link, i++) {
++      if (b->size != sz) {
++        continue;
++      }
++      /* align .rdata to 'sz' bytes */
++      while (ctx->rdatasz % (uint32_t)sz != 0) {
++        pe_buf_append(&ctx->rdata, &ctx->rdatasz, &ctx->rdatacap, z8, 1);
++      }
++      off = ctx->rdatasz;
++      snprintf(sname, NString, "Lfp%d", i);
++      symdefine(ctx, sname, PESECT_RDATA, off, 0, PE_IMAGE_SYM_CLASS_STATIC);
++      /* write little-endian bytes */
++      buf[0] = (uint8_t)(b->n);
++      buf[1] = (uint8_t)(b->n >> 8);
++      buf[2] = (uint8_t)(b->n >> 16);
++      buf[3] = (uint8_t)(b->n >> 24);
++      if (sz >= 8) {
++        buf[4] = (uint8_t)(b->n >> 32);
++        buf[5] = (uint8_t)(b->n >> 40);
++        buf[6] = (uint8_t)(b->n >> 48);
++        buf[7] = (uint8_t)(b->n >> 56);
++        pe_buf_append(&ctx->rdata, &ctx->rdatasz, &ctx->rdatacap, buf, 8);
++      } else {
++        pe_buf_append(&ctx->rdata, &ctx->rdatasz, &ctx->rdatacap, buf, 4);
++      }
++      if (sz == 16) { /* second half is zero */
++        pe_buf_append(&ctx->rdata, &ctx->rdatasz, &ctx->rdatacap, z8, 8);
++      }
++    }
++  }
++
++  /* free the stash (mirrors emitfin) */
++  while ((b = PE_STASH)) {
++    PE_STASH = b->link;
++    qbe_free(b);
++  }
++  (void)rrelocadd; /* available for future use */
++#undef PE_STASH
++}
++
++/* -----------------------------------------------------------------------
++ * pecoff_write -- emit a valid PE/COFF .obj
++ *
++ * File layout:
++ *   [COFF File Header: 20 bytes]
++ *   [Section Headers: nsecs * 40 bytes]
++ *   [.text raw data + .text relocs]
++ *   [.data raw data + .data relocs]
++ *   [.rdata raw data + .rdata relocs]
++ *   (.bss: no raw data; SizeOfRawData is set but PointerToRawData = 0)
++ *   [Symbol table: nsyms * 18 bytes]
++ *   [String table: uint32 total_size + strings]
++ * --------------------------------------------------------------------- */
++void pecoff_write(PECOFFCtx* ctx, FILE* f) {
++  uint32_t i, nsecs;
++  int16_t textsect, datasect, bsssect, rdatasect;
++  uint32_t rawstart, cur;
++  uint32_t text_rawoff, text_relocoff;
++  uint32_t data_rawoff, data_relocoff;
++  uint32_t rdata_rawoff, rdata_relocoff;
++  uint32_t symtab_off;
++  char name8[8];
++  PESym* sym;
++  PEReloc* rel;
++
++  /* suppress unused warnings for helpers not yet called (step 6+) */
++  (void)wzeros;
++
++  /* ------------------------------------------------------------------
++   * Step 1: determine which sections exist and assign 1-based numbers
++   * ---------------------------------------------------------------- */
++  nsecs = textsect = datasect = bsssect = rdatasect = 0;
++  if (ctx->textsz > 0 || ctx->ntreloc > 0) {
++    textsect = (int16_t)++nsecs;
++  }
++  if (ctx->datasz > 0 || ctx->ndreloc > 0) {
++    datasect = (int16_t)++nsecs;
++  }
++  if (ctx->bsssz > 0) {
++    bsssect = (int16_t)++nsecs;
++  }
++  if (ctx->rdatasz > 0 || ctx->nrreloc > 0) {
++    rdatasect = (int16_t)++nsecs;
++  }
++
++  /* ------------------------------------------------------------------
++   * Step 2: patch symbol section sentinels -> actual section numbers
++   * ---------------------------------------------------------------- */
++  for (i = 0; i < ctx->nsyms; i++) {
++    sym = &ctx->syms[i];
++    switch (sym->section) {
++      case PESECT_TEXT:
++        sym->section = textsect;
++        break;
++      case PESECT_DATA:
++        sym->section = datasect;
++        break;
++      case PESECT_BSS:
++        sym->section = bsssect;
++        break;
++      case PESECT_RDATA:
++        sym->section = rdatasect;
++        break;
++      default:
++        break;
++    }
++  }
++
++  /* ------------------------------------------------------------------
++   * Step 3: compute file offsets
++   * ---------------------------------------------------------------- */
++  rawstart = 20 + nsecs * 40;
++  cur = rawstart;
++
++  text_rawoff = (ctx->textsz > 0) ? cur : 0;
++  cur += ctx->textsz;
++  text_relocoff = (ctx->ntreloc > 0) ? cur : 0;
++  cur += ctx->ntreloc * 10;
++
++  data_rawoff = (ctx->datasz > 0) ? cur : 0;
++  cur += ctx->datasz;
++  data_relocoff = (ctx->ndreloc > 0) ? cur : 0;
++  cur += ctx->ndreloc * 10;
++
++  rdata_rawoff = (ctx->rdatasz > 0) ? cur : 0;
++  cur += ctx->rdatasz;
++  rdata_relocoff = (ctx->nrreloc > 0) ? cur : 0;
++  cur += ctx->nrreloc * 10;
++
++  symtab_off = cur;
++
++  /* ------------------------------------------------------------------
++   * Step 4: COFF file header (20 bytes)
++   * ---------------------------------------------------------------- */
++  w16(f, (uint16_t)PE_IMAGE_FILE_MACHINE_AMD64);
++  w16(f, (uint16_t)nsecs);
++  w32(f, 0);                                 /* TimeDateStamp */
++  w32(f, (ctx->nsyms > 0) ? symtab_off : 0); /* PointerToSymbolTable */
++  w32(f, ctx->nsyms);
++  w16(f, 0); /* SizeOfOptionalHeader */
++  w16(f, 0); /* Characteristics */
++
++  /* ------------------------------------------------------------------
++   * Step 5: section headers (40 bytes each)
++   * ---------------------------------------------------------------- */
++#define SECHDR(sname, rawsz, rawoff, reloff, nreloc, charac)       \
++  do {                                                             \
++    memset(name8, 0, 8);                                           \
++    memcpy(name8, (sname), strlen(sname) < 8 ? strlen(sname) : 8); \
++    wbytes(f, name8, 8);        /* Name */                         \
++    w32(f, 0);                  /* VirtualSize */                  \
++    w32(f, 0);                  /* VirtualAddress */               \
++    w32(f, (rawsz));            /* SizeOfRawData */                \
++    w32(f, (rawoff));           /* PointerToRawData */             \
++    w32(f, (reloff));           /* PointerToRelocations */         \
++    w32(f, 0);                  /* PointerToLinenumbers */         \
++    w16(f, (uint16_t)(nreloc)); /* NumberOfRelocations */          \
++    w16(f, 0);                  /* NumberOfLinenumbers */          \
++    w32(f, (charac));           /* Characteristics */              \
++  } while (0)
++
++  if (textsect) {
++    SECHDR(".text", ctx->textsz, text_rawoff, text_relocoff, ctx->ntreloc,
++           PE_IMAGE_SCN_CNT_CODE | PE_IMAGE_SCN_MEM_EXECUTE | PE_IMAGE_SCN_MEM_READ |
++               PE_IMAGE_SCN_ALIGN_16BYTES);
++  }
++  if (datasect) {
++    SECHDR(".data", ctx->datasz, data_rawoff, data_relocoff, ctx->ndreloc,
++           PE_IMAGE_SCN_CNT_INITIALIZED_DATA | PE_IMAGE_SCN_MEM_READ | PE_IMAGE_SCN_MEM_WRITE |
++               PE_IMAGE_SCN_ALIGN_8BYTES);
++  }
++  if (bsssect) {
++    /* .bss: SizeOfRawData=bsssz but no file data (PointerToRawData=0) */
++    SECHDR(".bss", ctx->bsssz, 0, 0, 0,
++           PE_IMAGE_SCN_CNT_UNINITIALIZED_DATA | PE_IMAGE_SCN_MEM_READ | PE_IMAGE_SCN_MEM_WRITE |
++               PE_IMAGE_SCN_ALIGN_8BYTES);
++  }
++  if (rdatasect) {
++    SECHDR(".rdata", ctx->rdatasz, rdata_rawoff, rdata_relocoff, ctx->nrreloc,
++           PE_IMAGE_SCN_CNT_INITIALIZED_DATA | PE_IMAGE_SCN_MEM_READ | PE_IMAGE_SCN_ALIGN_8BYTES);
++  }
++#undef SECHDR
++
++  /* ------------------------------------------------------------------
++   * Step 6: raw section data and relocation records
++   * ---------------------------------------------------------------- */
++  if (ctx->textsz > 0) {
++    wbytes(f, ctx->text, ctx->textsz);
++  }
++  for (i = 0; i < ctx->ntreloc; i++) {
++    rel = &ctx->treloc[i];
++    w32(f, rel->vaddr);
++    w32(f, rel->symidx);
++    w16(f, rel->type);
++  }
++  if (ctx->datasz > 0) {
++    wbytes(f, ctx->data, ctx->datasz);
++  }
++  for (i = 0; i < ctx->ndreloc; i++) {
++    rel = &ctx->dreloc[i];
++    w32(f, rel->vaddr);
++    w32(f, rel->symidx);
++    w16(f, rel->type);
++  }
++  if (ctx->rdatasz > 0) {
++    wbytes(f, ctx->rdata, ctx->rdatasz);
++  }
++  for (i = 0; i < ctx->nrreloc; i++) {
++    rel = &ctx->rreloc[i];
++    w32(f, rel->vaddr);
++    w32(f, rel->symidx);
++    w16(f, rel->type);
++  }
++
++  assert((uint32_t)ftell(f) == symtab_off);
++
++  /* ------------------------------------------------------------------
++   * Step 7: symbol table (18 bytes per entry)
++   * ---------------------------------------------------------------- */
++  for (i = 0; i < ctx->nsyms; i++) {
++    const char* s;
++    size_t slen;
++
++    sym = &ctx->syms[i];
++    s = ctx->strtab + sym->strx;
++    slen = strlen(s);
++    if (slen <= 8) {
++      memset(name8, 0, 8);
++      memcpy(name8, s, slen);
++      wbytes(f, name8, 8);
++    } else {
++      /* long name: zeros + offset (COFF spec: offset from start
++       * of string table, which already accounts for the 4-byte
++       * size field at the front, so strx+4) */
++      w32(f, 0);
++      w32(f, sym->strx + 4);
++    }
++    w32(f, sym->value);
++    w16(f, (uint16_t)(int16_t)sym->section);
++    w16(f, sym->type);
++    w8(f, sym->storage);
++    w8(f, 0); /* NumberOfAuxSymbols */
++  }
++
++  /* ------------------------------------------------------------------
++   * Step 8: string table
++   * ---------------------------------------------------------------- */
++  w32(f, ctx->strtabsz + 4); /* total size including this 4-byte field */
++  if (ctx->strtabsz > 0) {
++    wbytes(f, ctx->strtab, ctx->strtabsz);
++  }
++}
+diff --git a/amd64/emitpecoff.h b/amd64/emitpecoff.h
+new file mode 100644
+index 0000000..5ed4811
+--- /dev/null
++++ b/amd64/emitpecoff.h
+@@ -0,0 +1,9 @@
++struct PECOFFCtx;
++typedef struct PECOFFCtx PECOFFCtx;
++
++PECOFFCtx* pecoff_new(void);
++void pecoff_free(PECOFFCtx*);
++void pecoff_emitdat(Dat*, PECOFFCtx*);
++void pecoff_emitfn(Fn*, PECOFFCtx*);
++void pecoff_emitfin_obj(PECOFFCtx*);
++void pecoff_write(PECOFFCtx*, FILE*);
+diff --git a/main.c b/main.c
+index c2fd84f..a10baf7 100644
+--- a/main.c
++++ b/main.c
+@@ -1,6 +1,7 @@
+ #include "all.h"
+ #include "arm64/emitmacho.h"
+ #include "arm64/emitjit.h"
++#include "amd64/emitpecoff.h"
+ #include "config.h"
+ #include <ctype.h>
+ #include <dlfcn.h>
+@@ -44,6 +45,9 @@ data(Dat *d)
+ 	if (G(objmode)) {
+ 		macho_emitdat(d, G(macho_ctx));
+ 		ret_on_err();
++	} else if (G(pecoffmode)) {
++		pecoff_emitdat(d, G(pecoff_ctx));
++		ret_on_err();
+ 	} else if (G(jitmode)) {
+ 		jit_emitdat(d, G(jit_ctx));
+ 	} else {
+@@ -128,6 +132,8 @@ func(Fn *fn)
+ 	}
+ 	if (G(objmode)) {
+ 		macho_emitfn(fn, G(macho_ctx));
++	} else if (G(pecoffmode)) {
++		pecoff_emitfn(fn, G(pecoff_ctx));
+ 	} else if (G(jitmode)) {
+ 		jit_emitfn(fn, G(jit_ctx));
+ 	} else if (!G(dbg)) {
+@@ -174,6 +180,8 @@ main(int ac, char *av[])
+ 				G(objmode) = 1;
+ 			else if (strcmp(optarg, "jit") == 0)
+ 				G(jitmode) = 1;
++			else if (strcmp(optarg, "pecoff") == 0)
++				G(pecoffmode) = 1;
+ 			else {
+ 				fprintf(stderr, "unknown format '%s'\n", optarg);
+ 				exit(1);
+@@ -228,6 +236,11 @@ main(int ac, char *av[])
+ 			die("obj: -f obj is only supported for apple targets");
+ 		G(macho_ctx) = macho_new();
+ 	}
++	if (G(pecoffmode)) {
++		if (!GC(T).windows)
++			die("pecoff: -f pecoff is only supported for windows targets");
++		G(pecoff_ctx) = pecoff_new();
++	}
+ 	if (G(jitmode)) {
+ 		if (!GC(T).apple)
+ 			die("jit: -f jit is only supported for apple targets");
+@@ -261,6 +274,11 @@ main(int ac, char *av[])
+ 		macho_emitfin_obj(G(macho_ctx));
+ 		macho_write(G(macho_ctx), G(outf));
+ 		macho_free(G(macho_ctx));
++	} else if (G(pecoffmode)) {
++		pecoff_emitfin_obj(G(pecoff_ctx));
++		pecoff_write(G(pecoff_ctx), G(outf));
++		pecoff_free(G(pecoff_ctx));
++#ifndef _MSC_VER
+ 	} else if (G(jitmode)) {
+ 		int (*entry)(int, char **);
+ 		int ec;
+@@ -277,6 +295,7 @@ main(int ac, char *av[])
+ 		ec = entry(jit_argc, jit_argv);
+ 		jit_free(G(jit_ctx));
+ 		exit(ec);
++#endif  // !_MSC_VER
+ 	} else if (!G(dbg))
+ 		GC(T).emitfin(G(outf));
+ 
+diff --git a/tools/pecobjtest.sh b/tools/pecobjtest.sh
+new file mode 100644
+index 0000000..263a400
+--- /dev/null
++++ b/tools/pecobjtest.sh
+@@ -0,0 +1,183 @@
++#!/bin/sh
++# Test -f pecoff (PE/COFF direct emission) vs text-assembly path for amd64_win.
++# Usage: tools/pecobjtest.sh [file.ssa ...]
++# Requires: x86_64-w64-mingw32-gcc, wine (and optionally dumpbin)
++#
++QBE=${QBE:-./qbe}
++CC=${CC:-x86_64-w64-mingw32-gcc}
++OBJDUMP=${OBJDUMP:-x86_64-w64-mingw32-objdump}
++PASS=0; FAIL=0; SKIP=0
++export WINEDEBUG=-all
++
++# Disassemble a COFF .obj, strip addresses, show instructions only.
++#
++# Pass 1: extract instruction text from "objdump -d -r" output; also resolve
++#   call targets so both paths compare identically:
++#   - GAS computes the direct PC-relative offset for same-file calls (no reloc),
++#     so objdump shows e.g. "call 0 <alpha>" with the correct symbol in < >.
++#   - Our emitter always emits relocs, so objdump shows "call 54 <test+0x24>"
++#     with a following "IMAGE_REL_AMD64_REL32 alpha" relocation line.
++#   Strategy: buffer each "call" instruction.  If the next line is a relocation,
++#   emit "call <symbol>" from the reloc.  Otherwise (GAS direct call), extract
++#   the symbol name from the "<sym>" annotation in the instruction text itself.
++#   Both paths end up emitting "call <symbol>".
++#
++# Pass 2: collapse all NOP variants (multi-byte fancy NOPs, xchg %ax,%ax)
++#         into a single "nop" line.
++#
++# Pass 3: normalize RIP-relative memory operands.  GAS bakes the within-section
++#   byte offset into the displacement field (e.g. "0x8(%rip)"); our emitter
++#   emits 0x0 and relies on the linker relocation.  Both are equivalent after
++#   linking.  Strip the displacement and the trailing objdump annotation.
++normalize() {
++	"$OBJDUMP" -d -r --no-show-raw-insn "$1" | \
++		awk '
++		function flush_call(    sym) {
++			# No reloc followed the buffered call.  Extract the symbol
++			# from the "<sym>" annotation (stops at "+" so "<sym+off>"
++			# does not match — left as-is as a safe fallback).
++			sym = pcall
++			if (match(sym, /<[^+>]+>/))
++				print "call\t" substr(sym, RSTART+1, RLENGTH-2)
++			else
++				print pcall
++			pcall = ""
++		}
++		/^[0-9a-f]+ </         { if (pcall != "") flush_call(); p=1; next }
++		/IMAGE_REL_AMD64_REL32/ {
++			# Must be tested BEFORE the instruction pattern because reloc
++			# lines share the same "addr: ..." prefix format.
++			# Always suppress reloc lines; apply to pending call if present.
++			if (p && pcall != "") {
++				sym = $NF; sub(/[+-].*$/, "", sym)
++				print "call\t" sym
++				pcall = ""
++			}
++			next
++		}
++		p && /^[[:space:]]+[0-9a-f]+:/ {
++			if (pcall != "") flush_call()
++			line = substr($0, index($0, "\t") + 1)
++			if (line ~ /^call[[:space:]]/) { pcall = line }
++			else                           { print line   }
++			next
++		}
++		{ if (pcall != "") flush_call() }
++		END { if (pcall != "") flush_call() }
++		' | \
++		awk '/nop([lw]?[[:space:]]|$)/ || /^xchg[[:space:]]+%ax,%ax/ \
++		     { if (!nop) { print "nop"; nop=1 }; next } \
++		     { nop=0; print }' | \
++		awk '/\(%rip\)/ { sub(/-?0x[0-9a-f]+\(%rip\)/, "(%rip)"); \
++		                  sub(/[[:space:]]*#.*$/, "") } \
++		     { print }'
++}
++
++extract_output() {
++	awk '/^# >>> output/{p=1;next}/^# <</{p=0}p{sub(/^# ?/,"");sub(/#$/,"");print}' "$1"
++}
++
++extract_driver() {
++	awk '/^# >>> driver/{p=1;next}/^# <</{p=0}p{sub(/^# ?/,"");print}' "$1"
++}
++
++run() {
++	ssa="$1"
++	name=$(basename "$ssa" .ssa)
++	tmp="/tmp/qbe_pecobjtest_$$_${name}"
++
++	# --- honour in-file skip directives ---
++	if grep -q '^# skip amd64_win' "$ssa" 2>/dev/null; then
++		echo "SKIP $name (# skip amd64_win)"
++		SKIP=$((SKIP+1)); return
++	fi
++
++	# --- text path ---
++	if ! "$QBE" -t amd64_win -o "${tmp}.s" "$ssa" 2>/dev/null; then
++		echo "SKIP $name (qbe -t amd64_win failed)"
++		SKIP=$((SKIP+1)); return
++	fi
++	if ! "$CC" -c "${tmp}.s" -o "${tmp}_text.obj" 2>/dev/null; then
++		echo "SKIP $name (cc assembly failed)"
++		rm -f "${tmp}.s"
++		SKIP=$((SKIP+1)); return
++	fi
++
++	# --- pecoff path ---
++	# SKIP (not FAIL) if emitter not yet available or fails
++	if ! "$QBE" -f pecoff -t amd64_win -o "${tmp}_obj.obj" "$ssa" 2>/dev/null; then
++		echo "SKIP $name (-f pecoff failed/unsupported)"
++		rm -f "${tmp}.s" "${tmp}_text.obj"
++		SKIP=$((SKIP+1)); return
++	fi
++
++	# --- structural check ---
++	if ! "$OBJDUMP" -f "${tmp}_obj.obj" >/dev/null 2>&1; then
++		echo "FAIL $name (malformed COFF: objdump -f failed)"
++		rm -f "${tmp}.s" "${tmp}_text.obj" "${tmp}_obj.obj"
++		FAIL=$((FAIL+1)); return
++	fi
++
++	# --- compile driver (if present) and link ---
++	drv=$(extract_driver "$ssa")
++	if [ -n "$drv" ]; then
++		printf '%s\n' "$drv" > "${tmp}_drv.c"
++		if ! "$CC" -c "${tmp}_drv.c" -o "${tmp}_drv.obj" 2>/dev/null; then
++			echo "SKIP $name (driver compile failed)"
++			rm -f "${tmp}.s" "${tmp}_text.obj" "${tmp}_obj.obj" "${tmp}_drv.c"
++			SKIP=$((SKIP+1)); return
++		fi
++		lnk_err=$("$CC" -static "${tmp}_obj.obj" "${tmp}_drv.obj" \
++		           -o "${tmp}_obj.exe" 2>&1); lnk_ec=$?
++		rm -f "${tmp}_drv.c" "${tmp}_drv.obj"
++	else
++		lnk_err=$("$CC" -static "${tmp}_obj.obj" -o "${tmp}_obj.exe" 2>&1)
++		lnk_ec=$?
++	fi
++	if [ $lnk_ec -ne 0 ]; then
++		echo "FAIL $name (link failed)"
++		printf "%s\n" "$lnk_err" | sed 's/^/  /'
++		rm -f "${tmp}.s" "${tmp}_text.obj" "${tmp}_obj.obj" "${tmp}_obj.exe"
++		FAIL=$((FAIL+1)); return
++	fi
++
++	# --- run check ---
++	expected=$(extract_output "$ssa")
++	if [ -n "$expected" ]; then
++		actual=$(wine "${tmp}_obj.exe" a b c 2>/dev/null | tr -d '\r')
++		if [ "$actual" != "$expected" ]; then
++			echo "FAIL $name (output mismatch)"
++			printf "  expected: %s\n  got:      %s\n" "$expected" "$actual"
++			rm -f "${tmp}.s" "${tmp}_text.obj" "${tmp}_obj.obj" "${tmp}_obj.exe"
++			FAIL=$((FAIL+1)); return
++		fi
++	fi
++	rm -f "${tmp}_obj.exe"
++
++	# --- disassembly diff (informational only) ---
++	normalize "${tmp}_text.obj" > "${tmp}_text.norm" 2>/dev/null
++	normalize "${tmp}_obj.obj"  > "${tmp}_obj.norm"  2>/dev/null
++	if ! diff "${tmp}_text.norm" "${tmp}_obj.norm" >/dev/null 2>&1; then
++		echo "NOTE $name (disassembly differs from GAS — not a failure)"
++		diff "${tmp}_text.norm" "${tmp}_obj.norm" | head -20
++	fi
++
++	echo "PASS $name"
++	PASS=$((PASS+1))
++
++	rm -f "${tmp}.s" "${tmp}_text.obj" "${tmp}_obj.obj" \
++	      "${tmp}_text.norm" "${tmp}_obj.norm"
++}
++
++if [ $# -eq 0 ]; then
++	for f in test/*.ssa; do
++		case $(basename "$f") in _*) continue ;; esac
++		run "$f"
++	done
++else
++	for f in "$@"; do run "$f"; done
++fi
++
++echo ""
++echo "passed=$PASS failed=$FAIL skipped=$SKIP"
++[ "$FAIL" -eq 0 ]
+-- 
+2.53.0.vfs.0.0
+

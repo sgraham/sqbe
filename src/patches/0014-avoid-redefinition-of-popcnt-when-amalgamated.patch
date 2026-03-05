@@ -1,7 +1,7 @@
-From ab192a0596f8b1c2ba42e922471c47bdfb1f34f9 Mon Sep 17 00:00:00 2001
+From 6f0e0f3e29aec7910f9903a265823637d44229cc Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Fri, 13 Feb 2026 21:07:03 -0800
-Subject: [PATCH 14/17] avoid redefinition of popcnt when amalgamated
+Subject: [PATCH 14/18] avoid redefinition of popcnt when amalgamated
 
 ---
  amd64/winabi.c | 6 +++---
@@ -32,5 +32,5 @@ index 3be1524..296b7e8 100755
    return b;
  }
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 

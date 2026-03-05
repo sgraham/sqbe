@@ -1,7 +1,7 @@
-From 758425bed4838fbe8cc1c8ab60786bcc5123d782 Mon Sep 17 00:00:00 2001
+From d0818e602ba7d55ffc0f6d3f8f7d16486e9593b6 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Thu, 5 Feb 2026 14:23:20 -0800
-Subject: [PATCH 13/17] avoid warnings for variables that are only used for
+Subject: [PATCH 13/18] avoid warnings for variables that are only used for
  asserts
 
 ---
@@ -34,5 +34,5 @@ index 48d6637..279e207 100644
  			assert(n+1 < m->n);
  		t = m->t[n];
 -- 
-2.50.1 (Apple Git-155)
+2.53.0.vfs.0.0
 
