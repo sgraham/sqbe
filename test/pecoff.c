@@ -1,4 +1,4 @@
-// SKIP: win
+// SKIP: mac
 // SKIP: linux
 // OUT: 0
 // OUT: 1
@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   SqConfiguration config = SQ_CONFIGURATION_DEFAULT;
-  config.format = SQ_FORMAT_OBJ_MACHO;
+  config.format = SQ_FORMAT_OBJ_PECOFF;
   config.output = fopen(argv[1], "wb");
   sq_init(&config);
 

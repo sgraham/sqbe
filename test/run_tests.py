@@ -146,7 +146,7 @@ def do_test(f):
         env = {"MallocNanoZone": "0"}
 
     # TODO, maybe do more than just the one with a re-run
-    direct = f == "macho.c"
+    direct = f == "macho.c" or f == "pecoff.c"
     if direct:
         compileproc = subprocess.run(
             ["./tmp.exe", "tmp.o"], capture_output=True, universal_newlines=True, env=env
