@@ -1,7 +1,7 @@
-From 7ea3b646fb4a680195842e945c7dd0be0568dc2e Mon Sep 17 00:00:00 2001
+From 0ffff9173b213ffab7c4ffb043ffbe712f6ae8b9 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Sat, 8 Feb 2025 21:09:53 -0800
-Subject: [PATCH 04/18] Context-ize global and (most) function-static variables
+Subject: [PATCH 04/10] Context-ize global and (most) function-static variables
 
 Moves all mutable globals into a single GlobalContext struct.
 
@@ -1431,7 +1431,7 @@ index cef1ddf..0aa5596 100644
  		printfn(fn, stderr);
  	}
 diff --git a/gvn.c b/gvn.c
-index 92ee5eb..f7eb858 100644
+index 2417150..4513ae1 100644
 --- a/gvn.c
 +++ b/gvn.c
 @@ -1,7 +1,5 @@
@@ -1969,7 +1969,7 @@ index 3265b39..b270ec6 100644
  			if (s0->s != s0)
  				continue;
 diff --git a/parse.c b/parse.c
-index 25a0e1a..3d09cd2 100644
+index 230e001..579fd0f 100644
 --- a/parse.c
 +++ b/parse.c
 @@ -2,6 +2,8 @@
@@ -2055,27 +2055,30 @@ index 25a0e1a..3d09cd2 100644
  }
  
  static int64_t
-@@ -213,15 +188,15 @@ getint(void)
+@@ -213,18 +188,18 @@ getint(void)
  	int c, m;
  
  	n = 0;
 -	c = fgetc(inf);
 +	c = fgetc(G(inf));
  	m = (c == '-');
- 	if (m)
+ 	if (m) {
 -		c = fgetc(inf);
 +		c = fgetc(G(inf));
+ 		if (!isdigit(c))
+ 			err("integer expected");
+ 	}
  	do {
  		n = 10*n + (c - '0');
 -		c = fgetc(inf);
 +		c = fgetc(G(inf));
- 	} while ('0' <= c && c <= '9');
+ 	} while (isdigit(c));
 -	ungetc(c, inf);
 +	ungetc(c, G(inf));
  	if (m)
  		n = 1 + ~n;
  	return *(int64_t *)&n;
-@@ -230,15 +205,14 @@ getint(void)
+@@ -233,15 +208,14 @@ getint(void)
  static int
  lex(void)
  {
@@ -2093,7 +2096,7 @@ index 25a0e1a..3d09cd2 100644
  	switch (c) {
  	case EOF:
  		return Teof;
-@@ -257,57 +231,57 @@ lex(void)
+@@ -260,57 +234,57 @@ lex(void)
  	case '+':
  		return Tplus;
  	case 's':
@@ -2167,7 +2170,7 @@ index 25a0e1a..3d09cd2 100644
  				return t;
  			}
  			esc = (c == '\\' && !esc);
-@@ -320,18 +294,18 @@ Alpha:
+@@ -323,18 +297,18 @@ Alpha:
  	do {
  		if (i >= NString-1)
  			err("identifier too long");
@@ -2194,7 +2197,7 @@ index 25a0e1a..3d09cd2 100644
  		return Txxx;
  	}
  	return t;
-@@ -340,9 +314,9 @@ Alpha:
+@@ -343,9 +317,9 @@ Alpha:
  static int
  peek(void)
  {
@@ -2207,7 +2210,7 @@ index 25a0e1a..3d09cd2 100644
  }
  
  static int
-@@ -351,7 +325,7 @@ next(void)
+@@ -354,7 +328,7 @@ next(void)
  	int t;
  
  	t = peek();
@@ -2216,7 +2219,7 @@ index 25a0e1a..3d09cd2 100644
  	return t;
  }
  
-@@ -396,27 +370,27 @@ tmpref(char *v)
+@@ -399,27 +373,27 @@ tmpref(char *v)
  {
  	int t, i;
  
@@ -2260,7 +2263,7 @@ index 25a0e1a..3d09cd2 100644
  	return TMP(t);
  }
  
-@@ -430,19 +404,19 @@ parseref(void)
+@@ -433,19 +407,19 @@ parseref(void)
  	default:
  		return R;
  	case Ttmp:
@@ -2284,7 +2287,7 @@ index 25a0e1a..3d09cd2 100644
  		c.flt = 2;
  		break;
  	case Tthread:
-@@ -451,19 +425,19 @@ parseref(void)
+@@ -454,19 +428,19 @@ parseref(void)
  		/* fall through */
  	case Tglo:
  		c.type = CAddr;
@@ -2308,7 +2311,7 @@ index 25a0e1a..3d09cd2 100644
  }
  
  static int
-@@ -473,7 +447,7 @@ parsecls(int *tyn)
+@@ -476,7 +450,7 @@ parsecls(int *tyn)
  	default:
  		err("invalid class specifier");
  	case Ttyp:
@@ -2317,7 +2320,7 @@ index 25a0e1a..3d09cd2 100644
  		return Kc;
  	case Tsb:
  		return Ksb;
-@@ -504,7 +478,7 @@ parserefl(int arg)
+@@ -507,7 +481,7 @@ parserefl(int arg)
  	vararg = 0;
  	expect(Tlparen);
  	while (peek() != Trparen) {
@@ -2326,7 +2329,7 @@ index 25a0e1a..3d09cd2 100644
  			err("too many instructions");
  		if (!arg && vararg)
  			err("no parameters allowed after '...'");
-@@ -514,8 +488,8 @@ parserefl(int arg)
+@@ -517,8 +491,8 @@ parserefl(int arg)
  				err("only one '...' allowed");
  			vararg = 1;
  			if (arg) {
@@ -2337,7 +2340,7 @@ index 25a0e1a..3d09cd2 100644
  			}
  			next();
  			goto Next;
-@@ -539,25 +513,25 @@ parserefl(int arg)
+@@ -542,25 +516,25 @@ parserefl(int arg)
  			err("invalid function parameter");
  		if (env)
  			if (arg)
@@ -2372,7 +2375,7 @@ index 25a0e1a..3d09cd2 100644
  	Next:
  		if (peek() == Trparen)
  			break;
-@@ -573,24 +547,24 @@ findblk(char *name)
+@@ -576,24 +550,24 @@ findblk(char *name)
  	Blk *b;
  	uint32_t h;
  
@@ -2405,7 +2408,7 @@ index 25a0e1a..3d09cd2 100644
  }
  
  static PState
-@@ -609,7 +583,7 @@ parseline(PState ps)
+@@ -612,7 +586,7 @@ parseline(PState ps)
  		err("label or } expected");
  	switch (t) {
  	case Ttmp:
@@ -2414,7 +2417,7 @@ index 25a0e1a..3d09cd2 100644
  		expect(Teq);
  		k = parsecls(&ty);
  		op = next();
-@@ -629,53 +603,53 @@ parseline(PState ps)
+@@ -632,53 +606,53 @@ parseline(PState ps)
  	case Trbrace:
  		return PEnd;
  	case Tlbl:
@@ -2487,7 +2490,7 @@ index 25a0e1a..3d09cd2 100644
  	Close:
  		expect(Tnl);
  		closeblk();
-@@ -685,21 +659,21 @@ parseline(PState ps)
+@@ -688,21 +662,21 @@ parseline(PState ps)
  		k = Kw;
  		r = R;
  		expect(Tint);
@@ -2514,7 +2517,7 @@ index 25a0e1a..3d09cd2 100644
  		arg[0] = parseref();
  		parserefl(1);
  		op = Ocall;
-@@ -718,7 +692,7 @@ parseline(PState ps)
+@@ -721,7 +695,7 @@ parseline(PState ps)
  		op = Oload;
  	if (op == Talloc1 || op == Talloc2)
  		op = Oalloc;
@@ -2523,7 +2526,7 @@ index 25a0e1a..3d09cd2 100644
  		err("cannot use vastart in non-variadic function");
  	if (k >= Ksb)
  		err("size class must be w, l, s, or d");
-@@ -729,7 +703,7 @@ parseline(PState ps)
+@@ -732,7 +706,7 @@ parseline(PState ps)
  				err("too many arguments");
  			if (op == Tphi) {
  				expect(Tlbl);
@@ -2532,7 +2535,7 @@ index 25a0e1a..3d09cd2 100644
  			}
  			arg[i] = parseref();
  			if (req(arg[i], R))
-@@ -745,7 +719,7 @@ parseline(PState ps)
+@@ -748,7 +722,7 @@ parseline(PState ps)
  	next();
  	switch (op) {
  	case Tphi:
@@ -2541,7 +2544,7 @@ index 25a0e1a..3d09cd2 100644
  			err("unexpected phi instruction");
  		phi = alloc(sizeof *phi);
  		phi->to = r;
-@@ -755,41 +729,41 @@ parseline(PState ps)
+@@ -758,41 +732,41 @@ parseline(PState ps)
  		phi->blk = vnew(i, sizeof blk[0], PFn);
  		memcpy(phi->blk, blk, i * sizeof blk[0]);
  		phi->narg = i;
@@ -2602,7 +2605,7 @@ index 25a0e1a..3d09cd2 100644
  		return PIns;
  	}
  }
-@@ -899,55 +873,55 @@ parsefn(Lnk *lnk)
+@@ -902,55 +876,55 @@ parsefn(Lnk *lnk)
  	int i;
  	PState ps;
  
@@ -2692,7 +2695,7 @@ index 25a0e1a..3d09cd2 100644
  }
  
  static void
-@@ -972,7 +946,7 @@ parsefields(Field *fld, Typ *ty, int t)
+@@ -975,7 +949,7 @@ parsefields(Field *fld, Typ *ty, int t)
  		case Tb: type = Fb; s = 1; a = 0; break;
  		case Ttyp:
  			type = FTyp;
@@ -2701,7 +2704,7 @@ index 25a0e1a..3d09cd2 100644
  			s = ty1->size;
  			a = ty1->align;
  			break;
-@@ -991,13 +965,13 @@ parsefields(Field *fld, Typ *ty, int t)
+@@ -994,13 +968,13 @@ parsefields(Field *fld, Typ *ty, int t)
  		}
  		t = nextnl();
  		if (t == Tint) {
@@ -2717,7 +2720,7 @@ index 25a0e1a..3d09cd2 100644
  		for (; c>0 && n<NField; c--, n++) {
  			fld[n].type = type;
  			fld[n].len = s;
-@@ -1027,20 +1001,20 @@ parsetyp(void)
+@@ -1030,20 +1004,20 @@ parsetyp(void)
  	 * to handle nested types, any pointer
  	 * held to typ[] might be invalidated!
  	 */
@@ -2742,7 +2745,7 @@ index 25a0e1a..3d09cd2 100644
  			;
  		ty->align = al;
  		t = nextnl();
-@@ -1050,7 +1024,7 @@ parsetyp(void)
+@@ -1053,7 +1027,7 @@ parsetyp(void)
  	t = nextnl();
  	if (t == Tint) {
  		ty->isdark = 1;
@@ -2751,7 +2754,7 @@ index 25a0e1a..3d09cd2 100644
  		if (ty->align == -1)
  			err("dark types need alignment");
  		if (nextnl() != Trbrace)
-@@ -1072,7 +1046,7 @@ parsetyp(void)
+@@ -1075,7 +1049,7 @@ parsetyp(void)
  		parsefields(ty->fields[n++], ty, t);
  	ty->nunion = n;
  
@@ -2760,7 +2763,7 @@ index 25a0e1a..3d09cd2 100644
      fprintf(stderr, "\n> Parsed type:\n");
      printtyp(ty, stderr);
    }
-@@ -1084,14 +1058,14 @@ parsedatref(Dat *d)
+@@ -1087,14 +1061,14 @@ parsedatref(Dat *d)
  	int t;
  
  	d->isref = 1;
@@ -2777,7 +2780,7 @@ index 25a0e1a..3d09cd2 100644
  	}
  }
  
-@@ -1099,7 +1073,7 @@ static void
+@@ -1102,7 +1076,7 @@ static void
  parsedatstr(Dat *d)
  {
  	d->isstr = 1;
@@ -2786,7 +2789,7 @@ index 25a0e1a..3d09cd2 100644
  }
  
  static void
-@@ -1111,16 +1085,16 @@ parsedat(void cb(Dat *), Lnk *lnk)
+@@ -1114,16 +1088,16 @@ parsedat(void cb(Dat *), Lnk *lnk)
  
  	if (nextnl() != Tglo || nextnl() != Teq)
  		err("data name, then = expected");
@@ -2807,7 +2810,7 @@ index 25a0e1a..3d09cd2 100644
  		t = nextnl();
  	}
  	d.type = DStart;
-@@ -1132,7 +1106,7 @@ parsedat(void cb(Dat *), Lnk *lnk)
+@@ -1135,7 +1109,7 @@ parsedat(void cb(Dat *), Lnk *lnk)
  		err("expected data contents in { .. }");
  	for (;;) {
  		switch (nextnl()) {
@@ -2816,7 +2819,7 @@ index 25a0e1a..3d09cd2 100644
  		case Trbrace: goto Done;
  		case Tl: d.type = DL; break;
  		case Tw: d.type = DW; break;
-@@ -1148,11 +1122,11 @@ parsedat(void cb(Dat *), Lnk *lnk)
+@@ -1151,11 +1125,11 @@ parsedat(void cb(Dat *), Lnk *lnk)
  			d.isref = 0;
  			memset(&d.u, 0, sizeof d.u);
  			if (t == Tflts)
@@ -2831,7 +2834,7 @@ index 25a0e1a..3d09cd2 100644
  			else if (t == Tglo)
  				parsedatref(&d);
  			else if (t == Tstr)
-@@ -1193,10 +1167,10 @@ parselnk(Lnk *lnk)
+@@ -1196,10 +1170,10 @@ parselnk(Lnk *lnk)
  				err("only one section allowed");
  			if (next() != Tstr)
  				err("section \"name\" expected");
@@ -2844,7 +2847,7 @@ index 25a0e1a..3d09cd2 100644
  			}
  			break;
  		default:
-@@ -1215,12 +1189,12 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+@@ -1218,12 +1192,12 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
  	uint n;
  
  	lexinit();
@@ -2863,7 +2866,7 @@ index 25a0e1a..3d09cd2 100644
  	for (;;) {
  		lnk = (Lnk){0};
  		switch (parselnk(&lnk)) {
-@@ -1228,7 +1202,7 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+@@ -1231,7 +1205,7 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
  			err("top-level definition expected");
  		case Tdbgfile:
  			expect(Tstr);
@@ -2872,7 +2875,7 @@ index 25a0e1a..3d09cd2 100644
  			break;
  		case Tfunc:
  			lnk.align = 16;
-@@ -1241,10 +1215,10 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
+@@ -1244,10 +1218,10 @@ parse(FILE *f, char *path, void dbgfile(char *), void data(Dat *), void func(Fn
  			parsetyp();
  			break;
  		case Teof:
@@ -2887,7 +2890,7 @@ index 25a0e1a..3d09cd2 100644
  			return;
  		}
  	}
-@@ -1299,7 +1273,7 @@ void printtyp(Typ* ty, FILE* f) {
+@@ -1302,7 +1276,7 @@ void printtyp(Typ* ty, FILE* f) {
      for (int j = 0; j < NField+1; ++j) {
        if (fld[j].type == FTyp) {
          fprintf(f, "    field %d: %s => %s\n", j, field_type_name[fld[j].type],
@@ -2896,7 +2899,7 @@ index 25a0e1a..3d09cd2 100644
        } else {
          fprintf(f, "    field %d: %s len %u\n", j, field_type_name[fld[j].type], fld[j].len);
        }
-@@ -1335,7 +1309,7 @@ printref(Ref r, Fn *fn, FILE *f)
+@@ -1338,7 +1312,7 @@ printref(Ref r, Fn *fn, FILE *f)
  		fprintf(f, "%04x", r.val);
  		break;
  	case RType:
@@ -2905,7 +2908,7 @@ index 25a0e1a..3d09cd2 100644
  		break;
  	case RMem:
  		i = 0;
-@@ -1448,7 +1422,7 @@ printfn(Fn *fn, FILE *f)
+@@ -1451,7 +1425,7 @@ printfn(Fn *fn, FILE *f)
  				printref(b->jmp.arg, fn, f);
  			}
  			if (b->jmp.type == Jretc)
@@ -4291,5 +4294,5 @@ index 17fd399..5866be9 100644
  	fn->tmp[t].slot = -1;
  	fn->tmp[t].nuse = +1;
 -- 
-2.53.0.vfs.0.0
+2.50.1 (Apple Git-155)
 

@@ -1,7 +1,7 @@
-From 01ceaaca78bc027265c1970fc0512abf2a9059c1 Mon Sep 17 00:00:00 2001
+From ceabe4cebbca1e99bbd95fd38803ebff2e4660e8 Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Mon, 10 Feb 2025 17:44:43 -0800
-Subject: [PATCH 07/18] Replace sprintf with snprintf and remove static return
+Subject: [PATCH 07/10] Replace sprintf with snprintf and remove static return
  buffers
 
 ASAN builds complain about sprintf being deprecated (at least on Mac) and it's
@@ -149,10 +149,10 @@ index 97db08f..d559349 100644
  			c->sym.id = intern(buf);
  			r2 = newtmp("isel", Kl, fn);
 diff --git a/parse.c b/parse.c
-index b0b1529..38b5929 100644
+index 3f406fa..ccfa1f0 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -361,7 +361,7 @@ expect(int t)
+@@ -364,7 +364,7 @@ expect(int t)
  		return;
  	s1 = ttoa[t] ? ttoa[t] : "??";
  	s2 = ttoa[t1] ? ttoa[t1] : "??";
@@ -188,5 +188,5 @@ index b9fb677..6060861 100644
  			c->sym.id = intern(buf);
  			emit(Oload, k, r1, CON(c-fn->con), NULL_R);
 -- 
-2.53.0.vfs.0.0
+2.50.1 (Apple Git-155)
 

@@ -1,7 +1,7 @@
-From 0f74b8601ce3e0fcec7ca17bf5bd225314398ba2 Mon Sep 17 00:00:00 2001
+From e4b41a1f0513447f690d26ba504148f4ba68924e Mon Sep 17 00:00:00 2001
 From: Scott Graham <scott.github@h4ck3r.net>
 Date: Tue, 14 Jan 2025 16:50:50 -0800
-Subject: [PATCH 03/18] Add printtyp() and debug['T']
+Subject: [PATCH 03/10] Add printtyp() and debug['T']
 
 ---
  all.h   |  1 +
@@ -34,10 +34,10 @@ index ed1ac94..ebde93c 100644
  
  extern Target T_amd64_sysv;
 diff --git a/parse.c b/parse.c
-index 406d13f..25a0e1a 100644
+index 25b7e73..230e001 100644
 --- a/parse.c
 +++ b/parse.c
-@@ -1071,6 +1071,11 @@ parsetyp(void)
+@@ -1074,6 +1074,11 @@ parsetyp(void)
  	} else
  		parsefields(ty->fields[n++], ty, t);
  	ty->nunion = n;
@@ -49,7 +49,7 @@ index 406d13f..25a0e1a 100644
  }
  
  static void
-@@ -1269,6 +1274,41 @@ printcon(Con *c, FILE *f)
+@@ -1272,6 +1277,41 @@ printcon(Con *c, FILE *f)
  	}
  }
  
@@ -92,5 +92,5 @@ index 406d13f..25a0e1a 100644
  printref(Ref r, Fn *fn, FILE *f)
  {
 -- 
-2.53.0.vfs.0.0
+2.50.1 (Apple Git-155)
 
