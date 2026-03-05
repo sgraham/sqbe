@@ -41,9 +41,10 @@ typedef enum SqTarget {
 } SqTarget;
 
 typedef enum SqFormat {
-  SQ_FORMAT_TEXT_S,     // Default textual .s to be assembled by system as
-  SQ_FORMAT_OBJ_MACHO,  // macOS Mach-O .o
-  SQ_FORMAT_JIT,        // Direct JIT
+  SQ_FORMAT_TEXT_S,      // Default textual .s to be assembled by system as
+  SQ_FORMAT_OBJ_MACHO,   // macOS Mach-O .o
+  SQ_FORMAT_OBJ_PECOFF,  // Win32 PE/COFF .obj
+  SQ_FORMAT_JIT,         // Direct JIT
 } SqFormat;
 
 typedef int (*SqOutputFn)(const char* fmt, va_list ap);
